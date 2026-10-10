@@ -135,7 +135,7 @@ document.addEventListener("DOMContentLoaded", () => {
     $("#view-kicker").textContent = kicker; $("#view-title").textContent = title; $("#view-subtitle").textContent = subtitle;
     if (loadData && name === "episodes") loadEpisodes().catch(showEpisodeError);
     if (loadData && name === "timeline") loadTimeline().catch(showTimelineError);
-    if (loadData && name === "ingest") loadAssets().catch(error => console.error(error));
+    if (loadData && name === "ingest") Promise.all([loadAssets(), loadCaptures()]).catch(error => console.error(error));
     if (loadData && name === "search") loadToolsCatalog().catch(error => console.error(error));
     if (loadData && name === "system") loadSystem().catch(error => console.error(error));
   }
@@ -259,29 +259,84 @@ document.addEventListener("DOMContentLoaded", () => {
   $("[data-close-dialog]").addEventListener("click", () => $("#asset-dialog").close());
 
   $("#asset-file").addEventListener("change", event => {
-    $("#file-label").textContent = event.target.files[0]?.name || "Seleccionar archivo";
+    const names = [...event.target.files].map(file => file.name);
+    $("#file-label").textContent = names.length
+      ? (names.length === 1 ? names[0] : `${names.length} archivos: ${names.join(", ")}`)
+      : "Seleccionar los archivos de la captura";
   });
+
+  const captureStatusLabel = value => ({
+    received: "Recibida", processing: "Procesando", ready: "Lista", failed: "Fallida",
+  })[value] || value;
+  const timeOriginLabel = value => ({
+    declared: "hora declarada", media_metadata: "hora del vídeo", upload_time: "hora de subida (no declarada)",
+  })[value] || value;
+  const stageIcon = state => ({ completed: "✓", running: "…", failed: "✗" })[state] || "·";
+
+  function renderJob(job, capture) {
+    const output = $("#workflow-result");
+    output.hidden = false;
+    output.classList.toggle("error", job.state === "failed");
+    const title = capture?.title ? esc(capture.title) : "Captura";
+    const percent = Math.round((job.progress || 0) * 100);
+    const stages = job.stages.map(stage => `<li class="${esc(stage.state)}"><span>${stageIcon(stage.state)}</span><b>${esc(stage.label)}</b><small>${esc(stage.detail || "")}</small></li>`).join("");
+    const action = job.state === "completed" && job.result?.episode_id
+      ? `<div class="job-actions"><button type="button" class="button primary" data-open-episode="${esc(job.result.episode_id)}">Abrir episodio</button></div>`
+      : job.state === "failed" ? `<p>${esc(job.error || "El procesamiento falló")}</p>` : "";
+    output.innerHTML = `<header><b>${title}</b><span>${job.state === "completed" ? "Completado" : job.state === "failed" ? "Fallido" : `${percent}%`}</span></header><ol>${stages}</ol>${action}`;
+    output.querySelector("[data-open-episode]")?.addEventListener("click", button => openEpisode(button.currentTarget.dataset.openEpisode));
+  }
+
+  async function followJob(jobId, capture) {
+    // El procesamiento ocurre en segundo plano: se consulta el progreso por etapas.
+    while (true) {
+      const job = await api(`/api/jobs/${encodeURIComponent(jobId)}`);
+      renderJob(job, capture);
+      if (job.state === "completed" || job.state === "failed") return job;
+      await new Promise(resolve => setTimeout(resolve, 1000));
+    }
+  }
+
   $("#ingest-form").addEventListener("submit", async event => {
     event.preventDefault();
     const submit = $("#ingest-submit"); const output = $("#workflow-result");
     const formData = new FormData(event.currentTarget);
     const captured = formData.get("captured_at");
     if (captured) formData.set("captured_at", new Date(captured).toISOString()); else formData.delete("captured_at");
-    submit.disabled = true; submit.textContent = "Procesando memoria…"; output.hidden = false; output.classList.remove("error");
-    output.textContent = "Copiando el original y ejecutando el recorrido canónico…";
+    if (!formData.get("title")) formData.delete("title");
+    submit.disabled = true; submit.textContent = "Subiendo…"; output.hidden = false; output.classList.remove("error");
+    output.textContent = "Copiando los originales al almacén…";
     try {
-      const data = await api("/api/workflow/ingest-and-process", { method: "POST", body: formData });
-      const flow = data.workflow;
-      output.textContent = [
-        `ESTADO        ${data.status}`, `ASSET         ${flow.asset_id}`, `VENTANAS      ${flow.processing_window_ids.length}`,
-        `OBSERVACIONES ${flow.observation_ids.length}`, `MICROEPISODIOS ${flow.microepisode_ids.length}`,
-        `EPISODIOS     ${flow.episode_ids.length}`, `QDRANT        ${flow.indexed_points} puntos`,
-        ...(flow.processor_failures.length ? [`ERRORES       ${flow.processor_failures.join(" | ")}`] : []),
-      ].join("\n");
-      await Promise.all([loadHealth(), loadScope(), loadAssets()]);
+      const capture = await api("/api/captures", { method: "POST", body: formData });
+      submit.textContent = "Procesando…";
+      await loadCaptures();
+      await followJob(capture.job.id, capture);
+      await Promise.all([loadHealth(), loadScope(), loadAssets(), loadCaptures()]);
     } catch (error) { output.classList.add("error"); output.textContent = `ERROR\n${error.message}`; }
-    finally { submit.disabled = false; submit.textContent = "Conservar y procesar"; }
+    finally { submit.disabled = false; submit.textContent = "Subir captura y procesar"; }
   });
+
+  async function loadCaptures() {
+    const ledger = $("#capture-ledger");
+    if (!ledger) return;
+    const data = await api("/api/captures");
+    $("#capture-count").textContent = data.captures.length;
+    if (!data.captures.length) { ledger.innerHTML = '<div class="empty">Todavía no hay capturas. Sube la primera arriba.</div>'; return; }
+    ledger.innerHTML = data.captures.map(capture => {
+      const files = capture.assets.map(asset => `${asset.original_filename} · ${modalityLabel(asset.media_type)}`).join("<br>");
+      const when = capture.captured_at ? `${fmtTime(capture.captured_at)} · ${timeOriginLabel(capture.captured_at_origin)}` : "Tiempo no declarado";
+      const action = capture.episode_id
+        ? `<button type="button" class="button-mini ghost" data-open-episode="${esc(capture.episode_id)}">Abrir episodio</button>`
+        : capture.job && ["queued", "running"].includes(capture.job.state)
+          ? `<button type="button" class="button-mini ghost" data-follow-job="${esc(capture.job.id)}">Ver progreso</button>` : "";
+      return `<div class="capture-row"><div><strong>${esc(capture.title)}</strong><small>${esc(capture.environment_id)} · ${esc(when)}</small></div><small>${files}</small><span class="capture-status ${esc(capture.status)}">${esc(captureStatusLabel(capture.status))}</span><div>${action}</div></div>`;
+    }).join("");
+    ledger.querySelectorAll("[data-open-episode]").forEach(button => button.addEventListener("click", () => openEpisode(button.dataset.openEpisode)));
+    ledger.querySelectorAll("[data-follow-job]").forEach(button => button.addEventListener("click", () => {
+      const capture = data.captures.find(item => item.job?.id === button.dataset.followJob);
+      followJob(button.dataset.followJob, capture).then(() => loadCaptures()).catch(error => console.error(error));
+    }));
+  }
 
   async function loadEpisodes(selectedId = state.activeEpisode, append = false, loadAll = false) {
     const list = $("#memory-map") || $("#episode-list");
@@ -590,7 +645,7 @@ document.addEventListener("DOMContentLoaded", () => {
       const compatibilityNotice = data.compatibility_mode ? '<div class="compatibility-notice"><b>Vista de compatibilidad</b><span>Reinicia EpiGraph para recuperar la trazabilidad completa del servidor actualizado.</span></div>' : "";
       const environmentIds = episode.environment_ids?.length ? episode.environment_ids : [episode.location].filter(Boolean);
       const environment = environmentIds.map(environmentLabel).join(", ") || "Ambiente no declarado";
-      root.innerHTML = `<header class="episode-hero"><div><p class="kicker">EPISODIO EN LA MEMORIA</p><h2>${esc(episodeTitle(episode))}</h2><p>${esc(fmtInterval(episode))}</p></div><span class="episode-place">${esc(environment)}</span></header>${compatibilityNotice}
+      root.innerHTML = `<header class="episode-hero"><div><p class="kicker">EPISODIO EN LA MEMORIA</p><h2>${esc(episodeTitle(episode))}</h2><p>${esc(fmtInterval(episode))}${episode.metadata?.captured_at_origin ? ` · ${esc(timeOriginLabel(episode.metadata.captured_at_origin))}` : ""}</p></div><span class="episode-place">${esc(environment)}</span></header>${compatibilityNotice}
         <div class="memory-facts"><div><span>CONTENIDO EXTRAÍDO</span><b>${allObservations.length} observación(es)</b></div><div><span>PROCEDENCIA</span><b>${data.assets.length} activo(s)</b></div><div><span>EVENTOS</span><b>${data.events.length}</b></div><div><span>ESTRUCTURA</span><b>${data.microepisodes.length} microepisodio(s)</b></div></div>
         <div class="episode-readable"><main><section class="content-section"><div class="section-title"><p class="kicker">QUÉ CONTIENE</p><h3>Contenido extraído</h3><p>Texto o descripción producido por los procesadores. No sustituye al original.</p></div>${observationsHtml || '<div class="empty">No hay contenido extraído asociado a este episodio.</div>'}</section>${eventsHtml}</main>
           <aside class="origin-section"><div class="section-title"><p class="kicker">DE DÓNDE PROCEDE</p><h3>Archivos y fuentes</h3><p>Cada observación debe poder volver a su evidencia original.</p></div>${originsHtml || '<div class="empty">No hay activos originales enlazados.</div>'}</aside></div>
@@ -1077,7 +1132,7 @@ document.addEventListener("DOMContentLoaded", () => {
     finally { button.disabled = false; button.textContent = "Reconstruir Qdrant desde SQLite"; }
   });
 
-  $("#refresh-all").addEventListener("click", async () => { await Promise.all([loadHealth(), loadScope(), loadAssets()]); if ($("#view-timeline").classList.contains("active")) loadTimeline(); });
+  $("#refresh-all").addEventListener("click", async () => { await Promise.all([loadHealth(), loadScope(), loadAssets(), loadCaptures()]); if ($("#view-timeline").classList.contains("active")) loadTimeline(); });
   const requestedView = views[location.hash.slice(1)] ? location.hash.slice(1) : null;
   const initialView = requestedView || "episodes";
   switchView(initialView, true);

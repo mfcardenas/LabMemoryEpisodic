@@ -9,6 +9,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Iterable, Sequence
 
+from episodic.domain.captures import Capture
 from episodic.domain.entities import Episode, Observation
 from episodic.domain.episodes import MicroEpisode
 from episodic.ports.repository import EpisodicRepository
@@ -134,14 +135,67 @@ class DeterministicEpisodeComposer:
         self.config = config or EpisodeRuleConfig()
 
     def compose(self, environment_id: str) -> EpisodeCompositionResult:
+        """Recompone el ambiente por huecos temporales.
+
+        Las observaciones que pertenecen a una captura quedan fuera: su
+        episodio lo define la captura y no cambia por otras subidas.
+        """
         if self.repository.get_environment(environment_id) is None:
             raise ValueError(f"Ambiente no encontrado: {environment_id}")
-        observations = self.repository.list_observations(environment_id)
+        captured_assets: dict[str, bool] = {}
+
+        def belongs_to_capture(observation: Observation) -> bool:
+            if not observation.asset_id:
+                return False
+            if observation.asset_id not in captured_assets:
+                asset = self.repository.get_asset(observation.asset_id)
+                captured_assets[observation.asset_id] = bool(
+                    asset and asset.metadata.get("capture_id")
+                )
+            return captured_assets[observation.asset_id]
+
+        observations = [
+            item
+            for item in self.repository.list_observations(environment_id)
+            if not belongs_to_capture(item)
+        ]
         groups = self._group_observations(observations)
         microepisodes = tuple(self._make_microepisode(group, environment_id) for group in groups)
         episode_groups = self._group_microepisodes(microepisodes)
         episodes = tuple(self._make_episode(group, environment_id) for group in episode_groups)
-        return self._persist_reconstruction(environment_id, observations, microepisodes, episodes)
+        return self._persist_reconstruction(
+            environment_id, environment_id, observations, microepisodes, episodes
+        )
+
+    def compose_capture(self, capture: Capture) -> EpisodeCompositionResult:
+        """Construye exactamente un episodio con todas las observaciones de la captura."""
+        asset_ids = set(capture.asset_ids)
+        observations = [
+            item
+            for item in self.repository.list_observations(capture.environment_id)
+            if item.asset_id in asset_ids
+        ]
+        if not observations:
+            raise ValueError(f"La captura {capture.id} no tiene observaciones que componer")
+        # Los archivos de una captura se tomaron juntos: sus fuentes están
+        # sincronizadas por declaración del usuario.
+        sources = tuple(_ordered_unique(item.source_id for item in observations if item.source_id))
+        scoped = DeterministicEpisodeComposer(
+            self.repository,
+            replace(
+                self.config,
+                synchronized_source_groups=(*self.config.synchronized_source_groups, sources),
+            ),
+        )
+        groups = scoped._group_observations(observations)
+        microepisodes = tuple(
+            scoped._make_microepisode(group, capture.environment_id, scope=capture.id)
+            for group in groups
+        )
+        episode = scoped._make_capture_episode(capture, microepisodes)
+        return self._persist_reconstruction(
+            capture.id, capture.environment_id, observations, microepisodes, (episode,)
+        )
 
     def _group_observations(self, observations: Sequence[Observation]) -> list[_ObservationGroup]:
         ordered = sorted(observations, key=_observation_sort_key)
@@ -266,8 +320,9 @@ class DeterministicEpisodeComposer:
         )
 
     def _make_microepisode(
-        self, group: _ObservationGroup, environment_id: str
+        self, group: _ObservationGroup, environment_id: str, scope: str | None = None
     ) -> MicroEpisode:
+        scope = scope or environment_id
         observations = group.observations
         observation_ids = [item.id for item in observations]
         sources = _ordered_unique(item.source_id for item in observations if item.source_id)
@@ -287,7 +342,7 @@ class DeterministicEpisodeComposer:
             value for item in observations if (value := _attribute(item, "location"))
         )
         micro_id = _stable_id(
-            "microepisode", self.config.fingerprint, environment_id, *observation_ids
+            "microepisode", self.config.fingerprint, scope, *observation_ids
         )
         title_value = actions[0] if len(actions) == 1 else observations[0].observation_type
         return MicroEpisode(
@@ -306,7 +361,7 @@ class DeterministicEpisodeComposer:
             created_at=min(item.created_at for item in observations),
             metadata={
                 "composer_key": _COMPOSER_KEY,
-                "composition_scope": environment_id,
+                "composition_scope": scope,
                 "config_fingerprint": self.config.fingerprint,
                 "rules": self.config.to_dict(),
                 "grouping_decisions": group.decisions,
@@ -425,8 +480,59 @@ class DeterministicEpisodeComposer:
             },
         )
 
+    def _make_capture_episode(
+        self, capture: Capture, microepisodes: Sequence[MicroEpisode]
+    ) -> Episode:
+        observation_ids = _ordered_unique(
+            observation_id for micro in microepisodes for observation_id in micro.observation_ids
+        )
+        evidence_reference_ids = _ordered_unique(
+            reference_id for micro in microepisodes for reference_id in micro.evidence_reference_ids
+        )
+        indexable_text = "\n".join(
+            observation.description
+            for observation_id in observation_ids
+            if (observation := self.repository.get_observation(observation_id)) is not None
+        )
+        return Episode(
+            # Estable por captura: reprocesar no cambia el enlace del episodio.
+            id=_stable_id("episode", "capture", capture.id),
+            title=capture.title,
+            source_ids=_ordered_unique(
+                source_id for micro in microepisodes for source_id in micro.source_ids
+            ),
+            location=capture.environment_id,
+            observation_ids=observation_ids,
+            indexable_text=indexable_text,
+            environment_ids=[capture.environment_id],
+            microepisode_ids=[item.id for item in microepisodes],
+            start_time=min(item.start_time for item in microepisodes if item.start_time is not None),
+            end_time=max(item.end_time for item in microepisodes if item.end_time is not None),
+            producer=self.producer,
+            model_version=self.model_version,
+            confidence=_minimum_confidence(microepisodes),
+            created_at=capture.created_at,
+            metadata={
+                "composer_key": _COMPOSER_KEY,
+                "composition_scope": capture.id,
+                "capture_id": capture.id,
+                "captured_at_origin": capture.captured_at_origin.value,
+                "config_fingerprint": self.config.fingerprint,
+                "aggregation_decisions": [
+                    _decision(item.id, "continued" if index else "started", ["same_capture"])
+                    for index, item in enumerate(microepisodes)
+                ],
+                "termination_rules": ["capture_boundary"],
+                "evidence_reference_ids": evidence_reference_ids,
+                "contains_contradiction": any(
+                    bool(item.metadata.get("contains_contradiction")) for item in microepisodes
+                ),
+            },
+        )
+
     def _persist_reconstruction(
         self,
+        scope: str,
         environment_id: str,
         observations: Sequence[Observation],
         microepisodes: tuple[MicroEpisode, ...],
@@ -436,13 +542,13 @@ class DeterministicEpisodeComposer:
             item
             for item in self.repository.list_episodes_for_environment(environment_id)
             if item.producer == self.producer
-            and item.metadata.get("composition_scope") == environment_id
+            and item.metadata.get("composition_scope") == scope
         ]
         old_micros = [
             item
             for item in self.repository.list_microepisodes(environment_id)
             if item.producer == self.producer
-            and item.metadata.get("composition_scope") == environment_id
+            and item.metadata.get("composition_scope") == scope
         ]
         new_episode_ids = {item.id for item in episodes}
         new_micro_ids = {item.id for item in microepisodes}

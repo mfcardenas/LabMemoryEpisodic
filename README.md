@@ -41,7 +41,10 @@ python -m pip install -e ".[dev]"
 epigraph --data .runtime/demo --fake-encoders serve
 ```
 
-Abra <http://127.0.0.1:8100/> y vaya a **Ingesta**. Con `--fake-encoders` no
+Abra <http://127.0.0.1:8100/> y vaya a **Ingesta**: seleccione a la vez el
+vídeo, el audio y los documentos de una misma grabación. Se crea una
+**captura**, se procesa en segundo plano (el progreso se ve por etapas) y al
+terminar ofrece abrir su episodio. Con `--fake-encoders` no
 se descargan modelos (útil para probar el flujo); omítalo para una búsqueda
 semántica real con Nomic y CLIP. El catálogo de la API está en
 <http://127.0.0.1:8100/docs>.
@@ -54,6 +57,7 @@ y un manual de taller que forman una misma captura.
 | Comando | Para qué |
 |---|---|
 | `epigraph serve` | API y front en `127.0.0.1:8100`. |
+| `epigraph capture FILES… --environment ENV [--title T] [--captured-at ISO]` | Sube los archivos tomados juntos como una captura y crea su episodio. |
 | `epigraph ingest FILE --environment ENV --source SRC` | Registra un original en custodia. |
 | `epigraph observe ASSET_ID` | Extrae observaciones del activo. |
 | `epigraph compose --environment ENV` | Agrupa observaciones en episodios. |

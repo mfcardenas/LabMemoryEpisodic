@@ -116,6 +116,29 @@ input:focus, select:focus { border-color: var(--signal); box-shadow: 0 0 0 2px r
 .process-note span { font: 800 10px var(--mono); } .process-note p { margin: 0; font: 12px var(--mono); }
 .operation-log { margin: 0 22px 22px; padding: 15px; color: #dfe9da; background: #20251e; font: 12px/1.7 var(--mono); white-space: pre-wrap; }
 .operation-log.error { color: #ffb09c; }
+.form-grid .span-2 { grid-column: span 2; }
+.job-progress { margin: 0 22px 22px; padding: 15px 16px; color: #dfe9da; background: #20251e; font: 12px/1.6 var(--mono); }
+.job-progress.error { color: #ffb09c; }
+.job-progress header { display: flex; justify-content: space-between; gap: 12px; margin-bottom: 10px; color: var(--paper-2); }
+.job-progress ol { margin: 0; padding: 0; list-style: none; display: grid; gap: 6px; }
+.job-progress li { display: grid; grid-template-columns: 22px 150px 1fr; gap: 8px; }
+.job-progress li small { color: #a9b3a5; }
+.job-progress li.running b { color: var(--acid); }
+.job-progress li.failed b, .job-progress li.failed small { color: #ffb09c; }
+.job-progress .job-actions { margin-top: 12px; }
+.job-progress .job-actions .button { color: var(--ink); }
+.capture-row { display: grid; grid-template-columns: minmax(200px, 1.6fr) minmax(180px, 1.2fr) 150px 110px; align-items: center; gap: 13px; min-height: 64px; padding: 8px 22px; border-top: 1px solid var(--line); }
+.capture-row:first-child { border-top: 0; }
+.capture-row strong { display: block; font: 700 14px var(--display); }
+.capture-row small { color: var(--muted); font: 10px var(--mono); }
+.capture-status { justify-self: start; padding: 5px 7px; border: 1px solid currentColor; font: 700 9px var(--mono); text-transform: uppercase; color: var(--muted); }
+.capture-status.ready { color: #39713b; }
+.capture-status.processing, .capture-status.received { color: var(--blue); }
+.capture-status.failed { color: var(--signal-dark); }
+@media (max-width: 760px) {
+  .form-grid .span-2 { grid-column: auto; }
+  .capture-row { grid-template-columns: 1fr; gap: 6px; }
+}
 
 .doctrine { padding-bottom: 18px; }
 .doctrine > .kicker, .doctrine > h2 { margin-left: 22px; margin-right: 22px; }

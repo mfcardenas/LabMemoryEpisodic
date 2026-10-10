@@ -218,7 +218,9 @@ def test_dashboard_exposes_canonical_epigraph_workflow() -> None:
     assert "Asset \u2192 ProcessingWindow" not in html  # El front usa etiquetas en español.
     assert "Activo \u2192 ventanas \u2192 observaciones" in html
     assert "Atlas" not in html
-    assert 'api("/api/workflow/ingest-and-process"' in javascript
+    assert 'api("/api/captures", { method: "POST"' in javascript
+    assert "/api/jobs/" in javascript
+    assert 'name="files" type="file" required multiple' in html
     assert "require_unique_resolution:" in javascript
     assert "/api/memory/episodes/" in javascript
     assert "/api/memory/timeline" in javascript

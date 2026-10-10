@@ -27,6 +27,12 @@ from episodic.adapters.sqlite.repository import SqliteEpisodicRepository
 from episodic.application.indexing import IndexingWorker
 from episodic.application.inspection import MemoryInspectionService
 from episodic.application.asset_ingestion import AssetIngestionService
+from episodic.application.captures import (
+    CAPTURE_JOB_KIND,
+    CaptureProcessingService,
+    CaptureService,
+)
+from episodic.application.jobs import JobRunner
 from episodic.application.ingest import IngestService
 from episodic.application.lifecycle import LifecycleService
 from episodic.application.observation_extraction import ObservationExtractionService
@@ -72,9 +78,14 @@ class AppContainer:
     memory_tools: MemoryToolbox
     workflow_service: EpiGraphWorkflowService
     inspection_service: MemoryInspectionService
+    capture_service: CaptureService
+    job_runner: JobRunner
 
     def close(self) -> None:
         """Cierra conexiones persistentes de forma limpia."""
+        self.job_runner.stop()
+        if hasattr(self.job_runner.repository, "close"):
+            self.job_runner.repository.close()
         if hasattr(self.repository, "close"):
             self.repository.close()
         if hasattr(self.vector_index, "close"):
@@ -257,6 +268,8 @@ def create_app_container(
         indexing_worker=indexing_worker,
     )
     inspection_svc = MemoryInspectionService(repo)
+    capture_svc = CaptureService(repo, asset_ingestion_svc)
+    job_runner = _create_job_runner(config, store, vector_index, text_encoder, image_encoder)
 
     return AppContainer(
         config=config,
@@ -279,4 +292,47 @@ def create_app_container(
         memory_tools=memory_tools,
         workflow_service=workflow_svc,
         inspection_service=inspection_svc,
+        capture_service=capture_svc,
+        job_runner=job_runner,
     )
+
+
+def _create_job_runner(
+    config: EpisodicConfig,
+    store: EvidenceStore,
+    vector_index: VectorIndex,
+    text_encoder: EpisodeTextEncoder,
+    image_encoder: ImageEncoder,
+) -> JobRunner:
+    """Servicios del hilo de trabajo sobre una conexión SQLite propia.
+
+    Comparten el almacén de medios, el índice (protegido por su lock) y los
+    encoders ya cargados; nunca la conexión de las peticiones HTTP.
+    """
+    repo = SqliteEpisodicRepository(config.sqlite_path)
+    worker = IndexingWorker(
+        repository=repo,
+        evidence_store=store,
+        vector_index=vector_index,
+        text_encoder=text_encoder,
+        image_encoder=image_encoder,
+    )
+    processing = CaptureProcessingService(
+        repository=repo,
+        windowing=WindowingService(repo),
+        extraction=ObservationExtractionService(repo),
+        composition=DeterministicEpisodeComposer(repo),
+        lifecycle=LifecycleService(
+            repository=repo,
+            evidence_store=store,
+            vector_index=vector_index,
+            nomic_model_id=config.nomic_model,
+            clip_vision_model_id=config.clip_vision_model,
+        ),
+        indexing_worker=worker,
+    )
+
+    def process_capture(job, report):
+        return processing.process(job.target_id, on_stage=report).to_dict()
+
+    return JobRunner(repo, {CAPTURE_JOB_KIND: process_capture})

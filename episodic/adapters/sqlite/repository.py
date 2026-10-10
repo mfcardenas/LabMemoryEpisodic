@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
 
 from episodic.adapters.sqlite.migrations import apply_migrations, init_connection
+from episodic.domain.captures import Capture, Job, JobState
 from episodic.domain.entities import (
     Annotation,
     CaptureSession,
@@ -1468,6 +1469,113 @@ class SqliteEpisodicRepository:
             qdrant_point_id=row["qdrant_point_id"],
             created_at=_parse_iso(row["created_at"]) or utc_now(),
         )
+
+    # -----------------------------------------------------------------------
+    # Capturas y trabajos asíncronos
+    # -----------------------------------------------------------------------
+
+    def save_capture(self, capture: Capture) -> None:
+        self._require_existing("environments", [capture.environment_id], "environment_id")
+        self._require_existing("assets", capture.asset_ids, "asset_ids")
+        self._conn.execute(
+            """
+            INSERT INTO captures (
+                id, environment_id, title, status, episode_id, created_at, payload_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                title=excluded.title,
+                status=excluded.status,
+                episode_id=excluded.episode_id,
+                payload_json=excluded.payload_json
+            """,
+            (
+                capture.id,
+                capture.environment_id,
+                capture.title,
+                capture.status.value,
+                capture.episode_id,
+                capture.created_at.isoformat(),
+                _to_json(capture.to_dict()),
+            ),
+        )
+
+    def get_capture(self, capture_id: str) -> Optional[Capture]:
+        row = self._conn.execute(
+            "SELECT payload_json FROM captures WHERE id = ?", (capture_id,)
+        ).fetchone()
+        return Capture.from_dict(_from_json(row["payload_json"])) if row else None
+
+    def find_capture_for_episode(self, episode_id: str) -> Optional[Capture]:
+        row = self._conn.execute(
+            "SELECT payload_json FROM captures WHERE episode_id = ?", (episode_id,)
+        ).fetchone()
+        return Capture.from_dict(_from_json(row["payload_json"])) if row else None
+
+    def list_captures(
+        self, environment_id: Optional[str] = None, limit: int = 50
+    ) -> List[Capture]:
+        if environment_id is None:
+            rows = self._conn.execute(
+                "SELECT payload_json FROM captures ORDER BY created_at DESC, id LIMIT ?",
+                (limit,),
+            ).fetchall()
+        else:
+            rows = self._conn.execute(
+                """
+                SELECT payload_json FROM captures
+                WHERE environment_id = ? ORDER BY created_at DESC, id LIMIT ?
+                """,
+                (environment_id, limit),
+            ).fetchall()
+        return [Capture.from_dict(_from_json(row["payload_json"])) for row in rows]
+
+    def save_job(self, job: Job) -> None:
+        self._conn.execute(
+            """
+            INSERT INTO jobs (
+                id, kind, target_id, state, created_at, updated_at, payload_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                state=excluded.state,
+                updated_at=excluded.updated_at,
+                payload_json=excluded.payload_json
+            """,
+            (
+                job.id,
+                job.job_type,
+                job.target_id,
+                job.state.value,
+                job.created_at.isoformat(),
+                job.updated_at.isoformat(),
+                _to_json(job.to_dict()),
+            ),
+        )
+
+    def get_job(self, job_id: str) -> Optional[Job]:
+        row = self._conn.execute(
+            "SELECT payload_json FROM jobs WHERE id = ?", (job_id,)
+        ).fetchone()
+        return Job.from_dict(_from_json(row["payload_json"])) if row else None
+
+    def list_jobs(
+        self,
+        states: Optional[List[JobState]] = None,
+        target_id: Optional[str] = None,
+    ) -> List[Job]:
+        conditions: List[str] = []
+        params: List[Any] = []
+        if states:
+            conditions.append(f"state IN ({', '.join('?' for _ in states)})")
+            params.extend(state.value for state in states)
+        if target_id:
+            conditions.append("target_id = ?")
+            params.append(target_id)
+        where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+        rows = self._conn.execute(
+            f"SELECT payload_json FROM jobs {where} ORDER BY created_at, id",
+            params,
+        ).fetchall()
+        return [Job.from_dict(_from_json(row["payload_json"])) for row in rows]
 
     # -----------------------------------------------------------------------
     # QueryRuns (Auditoría)

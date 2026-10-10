@@ -241,6 +241,36 @@ def cmd_rebuild(args: argparse.Namespace) -> None:
         container.close()
 
 
+def cmd_capture(args: argparse.Namespace) -> None:
+    """Sube varios archivos como una captura y espera a que exista su episodio."""
+    from episodic.application.captures import CAPTURE_JOB_KIND, CAPTURE_STAGES, CaptureFile
+
+    config = _config_from_args(args)
+    container = create_app_container(config, use_fake_encoders=args.fake_encoders)
+    try:
+        capture = container.capture_service.register(
+            [CaptureFile(Path(item), Path(item).name) for item in args.files],
+            environment_id=args.environment,
+            title=args.title,
+            captured_at=args.captured_at,
+            window_duration_seconds=args.window,
+            overlap_seconds=args.overlap,
+        )
+        print(f"Captura: {capture.id} ({len(capture.asset_ids)} archivo(s))")
+        print(f"Hora: {capture.captured_at.isoformat()} [{capture.captured_at_origin.value}]")
+        runner = container.job_runner
+        job = runner.submit(CAPTURE_JOB_KIND, capture.id, CAPTURE_STAGES)
+        runner.run_next()
+        job = container.repository.get_job(job.id)
+        for stage in job.stages:
+            print(f"  {stage.label:<22} {stage.state.value:<10} {stage.detail}")
+        if job.state.value != "completed":
+            raise SystemExit(f"El procesamiento falló: {job.error}")
+        print(f"Episodio: {job.result['episode_id']}")
+    finally:
+        container.close()
+
+
 def cmd_ingest_asset(args: argparse.Namespace) -> None:
     """Registra un archivo original como Asset sin extraer su contenido."""
     config = _config_from_args(args)
@@ -566,6 +596,24 @@ def main() -> None:
         help="Fichero JSON opcional con las reglas de agrupación",
     )
     p_compose.set_defaults(func=cmd_compose_episodes)
+
+    # capture (Fase B)
+    p_capture = subparsers.add_parser(
+        "capture",
+        parents=[subcommand_common],
+        help="Sube vídeo, audio y documentos tomados juntos como un único episodio",
+    )
+    p_capture.add_argument("files", nargs="+", help="Archivos de la captura")
+    p_capture.add_argument("--environment", required=True, help="ID del ambiente")
+    p_capture.add_argument("--title", help="Título del episodio")
+    p_capture.add_argument(
+        "--captured-at",
+        type=_parse_aware_datetime,
+        help="Instante de captura ISO-8601 con zona horaria",
+    )
+    p_capture.add_argument("--window", type=float, default=60.0, help="Duración de ventana (s)")
+    p_capture.add_argument("--overlap", type=float, default=5.0, help="Solapamiento (s)")
+    p_capture.set_defaults(func=cmd_capture)
 
     # serve
     p_serve = subparsers.add_parser("serve", parents=[subcommand_common], help="Inicia la API HTTP y la interfaz web")

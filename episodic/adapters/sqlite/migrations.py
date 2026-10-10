@@ -430,12 +430,39 @@ UPDATE relations SET
     payload_json = json_set(payload_json, '$.relation_type', upper(relation_type));
 """
 
+MIGRATION_V6 = """
+-- Capturas subidas en conjunto (una captura = un episodio) y cola durable.
+CREATE TABLE captures (
+    id TEXT PRIMARY KEY,
+    environment_id TEXT NOT NULL REFERENCES environments(id) ON DELETE RESTRICT,
+    title TEXT NOT NULL,
+    status TEXT NOT NULL,
+    episode_id TEXT,
+    created_at TEXT NOT NULL,
+    payload_json TEXT NOT NULL
+);
+CREATE INDEX idx_captures_environment ON captures(environment_id, created_at);
+
+CREATE TABLE jobs (
+    id TEXT PRIMARY KEY,
+    kind TEXT NOT NULL,
+    target_id TEXT NOT NULL,
+    state TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    payload_json TEXT NOT NULL
+);
+CREATE INDEX idx_jobs_state ON jobs(state, created_at);
+CREATE INDEX idx_jobs_target ON jobs(target_id, created_at);
+"""
+
 MIGRATIONS: List[Tuple[int, str]] = [
     (1, MIGRATION_V1),
     (2, MIGRATION_V2),
     (3, MIGRATION_V3),
     (4, MIGRATION_V4),
     (5, MIGRATION_V5),
+    (6, MIGRATION_V6),
 ]
 
 

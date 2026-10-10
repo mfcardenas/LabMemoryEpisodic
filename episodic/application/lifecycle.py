@@ -7,7 +7,7 @@
 from __future__ import annotations
 
 import logging
-from typing import List, Optional
+from typing import List, Optional, Sequence
 
 from episodic.application.indexing import IndexingWorker
 from episodic.domain.entities import Annotation, Representation
@@ -137,6 +137,60 @@ class LifecycleService:
         logger.info("Episodio %s eliminado canónicamente y puntos removidos de Qdrant", episode_id)
         return True
 
+    def index_episodes(
+        self,
+        worker: IndexingWorker,
+        episode_ids: Sequence[str],
+        removed_episode_ids: Sequence[str] = (),
+    ) -> int:
+        """Indexación incremental por outbox: solo los episodios afectados.
+
+        Sustituye a la reconstrucción completa tras cada captura. Los puntos de
+        episodios retirados se borran y sus representaciones quedan STALE.
+        """
+        if removed_episode_ids:
+            self.vector_index.delete_points([f"ep_{item}" for item in removed_episode_ids])
+            for episode_id in removed_episode_ids:
+                for rep in self.repository.list_representations_for_target(episode_id):
+                    self.repository.update_representation_state(rep.id, IndexingState.STALE)
+        for episode_id in episode_ids:
+            self._queue_representation(self._episode_text_representation(episode_id))
+
+        total = 0
+        while processed := worker.process_pending_outbox(batch_size=50):
+            total += processed
+        return total
+
+    def _episode_text_representation(self, episode_id: str) -> Representation:
+        return Representation(
+            target_type="episode",
+            target_id=episode_id,
+            space=RepresentationSpace.NOMIC_TEXT,
+            model_id=self.nomic_model_id,
+            model_revision="v1.5",
+            dimension=768,
+            indexing_state=IndexingState.PENDING,
+        )
+
+    def _queue_representation(self, rep: Representation) -> None:
+        """Reutiliza la representación compatible o crea una nueva en el outbox."""
+        compatible = [
+            current
+            for current in self.repository.list_representations_for_target(rep.target_id)
+            if current.target_type == rep.target_type
+            and current.space == rep.space
+            and current.model_id == rep.model_id
+            and current.model_revision == rep.model_revision
+            and current.dimension == rep.dimension
+        ]
+        if compatible:
+            selected = compatible[-1]
+            self.repository.update_representation_state(selected.id, IndexingState.PENDING)
+            for duplicate in compatible[:-1]:
+                self.repository.update_representation_state(duplicate.id, IndexingState.STALE)
+        else:
+            self.repository.save_representation(rep)
+
     def rebuild_index(self, worker: IndexingWorker) -> int:
         """Reconstruye la proyección sin borrar primero el índice operativo.
 
@@ -164,35 +218,10 @@ class LifecycleService:
             if key in queued_keys:
                 return
             queued_keys.add(key)
-
-            compatible = [
-                current
-                for current in self.repository.list_representations_for_target(rep.target_id)
-                if current.target_type == rep.target_type
-                and current.space == rep.space
-                and current.model_id == rep.model_id
-                and current.model_revision == rep.model_revision
-                and current.dimension == rep.dimension
-            ]
-            if compatible:
-                selected = compatible[-1]
-                self.repository.update_representation_state(selected.id, IndexingState.PENDING)
-                for duplicate in compatible[:-1]:
-                    self.repository.update_representation_state(duplicate.id, IndexingState.STALE)
-            else:
-                self.repository.save_representation(rep)
+            self._queue_representation(rep)
 
         for ep in episodes:
-            rep_text = Representation(
-                target_type="episode",
-                target_id=ep.id,
-                space=RepresentationSpace.NOMIC_TEXT,
-                model_id=self.nomic_model_id,
-                model_revision="v1.5",
-                dimension=768,
-                indexing_state=IndexingState.PENDING,
-            )
-            queue_representation(rep_text)
+            queue_representation(self._episode_text_representation(ep.id))
 
             # Encolar evidencias de imagen
             for ev_id in ep.evidence_ids:

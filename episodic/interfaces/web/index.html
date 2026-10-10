@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="description" content="EpiGraph: memoria episódica multimodal trazable">
   <title>EpiGraph · Consola de memoria</title>
-  <link rel="stylesheet" href="/static/index.css?v=pceg1-9">
+  <link rel="stylesheet" href="/static/index.css?v=fase-b-1">
 </head>
 <body>
   <div class="shell">
@@ -171,21 +171,21 @@
         <div class="split hero-split">
           <article class="panel ingest-panel">
             <div class="panel-heading">
-              <div><p class="kicker">NUEVO ACTIVO</p><h2>Entrada y custodia</h2></div>
+              <div><p class="kicker">NUEVA CAPTURA</p><h2>Subir lo que se grabó junto</h2></div>
               <span class="truth-badge">ORIGINAL</span>
             </div>
             <form id="ingest-form">
               <label class="drop-zone" for="asset-file">
-                <input id="asset-file" name="file" type="file" required
+                <input id="asset-file" name="files" type="file" required multiple
                   accept="video/*,audio/*,image/*,.pdf,.txt,.md,.csv,.json">
                 <span class="drop-glyph">↓</span>
-                <b id="file-label">Seleccionar vídeo, audio, imagen o documento</b>
-                <small>Se copiará al almacén inmutable y se verificará mediante SHA‑256.</small>
+                <b id="file-label">Seleccionar los archivos de la captura</b>
+                <small>Vídeo, audio y documentos tomados juntos forman un único episodio. Los originales se conservan por SHA‑256.</small>
               </label>
               <div class="form-grid">
+                <label class="span-2">Título<input name="title" placeholder="Ej.: Desmontaje de pieza agarrotada"></label>
                 <label>Ambiente<input name="environment_id" value="laboratorio_01" required></label>
-                <label>Fuente<input name="source_id" value="fuente_01" required></label>
-                <label>Capturado en<input name="captured_at" type="datetime-local" step="1"></label>
+                <label>Capturado en<input name="captured_at" type="datetime-local" step="1" title="Si se deja vacío se usa la hora del vídeo o, en su defecto, la de subida"></label>
                 <label>Delta de tiempo / Ventana (s)<input name="window_duration_seconds" type="number" value="60" min="0.1" step="0.1"></label>
                 <label>Solapamiento temporal (s)<input name="overlap_seconds" type="number" value="5" min="0" step="0.1"></label>
               </div>
@@ -193,9 +193,9 @@
                 <span>FLUJO</span>
                 <p>Activo → ventanas → observaciones → microepisodios → episodios → Qdrant</p>
               </div>
-              <button class="button primary" type="submit" id="ingest-submit">Conservar y procesar</button>
+              <button class="button primary" type="submit" id="ingest-submit">Subir captura y procesar</button>
             </form>
-            <div class="operation-log" id="workflow-result" hidden></div>
+            <div class="job-progress" id="workflow-result" hidden></div>
           </article>
 
           <article class="panel doctrine">
@@ -211,6 +211,11 @@
             <p class="doctrine-warning">Si un procesador solo obtiene metadatos técnicos, la interfaz los mostrará como tales. No se redactará una historia artificial.</p>
           </article>
         </div>
+
+        <article class="panel ledger-panel">
+          <div class="panel-heading"><div><p class="kicker">CAPTURAS</p><h2>Capturas recientes</h2></div><span id="capture-count" class="counter">0</span></div>
+          <div class="capture-ledger" id="capture-ledger"><div class="empty">Cargando capturas…</div></div>
+        </article>
 
         <article class="panel ledger-panel">
           <div class="panel-heading"><div><p class="kicker">FUENTES PRIMARIAS</p><h2>Activos registrados en custodia</h2></div><span id="asset-count" class="counter">0</span></div>
@@ -294,6 +299,6 @@
   </div>
 
   <dialog id="asset-dialog" class="detail-dialog"><button class="dialog-close" data-close-dialog aria-label="Cerrar">×</button><div id="asset-dialog-content"></div></dialog>
-  <script src="/static/app.js?v=fase-a-1"></script>
+  <script src="/static/app.js?v=fase-b-1"></script>
 </body>
 </html>

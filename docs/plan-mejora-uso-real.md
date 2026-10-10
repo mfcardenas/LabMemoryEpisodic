@@ -146,7 +146,7 @@ con progreso visible.
 
 Cada fase termina con algo que se puede **usar** desde el navegador.
 
-### Fase A — Saneamiento (1–2 días)
+### Fase A — Saneamiento (1–2 días) · ✅ hecha (2026-10-10)
 
 - Sacar del repositorio `episodic-data/` (BD e índice versionados por error)
   y revisar `.gitignore`.
@@ -164,7 +164,15 @@ Cada fase termina con algo que se puede **usar** desde el navegador.
 
 Salida: suite verde, repo limpio, README de cinco minutos.
 
-### Fase B — La captura como episodio (2–3 días)
+### Fase B — La captura como episodio (2–3 días) · ✅ hecha (2026-10-10)
+
+Implementado: tabla `captures` y `jobs` (migración v6), `CaptureService`,
+`CaptureProcessingService`, `JobRunner` con conexión SQLite propia y
+reanudación al arrancar, `DeterministicEpisodeComposer.compose_capture`,
+`LifecycleService.index_episodes`, `POST/GET /api/captures`,
+`GET /api/jobs/{id}`, `epigraph capture` y el front de subida múltiple.
+Pendiente menor: límite de tamaño de subida y limpieza de activos si falla
+el registro de una captura a mitad.
 
 - Subida múltiple: un formulario, varios archivos, una `CaptureSession`.
 - Episodio creado por captura. Retirar la recomposición global por ambiente

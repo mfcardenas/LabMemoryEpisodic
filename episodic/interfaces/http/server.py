@@ -3,11 +3,12 @@ from __future__ import annotations
 
 import logging
 import mimetypes
+from contextlib import asynccontextmanager
 import shutil
 import tempfile
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from fastapi import FastAPI, File, Form, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
@@ -15,6 +16,12 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import ValidationError
 
+from episodic.application.captures import (
+    CAPTURE_JOB_KIND,
+    CAPTURE_STAGES,
+    CaptureConflictError,
+    CaptureFile,
+)
 from episodic.bootstrap import AppContainer, create_app_container
 from episodic.config import EpisodicConfig
 from episodic.domain.times import Interval, TimeSpec
@@ -53,10 +60,24 @@ def create_api_app(
     if container is None:
         container = create_app_container(config, use_fake_encoders=use_fake_encoders)
 
+    job_runner = getattr(container, "job_runner", None)
+
+    @asynccontextmanager
+    async def lifespan(_app: FastAPI):
+        # La cola reanuda al arrancar los trabajos que quedaron pendientes.
+        if job_runner is not None:
+            job_runner.start()
+        try:
+            yield
+        finally:
+            if job_runner is not None:
+                job_runner.stop()
+
     app = FastAPI(
         title="Memory Episodic API",
         version="0.1.0",
         description="Sistema de memoria episódica multimodal, auditable y basada en evidencia.",
+        lifespan=lifespan,
     )
 
     # CORS para facilitar desarrollo y frontend local
@@ -317,6 +338,108 @@ def create_api_app(
             file.file.close()
             if temporary_path is not None:
                 temporary_path.unlink(missing_ok=True)
+
+    # -----------------------------------------------------------------------
+    # Capturas (una subida conjunta = un episodio) y trabajos asíncronos
+    # -----------------------------------------------------------------------
+
+    def job_response(job) -> Dict[str, Any]:
+        return {**job.to_dict(), "progress": job.progress}
+
+    def capture_response(capture) -> Dict[str, Any]:
+        jobs = container.repository.list_jobs(target_id=capture.id)
+        assets = [
+            asset
+            for asset_id in capture.asset_ids
+            if (asset := container.repository.get_asset(asset_id)) is not None
+        ]
+        return {
+            **capture.to_dict(),
+            "assets": [
+                {
+                    "id": asset.id,
+                    "original_filename": asset.original_filename,
+                    "media_type": asset.media_type.value,
+                    "mime_type": asset.mime_type,
+                    "source_id": asset.source_id,
+                    "duration_seconds": asset.duration_seconds,
+                }
+                for asset in assets
+            ],
+            "job": job_response(jobs[-1]) if jobs else None,
+        }
+
+    @app.post("/api/captures", status_code=202)
+    def create_capture(
+        files: List[UploadFile] = File(...),
+        environment_id: str = Form(...),
+        title: Optional[str] = Form(None),
+        captured_at: Optional[datetime] = Form(None),
+        window_duration_seconds: float = Form(60.0, gt=0),
+        overlap_seconds: float = Form(5.0, ge=0),
+    ):
+        if job_runner is None:
+            raise HTTPException(status_code=503, detail="Cola de trabajos no disponible")
+        if not environment_id.strip():
+            raise HTTPException(status_code=422, detail="environment_id es obligatorio")
+        incoming_dir = container.config.data_path / ".incoming"
+        incoming_dir.mkdir(parents=True, exist_ok=True)
+        temporary_paths: List[Path] = []
+        try:
+            capture_files: List[CaptureFile] = []
+            for upload in files:
+                original_name = Path(upload.filename or "archivo.bin").name
+                with tempfile.NamedTemporaryFile(
+                    dir=incoming_dir, suffix=Path(original_name).suffix, delete=False
+                ) as temporary:
+                    shutil.copyfileobj(upload.file, temporary)
+                    temporary_paths.append(Path(temporary.name))
+                capture_files.append(CaptureFile(temporary_paths[-1], original_name))
+            capture = container.capture_service.register(
+                capture_files,
+                environment_id=environment_id,
+                title=title,
+                captured_at=captured_at,
+                window_duration_seconds=window_duration_seconds,
+                overlap_seconds=overlap_seconds,
+            )
+        except CaptureConflictError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        finally:
+            for upload in files:
+                upload.file.close()
+            for path in temporary_paths:
+                path.unlink(missing_ok=True)
+        job_runner.submit(CAPTURE_JOB_KIND, capture.id, CAPTURE_STAGES)
+        return capture_response(capture)
+
+    @app.get("/api/captures")
+    def list_captures(
+        environment_id: Optional[str] = None,
+        limit: int = Query(50, ge=1, le=200),
+    ):
+        return {
+            "captures": [
+                capture_response(item)
+                for item in container.repository.list_captures(environment_id, limit)
+            ]
+        }
+
+    @app.get("/api/captures/{capture_id}")
+    def get_capture(capture_id: str):
+        capture = container.repository.get_capture(capture_id)
+        if capture is None:
+            raise HTTPException(status_code=404, detail="Captura no encontrada")
+        return capture_response(capture)
+
+    @app.get("/api/jobs/{job_id}")
+    def get_job(job_id: str):
+        job = container.repository.get_job(job_id)
+        if job is None:
+            raise HTTPException(status_code=404, detail="Trabajo no encontrado")
+        return job_response(job)
 
     @app.get("/api/memory/assets")
     def list_memory_assets(environment_id: Optional[str] = None):

@@ -158,7 +158,7 @@ def test_migration_v2_preserves_legacy_observation(tmp_path) -> None:
     finally:
         repository.close()
 
-    assert versions == {1, 2, 3, 4, 5}
+    assert versions == {1, 2, 3, 4, 5, 6}
     assert source is not None
     assert source.environment_id == "env-legacy-default"
     assert observation is not None
