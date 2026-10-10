@@ -19,3 +19,5 @@ __pycache__/
 
 episodic-data/* 
 .pytest_cache/
+
+sc-on-device-ai-memory
