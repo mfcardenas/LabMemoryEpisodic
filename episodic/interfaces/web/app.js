@@ -6,6 +6,9 @@ document.addEventListener("DOMContentLoaded", () => {
     episodes: [],
     nextCursor: null,
     activeEpisode: null,
+    inspectedEpisode: null,
+    inspectRequest: 0,
+    episodesRequest: 0,
     episodeGroupMode: "blocks",
     timelineZoom: 1,
     timelineRawData: null,
@@ -286,6 +289,7 @@ document.addEventListener("DOMContentLoaded", () => {
     const loadAllBtn = $("#load-all-episodes");
     if (loadMoreBtn) loadMoreBtn.disabled = true;
     if (loadAllBtn) loadAllBtn.disabled = true;
+    const requestToken = ++state.episodesRequest;
 
     try {
       let cursor = append ? state.nextCursor : null;
@@ -301,7 +305,10 @@ document.addEventListener("DOMContentLoaded", () => {
         cursor = data.next_cursor || null;
       } while (loadAll && cursor);
 
+      if (requestToken !== state.episodesRequest) return;
       state.episodes = episodesToKeep;
+      // Recarga completa: el detalle visible también se vuelve a pedir.
+      if (!append) state.inspectedEpisode = null;
       state.nextCursor = cursor;
       $("#episode-count").textContent = state.episodes.length;
       updateEpisodeDeltaMetrics(state.episodes);
@@ -408,9 +415,9 @@ document.addEventListener("DOMContentLoaded", () => {
       return;
     }
 
-    const targetId = filtered.some(item => item.id === selectedId)
-      ? selectedId
-      : (filtered.some(item => item.id === state.activeEpisode) ? state.activeEpisode : filtered[0].id);
+    // Un episodio pedido explícitamente se inspecciona aunque no esté en las
+    // páginas cargadas: el detalle se obtiene por ID, no de la lista.
+    const targetId = selectedId || state.activeEpisode || filtered[0].id;
 
     if (state.episodeGroupMode === "blocks") {
       const groups = new Map();
@@ -443,8 +450,19 @@ document.addEventListener("DOMContentLoaded", () => {
       });
     });
 
-    if (targetId) {
+    // Filtrar u ordenar no debe volver a pedir el detalle ya mostrado.
+    if (targetId && targetId !== state.inspectedEpisode) {
       inspectEpisode(targetId);
+    }
+  }
+
+  function openEpisode(episodeId) {
+    state.activeEpisode = episodeId;
+    if (location.hash !== "#episodes") {
+      // hashchange -> switchView -> loadEpisodes(state.activeEpisode): una sola carga.
+      location.hash = "episodes";
+    } else {
+      loadEpisodes(episodeId).catch(showEpisodeError);
     }
   }
 
@@ -516,10 +534,14 @@ document.addEventListener("DOMContentLoaded", () => {
 
   async function inspectEpisode(episodeId) {
     state.activeEpisode = episodeId;
+    state.inspectedEpisode = episodeId;
+    const requestToken = ++state.inspectRequest;
     $$(".episode-item").forEach(item => item.classList.toggle("active", item.dataset.episodeId === episodeId));
     const root = $("#episode-inspector"); root.innerHTML = '<div class="empty roomy">Reconstruyendo trazabilidad…</div>';
     try {
       const data = await loadEpisodeDetail(episodeId);
+      // Una selección posterior ganó la carrera: no pintar un detalle obsoleto.
+      if (requestToken !== state.inspectRequest) return;
       const episode = data.episode;
       const referencesById = new Map(data.evidence_references.map(reference => [reference.id, reference]));
       const assetsById = new Map(data.assets.map(asset => [asset.id, asset]));
@@ -575,7 +597,11 @@ document.addEventListener("DOMContentLoaded", () => {
         ${hypothesesHtml}
         <details class="episode-structure"><summary><span>Cómo se construyó este episodio</span><small>Reglas deterministas y microepisodios</small></summary><div class="structure-content">${structureHtml}</div></details>
         <details class="technical-details episode-technical"><summary>Identificadores y datos técnicos</summary><dl><dt>ID del episodio</dt><dd>${esc(episode.id)}</dd><dt>Productor</dt><dd>${esc(episode.producer || "—")}</dd><dt>Versión</dt><dd>${esc(episode.model_version || "—")}</dd><dt>Confianza</dt><dd>${episode.confidence ?? "—"}</dd><dt>Qdrant</dt><dd>${data.compatibility_mode ? "No consultado" : data.vector_projection.indexed ? "Indexado" : "Pendiente"}</dd><dt>Relaciones</dt><dd>${data.relations.length}</dd></dl></details>`;
-    } catch (error) { root.innerHTML = `<div class="empty roomy"><b>Error</b><span>${esc(error.message)}</span></div>`; }
+    } catch (error) {
+      if (requestToken !== state.inspectRequest) return;
+      state.inspectedEpisode = null;
+      root.innerHTML = `<div class="empty roomy"><b>Error</b><span>${esc(error.message)}</span></div>`;
+    }
   }
 
   function evidenceLocator(reference) {
@@ -734,8 +760,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
     $$(".time-block, .timeline-record").forEach(element => element.addEventListener("click", () => {
       if (element.dataset.kind !== "episode") return;
-      location.hash = "episodes";
-      loadEpisodes(element.dataset.id);
+      openEpisode(element.dataset.id);
     }));
   }
 
@@ -919,17 +944,17 @@ document.addEventListener("DOMContentLoaded", () => {
     const toolName = $("#tool-select").value;
     const formData = new FormData(event.currentTarget);
     const payload = {};
+    const def = TOOL_DEFS.find(t => t.name === toolName);
+    const fieldTypes = new Map((def?.fields || []).map(f => [f.name, f.type]));
 
     for (const [key, value] of formData.entries()) {
       if (value === "") continue;
-      if (value === "on") { payload[key] = true; continue; }
-      if (!isNaN(value) && value.trim() !== "") {
-        payload[key] = Number(value);
-      } else {
-        payload[key] = value;
-      }
+      const type = fieldTypes.get(key);
+      // Solo los campos numéricos se convierten: un ID "123" sigue siendo texto.
+      if (type === "checkbox") payload[key] = true;
+      else if (type === "number") payload[key] = Number(value);
+      else payload[key] = value;
     }
-    const def = TOOL_DEFS.find(t => t.name === toolName);
     if (def) {
       def.fields.filter(f => f.type === "checkbox").forEach(f => {
         if (!(f.name in payload)) payload[f.name] = false;
@@ -1036,7 +1061,7 @@ document.addEventListener("DOMContentLoaded", () => {
     if (!data.results.length) { root.innerHTML = '<div class="empty roomy">Sin candidatos. Comprueba que los episodios estén indexados.</div>'; return; }
     root.innerHTML = data.results.map(item => `<article class="result-card"><div class="result-head"><span class="result-rank">${item.rank}</span><div><h3>${esc(item.episode.title)}</h3><small>${esc(item.match_kinds.join(" · "))}</small></div><div class="score-stack">${score("Semántica", item.scores.semantic, "semantic")}${score("Estructura", item.scores.structured)}${score("Tiempo", item.scores.temporal)}${score("Relación", item.scores.relational)}</div></div>
       <div class="result-body"><div><b>Observaciones canónicas</b><ul>${item.observations.map(obs => `<li>${esc(obs.observation_type)} · ${esc(obs.description || obs.content)}</li>`).join("") || "<li>Sin observaciones</li>"}</ul></div><div class="evidence-list"><b>EVIDENCIAS</b><br>${item.evidence_references.map(ref => `${esc(ref.reference_kind)} · ${esc(shortId(ref.id))}`).join("<br>") || "Sin evidencia"}<br><br><button class="button ghost result-open" data-episode-id="${esc(item.episode.id)}">Inspeccionar episodio</button></div></div></article>`).join("");
-    $$(".result-open").forEach(button => button.addEventListener("click", () => { switchView("episodes"); loadEpisodes(button.dataset.episodeId); }));
+    $$(".result-open").forEach(button => button.addEventListener("click", () => openEpisode(button.dataset.episodeId)));
   }
   function score(label, value, cls = "") { return value === null || value === undefined ? "" : `<span class="score ${cls}">${label} ${Number(value).toFixed(3)}</span>`; }
 
@@ -1045,9 +1070,11 @@ document.addEventListener("DOMContentLoaded", () => {
     $("#runtime-details").innerHTML = `<dt>Punto de control</dt><dd>${esc(project.checkpoint)}</dd><dt>Backend</dt><dd>${esc(health.vector_backend)}</dd><dt>Colección</dt><dd>${esc(health.collection_name)}</dd><dt>Generación</dt><dd>${esc(health.active_generation || "—")}</dd><dt>Puntos activos</dt><dd>${health.qdrant_points_count}</dd><dt>Indexadas</dt><dd>${indexing.indexed}</dd><dt>Pendientes</dt><dd>${indexing.pending}</dd><dt>Fallidas</dt><dd>${indexing.failed}</dd>`;
   }
   $("#rebuild-index").addEventListener("click", async event => {
-    event.currentTarget.disabled = true; event.currentTarget.textContent = "Reconstruyendo…";
+    // currentTarget vale null tras el primer await: se conserva la referencia.
+    const button = event.currentTarget;
+    button.disabled = true; button.textContent = "Reconstruyendo…";
     try { await api("/api/rebuild-index", {method: "POST"}); await loadSystem(); } catch (error) { alert(error.message); }
-    finally { event.currentTarget.disabled = false; event.currentTarget.textContent = "Reconstruir Qdrant desde SQLite"; }
+    finally { button.disabled = false; button.textContent = "Reconstruir Qdrant desde SQLite"; }
   });
 
   $("#refresh-all").addEventListener("click", async () => { await Promise.all([loadHealth(), loadScope(), loadAssets()]); if ($("#view-timeline").classList.contains("active")) loadTimeline(); });

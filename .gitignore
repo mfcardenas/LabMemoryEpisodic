@@ -1,23 +1,23 @@
-.runtime
-.pytest-tmp*
+# Python
 __pycache__/
+*.py[cod]
+*.egg-info/
 .venv/
-.venv
-.vscode
+.pytest_cache/
+.pytest-tmp*/
+
+# Entorno local
 .env
-.env.example
+.vscode/
 
-*.pyc
-*.pyo
-*.pyd
+# Datos generados por EpiGraph (memoria, índice, medios y ejecuciones)
+episodic-data/
+.runtime/
+scratch_uploads/
 
-# Logs
+# Logs y SO
 *.log
-
-# OS generated files
 .DS_Store
 
-episodic-data/* 
-.pytest_cache/
-
-sc-on-device-ai-memory
+# Referencia robot: fuera de alcance por ahora
+sc-on-device-ai-memory/sc-on-device-ai-memory/

@@ -117,7 +117,7 @@ class FilesystemEvidenceStore:
         # Evitar path traversal
         clean_rel = Path(internal_uri.replace("/", os.sep).replace("\\", os.sep))
         resolved = (self.media_dir / clean_rel).resolve()
-        if not str(resolved).startswith(str(self.media_dir)):
+        if not resolved.is_relative_to(self.media_dir):
             raise ValueError(f"Ruta de evidencia inválida (escape de directorio): {internal_uri}")
         return resolved
 

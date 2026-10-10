@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import mimetypes
 import shutil
 import tempfile
 from datetime import datetime
@@ -19,6 +20,7 @@ from episodic.config import EpisodicConfig
 from episodic.domain.times import Interval, TimeSpec
 from episodic.domain.retrieval import HybridSearchFilters
 from episodic.domain.types import (
+    EvidenceMediaType,
     EvidenceState,
     ProvenanceKind,
     SearchIntent,
@@ -83,6 +85,23 @@ def create_api_app(
         except Exception:
             logger.debug("No se pudo resolver la colección física activa", exc_info=True)
         return str(collection_name)
+
+    def image_evidence_path(evidence_id: Optional[str]) -> Optional[str]:
+        """Resuelve una evidencia de imagen vigente; nunca acepta rutas del cliente."""
+        if not evidence_id:
+            return None
+        evidence = container.repository.get_evidence(evidence_id)
+        if evidence is None or evidence.state == EvidenceState.DELETED or not evidence.internal_uri:
+            raise HTTPException(status_code=404, detail="Evidencia de imagen no encontrada")
+        if evidence.media_type != EvidenceMediaType.IMAGE:
+            raise HTTPException(status_code=422, detail="La evidencia de consulta debe ser una imagen")
+        try:
+            path = container.evidence_store.resolve_path(evidence.internal_uri)
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail="Evidencia de imagen no encontrada") from exc
+        if not path.is_file():
+            raise HTTPException(status_code=404, detail="Archivo de evidencia no disponible")
+        return str(path)
 
     def query_run_response(run) -> QueryRunResponse:
         results_dto = []
@@ -170,7 +189,7 @@ def create_api_app(
         project_root = Path(__file__).resolve().parents[3]
         episodic_present = (project_root / "episodic" / "bootstrap.py").is_file()
         legacy_rag_present = all(
-            (project_root / path).is_file()
+            (project_root / "legacy" / "rag" / path).is_file()
             for path in ("agent/rag_agent.py", "api/server.py", "storage/qdrant_store.py")
         )
         integrated_robot_present = (project_root / "robot" / "robot.py").is_file()
@@ -196,7 +215,7 @@ def create_api_app(
                 state="isolated" if legacy_rag_present else "missing",
                 present=legacy_rag_present,
                 integrated=False,
-                detail="Código conservado, todavía aislado del contrato de memoria episódica.",
+                detail="Código conservado en legacy/rag, aislado del contrato de memoria episódica.",
             ),
             ProjectComponentStatus(
                 id="robot",
@@ -414,7 +433,7 @@ def create_api_app(
 
         run = container.retrieval_service.search(
             text_query=req.text_query,
-            image_query_path=req.image_query_path,
+            image_query_path=image_evidence_path(req.image_evidence_id),
             intent=intent,
             source_filter=req.source_filter,
             interval_filter=interval_filter,
@@ -636,16 +655,14 @@ def create_api_app(
         if not ev.internal_uri:
             raise HTTPException(status_code=404, detail="La evidencia no tiene archivo asociado")
 
-        file_path = container.evidence_store.resolve_path(ev.internal_uri)
-        if not file_path.exists():
+        try:
+            file_path = container.evidence_store.resolve_path(ev.internal_uri)
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail="Archivo físico de evidencia no encontrado") from exc
+        if not file_path.is_file():
             raise HTTPException(status_code=404, detail="Archivo físico de evidencia no encontrado")
 
-        media_type = "image/png"
-        if file_path.suffix.lower() in [".jpg", ".jpeg"]:
-            media_type = "image/jpeg"
-        elif file_path.suffix.lower() == ".txt":
-            media_type = "text/plain"
-
+        media_type = mimetypes.guess_type(file_path.name)[0] or "application/octet-stream"
         return FileResponse(file_path, media_type=media_type)
 
     # -----------------------------------------------------------------------

@@ -226,3 +226,22 @@ def test_dashboard_exposes_canonical_epigraph_workflow() -> None:
     assert "Contenido extraído" in javascript
     assert "Archivos y fuentes" in javascript
     assert "Fuente simulada: no existe un fichero físico" in javascript
+
+
+def test_search_never_accepts_client_file_paths() -> None:
+    container = build_container()
+    container.repository.get_evidence = lambda _evidence_id: None
+    client = TestClient(create_api_app(container=container))
+
+    by_path = client.post(
+        "/api/search",
+        json={"text_query": "pasillo", "image_query_path": "C:/Windows/win.ini"},
+    )
+    unknown_evidence = client.post(
+        "/api/search",
+        json={"text_query": "pasillo", "image_evidence_id": "no-existe"},
+    )
+
+    assert by_path.status_code == 200
+    assert container.retrieval_service.last_kwargs["image_query_path"] is None
+    assert unknown_evidence.status_code == 404

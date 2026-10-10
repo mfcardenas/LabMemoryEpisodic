@@ -37,6 +37,21 @@ from episodic.ports.repository import EpisodicRepository, EvidenceStore
 logger = logging.getLogger(__name__)
 
 
+def _resolve_manifest_file(base_dir: Optional[Path], rel_file: str) -> Path:
+    """Resuelve una ruta del manifiesto sin permitir escapes ni ficheros ausentes."""
+    if base_dir is None:
+        raise ValueError(
+            f"La evidencia '{rel_file}' referencia un archivo, pero el manifiesto "
+            "no tiene directorio base; use contenido inline o un manifiesto en disco"
+        )
+    abs_file = (base_dir / rel_file).resolve()
+    if not abs_file.is_relative_to(base_dir):
+        raise ValueError(f"Ruta de evidencia fuera del directorio del manifiesto: {rel_file}")
+    if not abs_file.is_file():
+        raise ValueError(f"Archivo de evidencia inexistente: {rel_file}")
+    return abs_file
+
+
 class IngestService:
     """Servicio de aplicación para ingesta de datos episódicos."""
 
@@ -66,10 +81,10 @@ class IngestService:
                 data = json.load(f)
         else:
             data = manifest_data
-            if base_dir is None:
-                base_dir = Path.cwd()
 
-        base_dir = Path(base_dir).resolve()
+        # Sin raíz declarada, un manifiesto en memoria solo admite contenido
+        # inline: nunca se resuelven rutas contra el directorio de trabajo.
+        base_dir = Path(base_dir).resolve() if base_dir is not None else None
         stats = {
             "sources": 0,
             "sessions": 0,
@@ -177,17 +192,17 @@ class IngestService:
                     content_hash = ""
                     file_size = 0
 
-                    if rel_file:
-                        abs_file = (base_dir / rel_file).resolve()
-                        if abs_file.exists():
-                            internal_uri, content_hash, file_size = self.evidence_store.store_file(abs_file)
-                        else:
-                            # Si es un recurso sintético o simulado que no está en disco
-                            synthetic_content = ev_data.get("content", f"Synthetic media for {rel_file}".encode())
-                            if isinstance(synthetic_content, str):
-                                synthetic_content = synthetic_content.encode("utf-8")
-                            internal_uri, content_hash = self.evidence_store.store(synthetic_content, rel_file)
-                            file_size = len(synthetic_content)
+                    if rel_file and "content" in ev_data:
+                        # Contenido declarado inline en el propio manifiesto.
+                        inline_content = ev_data["content"]
+                        if isinstance(inline_content, str):
+                            inline_content = inline_content.encode("utf-8")
+                        internal_uri, content_hash = self.evidence_store.store(inline_content, rel_file)
+                        file_size = len(inline_content)
+                    elif rel_file:
+                        internal_uri, content_hash, file_size = self.evidence_store.store_file(
+                            _resolve_manifest_file(base_dir, rel_file)
+                        )
 
                     media_type_str = ev_data.get("media_type", "image").lower()
                     try:

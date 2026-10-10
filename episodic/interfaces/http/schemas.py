@@ -8,7 +8,10 @@ from pydantic import BaseModel, Field, model_validator
 
 class SearchRequest(BaseModel):
     text_query: Optional[str] = Field(None, description="Texto de búsqueda")
-    image_query_path: Optional[str] = Field(None, description="Ruta a imagen de consulta")
+    image_evidence_id: Optional[str] = Field(
+        None,
+        description="ID de una evidencia de imagen ya almacenada que se usa como consulta",
+    )
     intent: str = Field("semantic_search", description="semantic_search, interval_search, last_observation, timeline")
     source_filter: Optional[List[str]] = Field(None, description="Filtrar por IDs de fuente")
     start_time: Optional[datetime] = Field(None, description="Inicio de intervalo ISO UTC")
