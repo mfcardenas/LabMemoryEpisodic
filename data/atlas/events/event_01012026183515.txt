@@ -1,0 +1,10 @@
+Episodio 10. Detección de la desaparición
+ID: ATLAS-EP-010
+Intervalo: 18:36:30 a 18:44:12
+Fuentes: C03 Laboratorio, fotografías F001 a F014, inventario, registro de accesos
+Ubicación: Laboratorio Atlas
+Texto indexable:
+Después de finalizar la alarma, Laura Méndez regresa al Laboratorio Atlas. A las 18:37:11 abre el armario C12 y comprueba que el portátil O01 no se encuentra en su interior. La puerta del armario no presenta daños visibles. La llave permanece introducida en la cerradura por la parte exterior, circunstancia que P01 afirma no recordar.
+Las fotografías posteriores muestran un fragmento de precinto rojo en la esquina inferior del armario. El OCR aplicado a F007 y F009 recupera los caracteres 8419, compatibles con el precinto S88419 de O02. También aparece una marca de suciedad con patrón parcial de suela blanca cerca del armario, pero su calidad no permite compararla de forma concluyente con el calzado observado en PX1 y PX2.
+El registro de acceso confirma que B0714 abrió D-LAB-2 durante la alarma. La credencial estaba asignada a una empresa de mantenimiento, pero no consta ninguna intervención programada. O01 y O02 no vuelven a aparecer en las fuentes disponibles.
+Etiquetas: desaparición, fotografías, precinto, huella_parcial, credencial, evidencia_posterior

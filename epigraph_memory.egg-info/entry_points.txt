@@ -1,0 +1,2 @@
+[console_scripts]
+epigraph = episodic.interfaces.cli.commands:main

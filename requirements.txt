@@ -1,0 +1,17 @@
+# Compatibilidad para entornos Conda/pip. Este fichero y pyproject.toml fijan
+# las versiones directas verificadas para EpiGraph Fase 1.
+pydantic==2.13.5
+pydantic-settings==2.15.0
+fastapi==0.142.2
+uvicorn==0.54.0
+python-multipart==0.0.32
+requests==2.34.2
+qdrant-edge-py==0.7.2
+qdrant-client==1.19.1
+fastembed==0.8.0
+onnxruntime==1.27.0
+numpy==2.5.1
+Pillow==12.3.0
+pypdf==6.19.0
+httpx==0.28.1
+pytest==9.1.1

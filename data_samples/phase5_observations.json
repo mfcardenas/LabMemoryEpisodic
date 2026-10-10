@@ -1,0 +1,121 @@
+{
+  "environment_id": "laboratorio_fase5",
+  "synchronized_source_groups": [["camera_A", "camera_B"]],
+  "observations": [
+    {
+      "id": "obs-action-across-window-1",
+      "source_id": "camera_A",
+      "window": "camera_A_window_1",
+      "start_offset": 1.0,
+      "end_offset": 4.0,
+      "action": "loosen_bolt",
+      "entity_id": "wheel_bolt",
+      "description": "La operaria comienza a aflojar el tornillo.",
+      "evidence": true
+    },
+    {
+      "id": "obs-action-across-window-2",
+      "source_id": "camera_A",
+      "window": "camera_A_window_2",
+      "start_offset": 4.0,
+      "end_offset": 8.0,
+      "action": "loosen_bolt",
+      "entity_id": "wheel_bolt",
+      "description": "La misma acción de aflojado continúa.",
+      "evidence": true
+    },
+    {
+      "id": "obs-same-window-action-a",
+      "source_id": "camera_A",
+      "window": "camera_A_window_2",
+      "start_offset": 9.0,
+      "end_offset": 9.8,
+      "action": "inspect_brake",
+      "entity_id": "wheel_bolt",
+      "description": "La operaria inspecciona el freno.",
+      "evidence": true
+    },
+    {
+      "id": "obs-same-window-action-b",
+      "source_id": "camera_A",
+      "window": "camera_A_window_2",
+      "start_offset": 10.0,
+      "end_offset": 10.8,
+      "action": "pick_hammer",
+      "entity_id": "hammer",
+      "description": "La operaria toma un martillo.",
+      "evidence": true
+    },
+    {
+      "id": "obs-simultaneous-camera-a",
+      "source_id": "camera_A",
+      "window": "camera_A_window_3",
+      "start_offset": 12.0,
+      "end_offset": 13.0,
+      "action": "carry_part",
+      "entity_id": "metal_part",
+      "description": "La cámara A observa el traslado de la pieza.",
+      "evidence": true
+    },
+    {
+      "id": "obs-simultaneous-camera-b",
+      "source_id": "camera_B",
+      "window": "camera_B_window_1",
+      "start_offset": 12.0,
+      "end_offset": 13.0,
+      "action": "carry_part",
+      "entity_id": "metal_part",
+      "description": "La cámara B observa simultáneamente el traslado.",
+      "evidence": true
+    },
+    {
+      "id": "obs-relevant-acoustic-event",
+      "source_id": "microphone_A",
+      "window": "microphone_A_window_1",
+      "start_offset": 14.0,
+      "end_offset": 14.2,
+      "action": "metal_impact",
+      "entity_id": "metal_part",
+      "description": "Se registra un impacto metálico relevante.",
+      "evidence": true,
+      "modality": "audio",
+      "acoustic_relevance": 0.95
+    },
+    {
+      "id": "obs-interval-without-evidence",
+      "source_id": "camera_A",
+      "window": "camera_A_window_3",
+      "start_offset": 15.0,
+      "end_offset": 16.0,
+      "action": "close_door",
+      "entity_id": "workshop_door",
+      "description": "Intervalo declarado sin referencia de evidencia.",
+      "evidence": false
+    },
+    {
+      "id": "obs-presence",
+      "source_id": "camera_A",
+      "window": "camera_A_window_3",
+      "start_offset": 18.0,
+      "end_offset": 19.0,
+      "action": "inspect_part",
+      "state": "present",
+      "entity_id": "metal_part",
+      "description": "La pieza metálica está presente en la mesa.",
+      "evidence": true
+    },
+    {
+      "id": "obs-contradiction",
+      "source_id": "camera_B",
+      "window": "camera_B_window_1",
+      "start_offset": 18.1,
+      "end_offset": 19.0,
+      "action": "inspect_part",
+      "state": "absent",
+      "entity_id": "metal_part",
+      "description": "La pieza metálica no aparece en el segundo ángulo.",
+      "evidence": true,
+      "contradicts_observation_ids": ["obs-presence"]
+    }
+  ]
+}

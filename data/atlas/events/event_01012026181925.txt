@@ -1,0 +1,9 @@
+Episodio 1. Llegada del visitante
+ID: ATLAS-EP-001
+Intervalo: 18:01:33 a 18:03:10
+Fuentes: C01 Entrada, C02 Recepción, audio C02
+Ubicación: Entrada principal y recepción
+Texto indexable:
+A las 18:01:33, Laura Méndez entra en el edificio por la puerta principal. Lleva un abrigo beige, una bufanda verde, una carpeta transparente y una bolsa pequeña de tela. La cámara C01 obtiene una imagen frontal suficiente para asociarla con P01. Catorce segundos después entra una persona no identificada con chaqueta azul marino, pantalón oscuro, zapatillas con suela blanca y una mochila oscura atravesada por una franja reflectante plateada. Esta persona queda registrada como PX1 y la mochila como O03.
+En recepción, PX1 pregunta por una persona llamada Sergio y afirma tener una reunión a las 18:15. El recepcionista consulta el sistema y responde que no consta ninguna cita. PX1 decide esperar sentado junto al mostrador. Durante la conversación mira dos veces hacia el pasillo este. No se observa interacción previa entre P01 y PX1. El nombre proporcionado por el visitante no aparece confirmado en ninguna fuente adicional.
+Etiquetas: entrada, visitante, persona_desconocida, mochila, audio, recepción

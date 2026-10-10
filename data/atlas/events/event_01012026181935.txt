@@ -1,0 +1,9 @@
+Episodio 2. Entrega de la caja de archivo
+ID: ATLAS-EP-002
+Intervalo: 18:05:42 a 18:08:11
+Fuentes: C05 Muelle de carga, C02 Recepción, audio C02
+Ubicación: Muelle y recepción
+Texto indexable:
+A las 18:05:42, una furgoneta blanca de mensajería se detiene en el muelle de carga. Daniel Ríos, identificado como P02, baja del vehículo con un chaleco amarillo de alta visibilidad y transporta una caja de archivo gris. La cámara C05 muestra un precinto rojo en la tapa. El OCR aplicado a tres fotogramas recupera parcialmente el código S88419, con mayor confianza en los últimos cinco caracteres.
+P02 accede a recepción y entrega la caja al recepcionista. El albarán visible contiene la referencia ARQ-2026-118, el destino “Laboratorio Atlas” y una firma manuscrita no reconocida. La caja queda temporalmente detrás del mostrador. PX1 permanece sentado a unos tres metros. Durante la entrega gira la cabeza hacia la caja y después consulta su teléfono. No se observa contacto físico con O02. P02 regresa al muelle porque la aplicación de entrega no confirma el cierre de la operación.
+Etiquetas: mensajería, caja, precinto, OCR, albarán, laboratorio_atlas

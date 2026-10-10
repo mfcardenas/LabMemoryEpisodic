@@ -1,0 +1,11 @@
+{
+  "environment": "laboratorio_01",
+  "source": "registro_manual_01",
+  "observations": [
+    {
+      "object": "pipeta",
+      "color": "rosada",
+      "state": "presente"
+    }
+  ]
+}

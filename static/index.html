@@ -1,0 +1,303 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>LabMemory - RAG Híbrido Multidominio & Agente Qwen/gpt-oss</title>
+    <meta name="description" content="Dashboard para RAG Híbrido con Qdrant, Ollama, segmentación con metadatos personalizados y recuperación mediante agentes.">
+    <!-- Google Fonts: Inter & JetBrains Mono -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/static/index.css">
+</head>
+<body>
+    <div class="app-layout">
+        <!-- Sidebar Navigation -->
+        <aside class="sidebar">
+            <div class="brand">
+                <div class="brand-icon">
+                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/>
+                    </svg>
+                </div>
+                <div>
+                    <h1>LabMemory</h1>
+                    <span class="brand-subtitle">RAG Híbrido + Qdrant</span>
+                </div>
+            </div>
+
+            <!-- System Status Widget -->
+            <div class="status-widget" id="status-widget">
+                <div class="status-item">
+                    <span class="status-dot" id="qdrant-status-dot"></span>
+                    <span class="status-label">Qdrant (6333)</span>
+                </div>
+                <div class="status-item">
+                    <span class="status-dot" id="ollama-status-dot"></span>
+                    <span class="status-label">Ollama (11434)</span>
+                </div>
+                <div class="status-meta" id="status-meta">
+                    <small id="active-llm-label">LLM: gpt-oss</small>
+                </div>
+            </div>
+
+            <!-- Navigation Tabs -->
+            <nav class="nav-tabs" role="tablist">
+                <button class="nav-tab active" id="tab-btn-agent" data-tab="tab-agent" role="tab">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/>
+                    </svg>
+                    <span>Agente & Consulta</span>
+                </button>
+                <button class="nav-tab" id="tab-btn-indexer" data-tab="tab-indexer" role="tab">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="12" y1="18" x2="12" y2="12"/><line x1="9" y1="15" x2="15" y2="15"/>
+                    </svg>
+                    <span>Indexador & Metadatos</span>
+                </button>
+                <button class="nav-tab" id="tab-btn-domains" data-tab="tab-domains" role="tab">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <rect x="2" y="2" width="20" height="8" rx="2" ry="2"/><rect x="2" y="14" width="20" height="8" rx="2" ry="2"/><line x1="6" y1="6" x2="6.01" y2="6"/><line x1="6" y1="18" x2="6.01" y2="18"/>
+                    </svg>
+                    <span>Dominios (Colecciones)</span>
+                </button>
+            </nav>
+
+            <div class="sidebar-footer">
+                <a href="/docs" target="_blank" class="docs-link" id="api-docs-link">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/>
+                    </svg>
+                    Swagger API Docs
+                </a>
+            </div>
+        </aside>
+
+        <!-- Main Content Area -->
+        <main class="main-content">
+            <!-- TAB 1: AGENT & QUERY -->
+            <section class="tab-pane active" id="tab-agent">
+                <header class="section-header">
+                    <div>
+                        <h2>Agente Inteligente & Recuperación RRF</h2>
+                        <p class="subtitle">Búsqueda híbrida (Dense + BM25) sintetizada con modelos de lenguaje locales.</p>
+                    </div>
+                    <div class="domain-selector-box">
+                        <label for="query-domain-select">Dominio / Colección:</label>
+                        <select id="query-domain-select" class="select-input">
+                            <option value="">Cargando dominios...</option>
+                        </select>
+                    </div>
+                </header>
+
+                <div class="agent-container">
+                    <div class="query-card">
+                        <div class="mode-toggle">
+                            <button type="button" class="toggle-pill active" id="mode-agent-btn" data-mode="agent">Modo Agente (Síntesis LLM)</button>
+                            <button type="button" class="toggle-pill" id="mode-hybrid-btn" data-mode="hybrid">Solo Búsqueda Híbrida RRF</button>
+                        </div>
+
+                        <div class="input-group">
+                            <textarea id="agent-query-input" class="query-textarea" placeholder="Escribe tu pregunta o término de búsqueda (ej: ¿Cuáles son las recomendaciones de HNSW para producción?)..." rows="3"></textarea>
+                        </div>
+
+                        <!-- Advanced Metadata Filter Accordion -->
+                        <details class="filter-details" id="filter-details">
+                            <summary id="filter-summary">Filtrar por Metadatos (Opcional)</summary>
+                            <div class="filter-inputs">
+                                <p class="hint">Introduce pares clave-valor que deben coincidir (ej: author: Agente-Alpha):</p>
+                                <div class="filter-row">
+                                    <input type="text" id="filter-key-input" placeholder="Clave (ej: author)" class="text-input">
+                                    <input type="text" id="filter-val-input" placeholder="Valor (ej: Agente-Alpha)" class="text-input">
+                                </div>
+                            </div>
+                        </details>
+
+                        <div class="query-actions">
+                            <div class="limit-selector">
+                                <label for="query-limit-select">Top Chunks:</label>
+                                <select id="query-limit-select" class="select-input-sm">
+                                    <option value="2">2</option>
+                                    <option value="4" selected>4</option>
+                                    <option value="8">8</option>
+                                </select>
+                            </div>
+                            <button type="button" id="execute-query-btn" class="btn btn-primary">
+                                <span class="btn-text">Consultar Agente</span>
+                                <span class="spinner" id="query-spinner"></span>
+                            </button>
+                        </div>
+                    </div>
+
+                    <!-- Output Area -->
+                    <div class="response-container" id="response-container">
+                        <!-- Synthetic Agent Answer -->
+                        <div class="card answer-card hidden" id="answer-card">
+                            <div class="card-header">
+                                <span class="badge badge-accent" id="model-badge">gpt-oss</span>
+                                <span class="card-title">Respuesta del Agente</span>
+                            </div>
+                            <div class="card-body" id="agent-answer-text"></div>
+                        </div>
+
+                        <!-- Retrieved Chunks List -->
+                        <div class="sources-section hidden" id="sources-section">
+                            <h3 class="sources-title">Fragmentos Recuperados con Fusión RRF</h3>
+                            <div class="sources-list" id="sources-list"></div>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- TAB 2: INDEXER & METADATA -->
+            <section class="tab-pane" id="tab-indexer">
+                <header class="section-header">
+                    <div>
+                        <h2>Indexación con Metadatos Personalizados</h2>
+                        <p class="subtitle">Segmenta e inserta texto con vectores duales y diccionario de propiedades dinámicas.</p>
+                    </div>
+                    <div class="domain-selector-box">
+                        <label for="index-domain-select">Dominio Destino:</label>
+                        <select id="index-domain-select" class="select-input">
+                            <option value="">Cargando dominios...</option>
+                        </select>
+                    </div>
+                </header>
+
+                <div class="indexer-grid">
+                    <!-- Left: Content Source -->
+                    <div class="card">
+                        <div class="card-header">
+                            <span class="card-title">1. Origen del Contenido</span>
+                            <div class="source-pills">
+                                <button type="button" class="pill-sm active" id="source-file-pill" data-source="file">Subir Archivo</button>
+                                <button type="button" class="pill-sm" id="source-text-pill" data-source="text">Texto Libre</button>
+                            </div>
+                        </div>
+                        <div class="card-body">
+                            <!-- File Input Area -->
+                            <div class="file-dropzone" id="file-dropzone">
+                                <input type="file" id="file-upload-input" accept=".txt,.md,.json,.csv,.log">
+                                <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+                                    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/>
+                                </svg>
+                                <p class="dropzone-text" id="dropzone-filename">Haz clic o arrastra un fichero (.txt, .md, .json)</p>
+                            </div>
+
+                            <!-- Raw Text Input Area -->
+                            <div class="text-input-area hidden" id="raw-text-area">
+                                <label for="direct-text-input">Contenido de texto:</label>
+                                <textarea id="direct-text-input" class="code-textarea" rows="8" placeholder="Pega aquí el contenido a indexar..."></textarea>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Right: Custom Metadata Builder -->
+                    <div class="card">
+                        <div class="card-header">
+                            <span class="card-title">2. Diccionario de Metadatos</span>
+                            <button type="button" class="btn-ghost-sm" id="add-meta-row-btn">+ Añadir Clave</button>
+                        </div>
+                        <div class="card-body">
+                            <p class="hint">Estos metadatos se guardarán en el payload de Qdrant y permitirán filtrado exacto.</p>
+                            
+                            <div class="metadata-table" id="metadata-rows-container">
+                                <!-- Default preset rows -->
+                                <div class="meta-row">
+                                    <input type="text" class="meta-key text-input-sm" value="author" placeholder="Clave">
+                                    <input type="text" class="meta-val text-input-sm" value="Agente-Alpha" placeholder="Valor">
+                                    <button type="button" class="btn-remove-row">&times;</button>
+                                </div>
+                                <div class="meta-row">
+                                    <input type="text" class="meta-key text-input-sm" value="sensitivity" placeholder="Clave">
+                                    <input type="text" class="meta-val text-input-sm" value="alta" placeholder="Valor">
+                                    <button type="button" class="btn-remove-row">&times;</button>
+                                </div>
+                                <div class="meta-row">
+                                    <input type="text" class="meta-key text-input-sm" value="environment" placeholder="Clave">
+                                    <input type="text" class="meta-val text-input-sm" value="production" placeholder="Valor">
+                                    <button type="button" class="btn-remove-row">&times;</button>
+                                </div>
+                            </div>
+
+                            <button type="button" id="start-indexing-btn" class="btn btn-primary btn-block mt-4">
+                                <span class="btn-text">Indexar en Qdrant</span>
+                                <span class="spinner" id="indexing-spinner"></span>
+                            </button>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Indexing Result Feedback -->
+                <div class="index-feedback-card hidden" id="index-feedback-card">
+                    <div class="feedback-badge" id="feedback-badge">✓ Indexado</div>
+                    <div class="feedback-details" id="feedback-details"></div>
+                </div>
+            </section>
+
+            <!-- TAB 3: DOMAINS (COLLECTIONS) -->
+            <section class="tab-pane" id="tab-domains">
+                <header class="section-header">
+                    <div>
+                        <h2>Gestión de Dominios y Colecciones</h2>
+                        <p class="subtitle">Aísla diferentes memorias o bases de conocimiento en colecciones independientes en Qdrant.</p>
+                    </div>
+                </header>
+
+                <div class="domains-grid">
+                    <!-- Create Domain Form -->
+                    <div class="card create-domain-card">
+                        <div class="card-header">
+                            <span class="card-title">Crear Nuevo Dominio</span>
+                        </div>
+                        <div class="card-body">
+                            <p class="hint">Crea una colección optimizada para vectores duales (Dense 768d + Sparse BM25).</p>
+                            <div class="input-group mt-3">
+                                <label for="new-domain-input">Nombre del Dominio / Colección:</label>
+                                <input type="text" id="new-domain-input" class="text-input" placeholder="ej: memoria_episodica_v2 o doc_legal">
+                            </div>
+                            <button type="button" id="create-domain-btn" class="btn btn-secondary mt-3">
+                                <span class="btn-text">Crear Colección en Qdrant</span>
+                                <span class="spinner" id="create-domain-spinner"></span>
+                            </button>
+                        </div>
+                    </div>
+
+                    <!-- Collections List Grid -->
+                    <div class="card">
+                        <div class="card-header">
+                            <span class="card-title">Colecciones Activas</span>
+                            <button type="button" class="btn-ghost-sm" id="refresh-domains-btn">↻ Actualizar</button>
+                        </div>
+                        <div class="card-body">
+                            <div class="collections-list" id="collections-list">
+                                <p class="hint">Cargando colecciones...</p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </section>
+        </main>
+    </div>
+
+    <!-- Notification Toast -->
+    <div class="toast hidden" id="app-toast"></div>
+
+    <!-- Chunks Inspection Modal -->
+    <div class="modal hidden" id="chunks-modal">
+        <div class="modal-backdrop" id="modal-backdrop"></div>
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3 id="modal-title">Chunks en Colección</h3>
+                <button type="button" class="btn-close-modal" id="btn-close-modal">&times;</button>
+            </div>
+            <div class="modal-body" id="modal-chunks-body">
+                <p class="hint">Cargando fragmentos...</p>
+            </div>
+        </div>
+    </div>
+
+    <script src="/static/app.js"></script>
+</body>
+</html>

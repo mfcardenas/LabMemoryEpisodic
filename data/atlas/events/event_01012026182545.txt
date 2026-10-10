@@ -1,0 +1,10 @@
+Episodio 8. Tránsito por la escalera de servicio
+ID: ATLAS-EP-008
+Intervalo: 18:25:42 a 18:27:18
+Fuentes: C04 Pasillo este, C06 Escalera de servicio
+Ubicación: Pasillo y escalera
+Texto indexable:
+PX2 abandona el laboratorio con la caja gris y se dirige hacia la escalera de servicio. En la cámara C04, la caja oculta parte del torso. El precinto rojo ya no cruza completamente la tapa. Un extremo parece levantado o roto. La calidad de imagen impide leer el código.
+Al entrar en la escalera, PX2 se quita el chaleco amarillo y lo dobla sobre la caja. Debajo lleva una chaqueta azul marino. También se observa una mochila oscura con una franja reflectante plateada y zapatillas con suela blanca. Estos atributos coinciden con los registrados para PX1, pero no existe visibilidad facial ni una continuidad completa entre ambas observaciones.
+Durante un giro de la caja aparece una pequeña superficie naranja junto a la abertura de la tapa. Su color resulta compatible con la etiqueta de O01, aunque también podría corresponder a una etiqueta del contenido original. PX2 desciende hacia la salida del aparcamiento.
+Etiquetas: transición, escalera, cambio_de_ropa, precinto_roto, posible_coincidencia, objeto_naranja

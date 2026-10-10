@@ -1,0 +1,9 @@
+Episodio 3. Última observación confirmada del portátil
+ID: ATLAS-EP-003
+Intervalo: 18:11:18 a 18:14:36
+Fuentes: C03 Laboratorio, captura de pantalla del inventario
+Ubicación: Laboratorio Atlas
+Texto indexable:
+Laura Méndez utiliza un portátil negro sobre la mesa central del Laboratorio Atlas. El equipo presenta una etiqueta naranja con el identificador LAB-4721 y una pequeña fractura en la esquina inferior izquierda de la carcasa. El inventario interno vincula ese identificador con O01.
+A las 18:13:42, P01 desconecta el cable de alimentación, cierra el portátil y lo introduce en el armario metálico C12. Después cierra la puerta del armario y realiza un movimiento de muñeca compatible con el giro de una llave. La mano y la cerradura quedan parcialmente ocultas por su cuerpo. El audio registra un sonido metálico, pero no permite determinar si el mecanismo quedó bloqueado. P01 guarda un objeto pequeño en el bolsillo derecho del abrigo y abandona el laboratorio. Esta constituye la última observación directa y completa de O01 antes de su desaparición.
+Etiquetas: portátil, última_observación, armario, inventario, acción, incertidumbre

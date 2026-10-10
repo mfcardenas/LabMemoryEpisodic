@@ -1,0 +1,10 @@
+Episodio 9. Salida por el aparcamiento
+ID: ATLAS-EP-009
+Intervalo: 18:28:09 a 18:30:41
+Fuentes: C07 Aparcamiento sur
+Ubicación: Aparcamiento exterior
+Texto indexable:
+Una persona con chaqueta azul marino, mochila oscura y zapatillas de suela blanca sale por la puerta de servicio. Lleva una caja gris cubierta parcialmente con un chaleco amarillo doblado. La secuencia conserva los principales atributos visuales de PX2 y PX1, pero la cámara no obtiene una vista frontal.
+La persona deposita la caja en el asiento trasero de un vehículo compacto negro estacionado en la zona sur. La matrícula queda parcialmente oculta por una columna. El OCR obtiene las secuencias alternativas 7KJ, 7XJ y TKJ, ninguna con confianza suficiente para considerarla confirmada. El piloto trasero derecho presenta una fractura vertical y el vehículo tiene una pegatina circular blanca en la luneta.
+El automóvil abandona el aparcamiento a las 18:30:41. La furgoneta de P02 continúa estacionada en el muelle y sale cuatro minutos después por otro acceso.
+Etiquetas: vehículo, salida, matrícula_parcial, OCR, caja, atributos_visuales

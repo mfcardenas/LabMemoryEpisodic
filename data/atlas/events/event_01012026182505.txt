@@ -1,0 +1,9 @@
+Episodio 4. Cruce entre visitante y mensajero
+ID: ATLAS-EP-004
+Intervalo: 18:16:05 a 18:18:02
+Fuentes: C02 Recepción, C04 Pasillo este
+Ubicación: Recepción y acceso al pasillo
+Texto indexable:
+PX1 se levanta de la zona de espera y pregunta por los aseos. El recepcionista señala el pasillo este. PX1 recoge O03 y se dirige hacia el corredor. En ese momento, P02 regresa desde el muelle para solicitar una nueva firma en el albarán. Ambas personas se cruzan junto a la puerta del pasillo.
+P02 deja caer varias hojas y PX1 se agacha para ayudarle a recogerlas. La interacción dura aproximadamente once segundos. Las manos de ambos quedan ocultas durante parte del intervalo por el mostrador y la caja gris situada en el suelo. No existe evidencia visual suficiente para afirmar que intercambiaran objetos. Cuando PX1 se incorpora, la mochila O03 mantiene la franja reflectante visible y parece conservar un volumen similar. P02 recoge la caja O02 y la coloca de nuevo detrás del mostrador antes de regresar al muelle.
+Etiquetas: interacción, cruce, oclusiones, pasillo, mochila, mensajero

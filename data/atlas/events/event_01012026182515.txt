@@ -1,0 +1,9 @@
+Episodio 5. Activación de la alarma
+ID: ATLAS-EP-005
+Intervalo: 18:22:47 a 18:23:35
+Fuentes: C01, C02, C03, C04, C05, audio ambiental
+Ubicación: Edificio completo
+Texto indexable:
+A las 18:22:47 se activa la alarma acústica del edificio. El inicio de la sirena aparece registrado en cinco cámaras con diferencias de reloj comprendidas entre 0,8 y 4,2 segundos. El análisis del audio permite utilizar la primera señal de alarma como ancla para normalizar las marcas temporales.
+Laura Méndez sale del laboratorio y se dirige a la entrada principal junto con otros dos empleados. El recepcionista abandona el mostrador sin recoger la caja O02. P02 permanece en el muelle junto a la furgoneta y habla por teléfono. PX1 no aparece entre las personas que evacúan por la entrada principal. La cámara C04 registra una figura al fondo del pasillo este, pero la baja iluminación impide determinar su identidad. El registro del sistema clasifica posteriormente la alarma como falsa activación provocada desde un pulsador próximo a la escalera de servicio.
+Etiquetas: alarma, sincronización, evacuación, audio, ancla_temporal, ausencia

@@ -1,0 +1,120 @@
+[
+  {
+    "id": "q1_multiple_appearances",
+    "name": "Múltiples apariciones del mismo individuo o mochila",
+    "intent": "semantic_search",
+    "text_query": "individuo con chaqueta azul marino y mochila con franja reflectante",
+    "expected_verdict": "supported",
+    "expected_episodes": [
+      "ATLAS-EP-001",
+      "ATLAS-EP-004",
+      "ATLAS-EP-006",
+      "ATLAS-EP-008"
+    ],
+    "comment": "Rastreo transversal del visitante PX1 en diferentes fuentes y momentos"
+  },
+  {
+    "id": "q2_similar_objects",
+    "name": "Dos objetos similares pero con identidad distinta",
+    "intent": "semantic_search",
+    "text_query": "mochila negra lisa sin bandas reflectantes llevada por mensajero",
+    "expected_verdict": "supported",
+    "expected_episodes": [
+      "ATLAS-EP-002",
+      "ATLAS-EP-004",
+      "ATLAS-EP-007"
+    ],
+    "comment": "Debe distinguir la mochila lisa de PX2 de la mochila reflectante O03 de PX1"
+  },
+  {
+    "id": "q3_simultaneous_events",
+    "name": "Sucesos simultáneos en fuentes distintas (coartada)",
+    "intent": "interval_search",
+    "interval": {
+      "start": {
+        "absolute": "2026-01-01T18:23:35Z"
+      },
+      "end": {
+        "absolute": "2026-01-01T18:25:10Z"
+      }
+    },
+    "expected_verdict": "supported",
+    "expected_episodes": [
+      "ATLAS-EP-006",
+      "ATLAS-EP-007"
+    ],
+    "comment": "Demuestra que mientras ocurría la intrusión en C03, PX2 estaba en recepción ante C02"
+  },
+  {
+    "id": "q4_unknown_time",
+    "name": "Suceso con tiempo desconocido o no registrado",
+    "intent": "interval_search",
+    "interval": {
+      "start": {
+        "is_unknown": true
+      },
+      "end": {
+        "is_unknown": true
+      }
+    },
+    "expected_verdict": "insufficient_evidence",
+    "expected_episodes": [],
+    "comment": "Verifica que vacíos temporales no se inventen como instantes certeros"
+  },
+  {
+    "id": "q5_unlabeled_detail",
+    "name": "Detalle relevante sin etiqueta global (precinto 8419)",
+    "intent": "semantic_search",
+    "text_query": "fragmento de precinto rojo con número 8419 hallado cerca del armario",
+    "expected_verdict": "supported",
+    "expected_episodes": [
+      "ATLAS-EP-010"
+    ],
+    "comment": "Recupera por detalle en la observación/OCR aunque no haya entidad etiquetada"
+  },
+  {
+    "id": "q6_declaration_vs_observation",
+    "name": "Declaración humana en tensión con observación",
+    "intent": "semantic_search",
+    "text_query": "declaración de Laura Méndez sobre la llave del armario C12",
+    "expected_verdict": "supported",
+    "expected_episodes": [
+      "ATLAS-EP-010"
+    ],
+    "comment": "Evidencia la contradicción entre el testimonio de P01 y la foto de la llave puesta"
+  },
+  {
+    "id": "q7_last_observation",
+    "name": "Última observación de una entidad específica",
+    "intent": "last_observation",
+    "entity_filter": "ent-o01",
+    "expected_verdict": "supported",
+    "expected_episodes": [
+      "ATLAS-EP-003"
+    ],
+    "comment": "Última vez que el portátil O01 fue visto antes de desaparecer"
+  },
+  {
+    "id": "q8_no_match",
+    "name": "Consulta sin evidencia coincidente en el corpus",
+    "intent": "semantic_search",
+    "text_query": "camión de bomberos estacionado en la entrada principal",
+    "expected_verdict": "no_match",
+    "expected_episodes": [],
+    "comment": "Debe responder NO_MATCH o INSUFFICIENT_EVIDENCE de forma transparente"
+  },
+  {
+    "id": "q9_ambiguous_backpack",
+    "name": "Descripción insuficiente para distinguir dos mochilas",
+    "intent": "semantic_search",
+    "text_query": "persona con mochila oscura dentro del edificio",
+    "require_unique_resolution": true,
+    "expected_verdict": "ambiguous",
+    "expected_episodes": [
+      "ATLAS-EP-001",
+      "ATLAS-EP-002",
+      "ATLAS-EP-004"
+    ],
+    "comment": "La consulta omite la franja reflectante y no permite decidir entre PX1 y PX2"
+  }
+]

@@ -1,0 +1,299 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="EpiGraph: memoria episódica multimodal trazable">
+  <title>EpiGraph · Consola de memoria</title>
+  <link rel="stylesheet" href="/static/index.css?v=pceg1-9">
+</head>
+<body>
+  <div class="shell">
+    <aside class="rail">
+      <a class="brand" href="#episodes" aria-label="EpiGraph">
+        <span class="brand-mark">EG</span>
+        <span><b>EpiGraph</b><small>MEMORIA AUDITABLE</small></span>
+      </a>
+
+      <nav class="nav" aria-label="Secciones">
+        <button class="nav-item active" data-view="episodes"><span>01</span>Memoria</button>
+        <button class="nav-item" data-view="timeline"><span>02</span>Línea temporal</button>
+        <button class="nav-item" data-view="ingest"><span>03</span>Ingesta</button>
+        <button class="nav-item" data-view="search"><span>04</span>Consultas</button>
+        <button class="nav-item" data-view="system"><span>05</span>Sistema</button>
+      </nav>
+
+      <div class="rail-status">
+        <div><i id="connection-light"></i><span id="connection-label">Conectando</span></div>
+        <dl>
+          <dt>Episodios</dt><dd id="status-episodes">—</dd>
+          <dt>Qdrant</dt><dd id="status-points">—</dd>
+          <dt>Backend</dt><dd id="status-backend">—</dd>
+        </dl>
+      </div>
+    </aside>
+
+    <main>
+      <header class="masthead">
+        <div>
+          <p class="kicker" id="view-kicker">MEMORIA CANÓNICA</p>
+          <h1 id="view-title">Explorador de episodios</h1>
+          <p id="view-subtitle">Dossier auditable: observaciones extraídas, eventos, microepisodios y evidencias originales.</p>
+        </div>
+        <div class="mast-actions">
+          <span class="checkpoint">PC‑EG1</span>
+          <a class="button ghost" href="/docs" target="_blank" rel="noopener">API</a>
+          <button class="button ghost" id="refresh-all">Actualizar</button>
+        </div>
+      </header>
+
+      <section class="view active" id="view-episodes">
+        <div class="episode-workbench">
+          <aside class="panel episode-index">
+            <div class="panel-heading">
+              <div><p class="kicker">MEMORIA CANÓNICA</p><h2>Episodios</h2></div>
+              <span id="episode-count" class="counter">0</span>
+            </div>
+
+            <div class="episode-delta-stats" id="episode-delta-stats">
+              <span id="stat-episode-volume">0 cargados</span>
+              <span class="dot-sep">·</span>
+              <span id="stat-avg-delta">Δt medio: —</span>
+              <span class="dot-sep">·</span>
+              <span id="stat-time-span">Rango: —</span>
+            </div>
+
+            <div class="episode-filter-bar">
+              <input id="episode-search-filter" type="search" placeholder="Filtrar por título, texto o ID...">
+              <div class="filter-row-secondary">
+                <select id="episode-env-filter">
+                  <option value="">Todos los ambientes</option>
+                </select>
+                <select id="episode-sort-order">
+                  <option value="time_desc">Recientes (↓ tiempo)</option>
+                  <option value="time_asc">Antiguos (↑ tiempo)</option>
+                  <option value="duration_desc">Mayor duración (Δt)</option>
+                  <option value="observations_desc">Más observaciones</option>
+                </select>
+              </div>
+              <div class="filter-row-temporal">
+                <div class="temporal-header">
+                  <span class="filter-sublabel">Rango temporal (Δt):</span>
+                  <button type="button" class="button-mini ghost" id="episode-clear-dates" title="Limpiar rango de fechas">Limpiar</button>
+                </div>
+                <div class="time-range-inputs">
+                  <label class="time-field">
+                    <span>Desde</span>
+                    <input id="episode-filter-from" type="datetime-local">
+                  </label>
+                  <label class="time-field">
+                    <span>Hasta</span>
+                    <input id="episode-filter-to" type="datetime-local">
+                  </label>
+                </div>
+              </div>
+              <div class="filter-row-grouping">
+                <span class="group-label">Agrupación:</span>
+                <div class="group-pills">
+                  <button type="button" class="group-pill active" id="episode-group-blocks" data-group="blocks">Bloques Δt</button>
+                  <button type="button" class="group-pill" id="episode-group-flat" data-group="flat">Lista continua</button>
+                </div>
+              </div>
+            </div>
+
+            <div class="episode-list" id="memory-map">
+              <div class="empty">Cargando episodios…</div>
+            </div>
+
+            <div class="episode-pagination-bar" id="episode-pagination-bar">
+              <span id="pagination-status">Mostrando 0 de 0</span>
+              <div class="pagination-actions">
+                <button type="button" class="button-mini ghost" id="load-more-episodes" hidden>Cargar más</button>
+                <button type="button" class="button-mini ghost" id="load-all-episodes" hidden>Cargar todos</button>
+              </div>
+            </div>
+          </aside>
+          <article class="panel episode-inspector" id="episode-inspector">
+            <div class="empty roomy">
+              <b>Selecciona un episodio</b>
+              <span>Inspecciona su contenido extraído, archivos originales, microepisodios, entidades y evidencias.</span>
+            </div>
+          </article>
+        </div>
+      </section>
+
+      <section class="view" id="view-timeline">
+        <article class="panel timeline-panel">
+          <div class="panel-heading timeline-heading">
+            <div>
+              <p class="kicker">TIEMPO OBSERVADO</p>
+              <h2>Cronología multi-fuente</h2>
+            </div>
+            <div class="inline-filters timeline-toolbar">
+              <select id="timeline-environment"><option value="">Todos los ambientes</option></select>
+              <select id="timeline-source"><option value="">Todas las fuentes</option></select>
+              <label class="switch"><input type="checkbox" id="show-windows"><span></span>Ventanas técnicas</label>
+              
+              <div class="zoom-controls">
+                <span class="zoom-label">Escala Δt:</span>
+                <button type="button" class="zoom-btn" id="zoom-out" title="Alejar escala (ver rango macro)">−</button>
+                <span class="zoom-level" id="zoom-level-text">1x</span>
+                <button type="button" class="zoom-btn" id="zoom-in" title="Acercar escala (ver micro-deltas)">+</button>
+                <button type="button" class="zoom-reset-btn" id="zoom-fit" title="Ajustar al rango completo">Ajustar</button>
+              </div>
+            </div>
+          </div>
+
+          <div class="timeline-subbar">
+            <div class="timeline-legend">
+              <span class="observation">Observación</span><span class="event">Evento</span>
+              <span class="microepisode">Microepisodio</span><span class="episode">Episodio</span>
+              <span class="processing_window">Ventana</span>
+            </div>
+            <div class="timeline-metrics" id="timeline-metrics">
+              <span id="tl-metric-count">0 elementos</span>
+              <span class="dot-sep">·</span>
+              <span id="tl-metric-span">Duración total: —</span>
+              <span class="dot-sep">·</span>
+              <span id="tl-metric-min-delta">Δt mín: —</span>
+            </div>
+          </div>
+
+          <div class="timeline-scroll-container" id="timeline-scroll-container">
+            <div id="timeline-canvas" class="timeline-canvas"><div class="empty">Cargando eje temporal…</div></div>
+          </div>
+
+          <div id="timeline-ledger" class="timeline-ledger"></div>
+        </article>
+      </section>
+
+      <section class="view" id="view-ingest">
+        <div class="split hero-split">
+          <article class="panel ingest-panel">
+            <div class="panel-heading">
+              <div><p class="kicker">NUEVO ACTIVO</p><h2>Entrada y custodia</h2></div>
+              <span class="truth-badge">ORIGINAL</span>
+            </div>
+            <form id="ingest-form">
+              <label class="drop-zone" for="asset-file">
+                <input id="asset-file" name="file" type="file" required
+                  accept="video/*,audio/*,image/*,.pdf,.txt,.md,.csv,.json">
+                <span class="drop-glyph">↓</span>
+                <b id="file-label">Seleccionar vídeo, audio, imagen o documento</b>
+                <small>Se copiará al almacén inmutable y se verificará mediante SHA‑256.</small>
+              </label>
+              <div class="form-grid">
+                <label>Ambiente<input name="environment_id" value="laboratorio_01" required></label>
+                <label>Fuente<input name="source_id" value="fuente_01" required></label>
+                <label>Capturado en<input name="captured_at" type="datetime-local" step="1"></label>
+                <label>Delta de tiempo / Ventana (s)<input name="window_duration_seconds" type="number" value="60" min="0.1" step="0.1"></label>
+                <label>Solapamiento temporal (s)<input name="overlap_seconds" type="number" value="5" min="0" step="0.1"></label>
+              </div>
+              <div class="process-note">
+                <span>FLUJO</span>
+                <p>Activo → ventanas → observaciones → microepisodios → episodios → Qdrant</p>
+              </div>
+              <button class="button primary" type="submit" id="ingest-submit">Conservar y procesar</button>
+            </form>
+            <div class="operation-log" id="workflow-result" hidden></div>
+          </article>
+
+          <article class="panel doctrine">
+            <p class="kicker">DOCTRINA DE LA MEMORIA</p>
+            <h2>Qué es cada concepto</h2>
+            <ol>
+              <li><b>Activo</b><span>El archivo original inmutable, identificado por SHA-256.</span></li>
+              <li><b>Observación</b><span>Dato sensorial o textual localizado y enlazado a evidencia.</span></li>
+              <li><b>Evento</b><span>Una acción o cambio detectado en el mundo; nunca inventado.</span></li>
+              <li><b>Microepisodio</b><span>Secuencia coherente construida por reglas deterministas.</span></li>
+              <li><b>Episodio</b><span>Unidad contextual que sitúa observaciones y eventos en el tiempo, generada por deltas de tiempo (Δt) entre evidencias.</span></li>
+            </ol>
+            <p class="doctrine-warning">Si un procesador solo obtiene metadatos técnicos, la interfaz los mostrará como tales. No se redactará una historia artificial.</p>
+          </article>
+        </div>
+
+        <article class="panel ledger-panel">
+          <div class="panel-heading"><div><p class="kicker">FUENTES PRIMARIAS</p><h2>Activos registrados en custodia</h2></div><span id="asset-count" class="counter">0</span></div>
+          <div class="asset-ledger" id="asset-ledger"><div class="empty">Cargando activos…</div></div>
+        </article>
+      </section>
+
+      <section class="view" id="view-search">
+        <div class="search-mode-tabs">
+          <button class="search-tab-btn active" data-search-tab="hybrid">Búsqueda Híbrida (Qdrant + SQLite)</button>
+          <button class="search-tab-btn" data-search-tab="tools">Herramientas de Memoria (Fase 8)</button>
+        </div>
+
+        <div id="search-tab-hybrid-content" class="search-tab-content active">
+          <article class="panel search-panel">
+            <div class="panel-heading"><div><p class="kicker">RECUPERACIÓN HÍBRIDA</p><h2>Consultar la memoria</h2></div><span class="truth-badge vector">QDRANT + SQLITE</span></div>
+            <form id="search-form" class="search-form">
+              <input id="search-query" placeholder="Ej.: pipeta rosada, taladro azul, inspección en taller…" required>
+              <button class="button primary" type="submit">Buscar</button>
+              <div class="search-options">
+                <label>Ambiente<select id="search-environment"><option value="">Todos</option></select></label>
+                <label>Fuente<select id="search-source"><option value="">Todas</option></select></label>
+                <label>Modalidad<select id="search-modality"><option value="">Todas</option><option>video</option><option>audio</option><option>image</option><option>document</option><option>text</option></select></label>
+                <label class="switch"><input type="checkbox" id="input-require-unique"><span></span>Resolución única</label>
+              </div>
+            </form>
+          </article>
+          <div id="search-results" class="search-results"><div class="empty roomy">La similitud propone candidatos; SQLite devuelve los registros y sus evidencias.</div></div>
+        </div>
+
+        <div id="search-tab-tools-content" class="search-tab-content" hidden>
+          <article class="panel tools-panel">
+            <div class="panel-heading">
+              <div><p class="kicker">CATÁLOGO TIPADO</p><h2>Herramientas deterministas de consulta</h2></div>
+              <span class="truth-badge">FASE 8 · 11 HERRAMIENTAS</span>
+            </div>
+            <div class="tools-interface">
+              <div class="tools-selector-bar">
+                <label for="tool-select"><b>Herramienta de memoria</b>
+                  <select id="tool-select"></select>
+                </label>
+                <p id="tool-description" class="tool-desc"></p>
+              </div>
+              <form id="tool-form" class="tool-form">
+                <div id="tool-fields" class="tool-fields-grid"></div>
+                <button class="button primary" type="submit" id="tool-submit">Ejecutar herramienta</button>
+              </form>
+            </div>
+          </article>
+          <div id="tool-results" class="tool-results">
+            <div class="empty roomy">Selecciona una herramienta y ejecuta la consulta para auditar la memoria canónica.</div>
+          </div>
+        </div>
+      </section>
+
+      <section class="view" id="view-system">
+        <div class="system-grid">
+          <article class="panel architecture-card">
+            <p class="kicker">ARQUITECTURA ACTIVA</p><h2>Una memoria, dos responsabilidades</h2>
+            <div class="architecture-flow">
+              <div><span>VERDAD</span><b>SQLite + originales</b><small>Entidades del dominio, relaciones y evidencias.</small></div>
+              <i>→</i>
+              <div><span>PROYECCIÓN</span><b>Qdrant</b><small>Embeddings y filtros reconstruibles.</small></div>
+              <i>→</i>
+              <div><span>RESPUESTA</span><b>Registros hidratados</b><small>Nunca solo fragmentos de texto.</small></div>
+            </div>
+          </article>
+          <article class="panel runtime-card">
+            <p class="kicker">ESTADO DEL RUNTIME</p><h2>Proyección vectorial</h2>
+            <dl id="runtime-details"><dt>Estado</dt><dd>Cargando…</dd></dl>
+            <button id="rebuild-index" class="button ghost">Reconstruir Qdrant desde SQLite</button>
+          </article>
+        </div>
+        <article class="panel boundary-card">
+          <p class="kicker">LÍMITE ACTUAL</p>
+          <h2>Los agentes permanecen bloqueados</h2>
+          <p>No se habilitará orquestación agéntica hasta que este recorrido pueda verificarse con recursos reales y evidencias accesibles.</p>
+        </article>
+      </section>
+    </main>
+  </div>
+
+  <dialog id="asset-dialog" class="detail-dialog"><button class="dialog-close" data-close-dialog aria-label="Cerrar">×</button><div id="asset-dialog-content"></div></dialog>
+  <script src="/static/app.js?v=pceg1-10"></script>
+</body>
+</html>

@@ -1,0 +1,16 @@
+{
+  "max_observation_gap_seconds": 5.0,
+  "max_episode_gap_seconds": 60.0,
+  "scene_change_threshold": 0.7,
+  "acoustic_relevance_threshold": 0.7,
+  "synchronized_source_groups": [["camera_A", "camera_B"]],
+  "compatible_action_groups": [],
+  "compatible_state_groups": [],
+  "require_source_compatibility": true,
+  "require_entity_continuity": true,
+  "require_action_compatibility": true,
+  "require_state_compatibility": true,
+  "boundary_on_entity_transition": true,
+  "boundary_on_interaction_transition": true,
+  "boundary_on_relevant_acoustic_event": true
+}

@@ -1,0 +1,45 @@
+[build-system]
+requires = ["setuptools==83.0.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "epigraph-memory"
+version = "0.1.0"
+description = "Base local ejecutable para la memoria episódica multimodal EpiGraph"
+readme = "README.md"
+requires-python = ">=3.13,<3.14"
+dependencies = [
+  "fastapi==0.142.2",
+  "fastembed==0.8.0",
+  "numpy==2.5.1",
+  "onnxruntime==1.27.0",
+  "pillow==12.3.0",
+  "pypdf==6.19.0",
+  "pydantic==2.13.5",
+  "pydantic-settings==2.15.0",
+  "python-multipart==0.0.32",
+  "qdrant-client==1.19.1",
+  "qdrant-edge-py==0.7.2",
+  "requests==2.34.2",
+  "uvicorn==0.54.0",
+]
+
+[project.optional-dependencies]
+dev = [
+  "httpx==0.28.1",
+  "pytest==9.1.1",
+]
+
+[project.scripts]
+epigraph = "episodic.interfaces.cli.commands:main"
+
+[tool.setuptools.packages.find]
+include = ["episodic*"]
+
+[tool.setuptools.package-data]
+"episodic.interfaces.web" = ["*.html", "*.css", "*.js"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+addopts = "-ra"

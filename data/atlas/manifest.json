@@ -1,0 +1,613 @@
+{
+  "version": "1.0",
+  "description": "Corpus de demostración Atlas Security Scenario con 10 episodios multimodales",
+  "sources": [
+    {
+      "id": "src-c01",
+      "name": "C01 Entrada Principal",
+      "source_type": "camera",
+      "scope": "Acceso exterior y torno",
+      "clock_source": "cctv_ntp"
+    },
+    {
+      "id": "src-c02",
+      "name": "C02 Recepción y Pasillo Este",
+      "source_type": "camera",
+      "scope": "Mostrador y sala de espera",
+      "clock_source": "cctv_ntp"
+    },
+    {
+      "id": "src-c03",
+      "name": "C03 Laboratorio Atlas",
+      "source_type": "camera",
+      "scope": "Armarios y mesas de trabajo",
+      "clock_source": "cctv_ntp"
+    },
+    {
+      "id": "src-c04",
+      "name": "C04 Escalera de Servicio",
+      "source_type": "camera",
+      "scope": "Ruta técnica entre plantas",
+      "clock_source": "cctv_ntp"
+    },
+    {
+      "id": "src-c05",
+      "name": "C05 Aparcamiento Exterior",
+      "source_type": "camera",
+      "scope": "Barrera y viales de salida",
+      "clock_source": "cctv_ntp"
+    },
+    {
+      "id": "src-acc",
+      "name": "Registro de Accesos D-LAB",
+      "source_type": "sensor",
+      "scope": "Cerradura electrónica D-LAB-2",
+      "clock_source": "access_ntp"
+    },
+    {
+      "id": "src-fire",
+      "name": "Sistema Central de Incendios",
+      "source_type": "sensor",
+      "scope": "Detectores de humo edificio",
+      "clock_source": "fire_central"
+    },
+    {
+      "id": "src-manual",
+      "name": "Declaraciones de Testigos",
+      "source_type": "manual",
+      "scope": "Entrevistas de seguridad",
+      "clock_source": "manual"
+    }
+  ],
+  "sessions": [
+    {
+      "id": "sess-incident-20260101",
+      "source_id": "src-c01",
+      "external_id": "INC-ATLAS-2026-01-01",
+      "started_at": {
+        "absolute": "2026-01-01T18:00:00Z"
+      },
+      "ended_at": {
+        "absolute": "2026-01-01T18:50:00Z"
+      }
+    }
+  ],
+  "entities": [
+    {
+      "id": "ent-p01",
+      "label": "Laura Méndez",
+      "entity_type": "person",
+      "description": "Investigadora principal Laboratorio Atlas",
+      "created_by": "security_admin",
+      "provenance_kind": "human_declaration"
+    },
+    {
+      "id": "ent-px1",
+      "label": "Visitante Desconocido PX1",
+      "entity_type": "person",
+      "description": "Persona con chaqueta azul marino y mochila con franja reflectante",
+      "created_by": "guard_c01",
+      "provenance_kind": "visual_detection"
+    },
+    {
+      "id": "ent-px2",
+      "label": "Mensajero PX2",
+      "entity_type": "person",
+      "description": "Repartidor con mochila negra lisa y caja de archivo",
+      "created_by": "guard_c01",
+      "provenance_kind": "visual_detection"
+    },
+    {
+      "id": "ent-o01",
+      "label": "Portátil Atlas O01",
+      "entity_type": "object",
+      "description": "Equipo con prototipos confidenciales de memoria",
+      "created_by": "inventory_admin",
+      "provenance_kind": "human_declaration"
+    },
+    {
+      "id": "ent-o02",
+      "label": "Caja de Archivo O02",
+      "entity_type": "object",
+      "description": "Caja precintada con código S88419",
+      "created_by": "courier_record",
+      "provenance_kind": "human_declaration"
+    },
+    {
+      "id": "ent-o03",
+      "label": "Mochila con Franja O03",
+      "entity_type": "object",
+      "description": "Mochila oscura con franja reflectante horizontal",
+      "created_by": "detector_yolo",
+      "provenance_kind": "visual_detection"
+    },
+    {
+      "id": "ent-b0714",
+      "label": "Credencial B0714",
+      "entity_type": "object",
+      "description": "Tarjeta de acceso asignada a contrata de mantenimiento",
+      "created_by": "access_system",
+      "provenance_kind": "system_derived"
+    }
+  ],
+  "episodes": [
+    {
+      "id": "ep-atlas-001",
+      "external_id": "ATLAS-EP-001",
+      "title": "Llegada del visitante a recepción",
+      "interval": {
+        "start": {
+          "absolute": "2026-01-01T18:01:33Z"
+        },
+        "end": {
+          "absolute": "2026-01-01T18:03:10Z"
+        }
+      },
+      "source_ids": [
+        "src-c01",
+        "src-c02"
+      ],
+      "location": "Entrada principal y recepción",
+      "tags": [
+        "entrada",
+        "visitante",
+        "persona_desconocida",
+        "mochila",
+        "recepción"
+      ],
+      "indexable_text": "A las 18:01:33, Laura Méndez entra por la puerta principal con abrigo beige y bufanda verde. Catorce segundos después entra una persona no identificada con chaqueta azul marino, pantalón oscuro, zapatillas con suela blanca y una mochila oscura atravesada por una franja reflectante plateada (PX1, mochila O03). En recepción, PX1 pregunta por Sergio y afirma tener una reunión a las 18:15.",
+      "evidence": [
+        {
+          "id": "ev-001-1",
+          "session_id": "sess-incident-20260101",
+          "source_id": "src-c01",
+          "media_type": "image",
+          "file_path": "media/c01_180133_p01_entry.png",
+          "external_capture_id": "c01_frame_180133"
+        },
+        {
+          "id": "ev-001-2",
+          "session_id": "sess-incident-20260101",
+          "source_id": "src-c01",
+          "media_type": "image",
+          "file_path": "media/c01_180147_px1_entry.png",
+          "external_capture_id": "c01_frame_180147"
+        }
+      ],
+      "observations": [
+        {
+          "content": "Detección visual de Laura Méndez P01 entrando con abrigo beige",
+          "provenance_kind": "visual_detection",
+          "author": "detector_face",
+          "confidence": 0.94,
+          "entity_id": "ent-p01"
+        },
+        {
+          "content": "Detección visual de PX1 con chaqueta azul marino y mochila con franja reflectante O03",
+          "provenance_kind": "visual_detection",
+          "author": "detector_yolo",
+          "confidence": 0.89,
+          "entity_id": "ent-px1"
+        },
+        {
+          "content": "Declaración del recepcionista: PX1 afirmó tener cita con Sergio a las 18:15",
+          "provenance_kind": "human_declaration",
+          "author": "recepcionista_marcos"
+        }
+      ],
+      "annotations": []
+    },
+    {
+      "id": "ep-atlas-002",
+      "external_id": "ATLAS-EP-002",
+      "title": "Entrega de la caja de archivo por mensajero",
+      "interval": {
+        "start": {
+          "absolute": "2026-01-01T18:05:42Z"
+        },
+        "end": {
+          "absolute": "2026-01-01T18:08:11Z"
+        }
+      },
+      "source_ids": [
+        "src-c01",
+        "src-c02"
+      ],
+      "location": "Recepción",
+      "tags": [
+        "mensajería",
+        "caja",
+        "precinto",
+        "entrega"
+      ],
+      "indexable_text": "El mensajero PX2 llega a recepción con una caja de archivo O02 asegurada con el precinto rojo numerado S88419. PX2 lleva uniforme de reparto y una mochila negra completamente lisa, sin franjas reflectantes.",
+      "evidence": [
+        {
+          "id": "ev-002-1",
+          "session_id": "sess-incident-20260101",
+          "source_id": "src-c01",
+          "media_type": "image",
+          "file_path": "media/c01_180542_px2_courier.png",
+          "external_capture_id": "c01_frame_180542"
+        }
+      ],
+      "observations": [
+        {
+          "content": "Detección de mensajero PX2 con mochila negra lisa y caja precintada S88419",
+          "provenance_kind": "visual_detection",
+          "author": "detector_yolo",
+          "confidence": 0.91,
+          "entity_id": "ent-px2"
+        }
+      ],
+      "annotations": []
+    },
+    {
+      "id": "ep-atlas-003",
+      "external_id": "ATLAS-EP-003",
+      "title": "Última observación confirmada del portátil",
+      "interval": {
+        "start": {
+          "absolute": "2026-01-01T18:11:18Z"
+        },
+        "end": {
+          "absolute": "2026-01-01T18:14:36Z"
+        }
+      },
+      "source_ids": [
+        "src-c03"
+      ],
+      "location": "Laboratorio Atlas",
+      "tags": [
+        "portátil",
+        "armario",
+        "laboratorio",
+        "resguardo"
+      ],
+      "indexable_text": "A las 18:12:00, Laura Méndez guarda el portátil O01 en el armario de seguridad C12 del Laboratorio Atlas. En el registro C03 se observa el equipo guardado en la balda superior.",
+      "evidence": [
+        {
+          "id": "ev-003-1",
+          "session_id": "sess-incident-20260101",
+          "source_id": "src-c03",
+          "media_type": "image",
+          "file_path": "media/c03_181200_laptop_armario.png",
+          "external_capture_id": "c03_frame_181200"
+        }
+      ],
+      "observations": [
+        {
+          "content": "Confirmación visual de portátil O01 resguardado en armario C12 balda superior",
+          "provenance_kind": "visual_detection",
+          "author": "detector_obj",
+          "confidence": 0.96,
+          "entity_id": "ent-o01"
+        }
+      ],
+      "annotations": []
+    },
+    {
+      "id": "ep-atlas-004",
+      "external_id": "ATLAS-EP-004",
+      "title": "Cruce entre visitante y mensajero en pasillo este",
+      "interval": {
+        "start": {
+          "absolute": "2026-01-01T18:16:05Z"
+        },
+        "end": {
+          "absolute": "2026-01-01T18:18:02Z"
+        }
+      },
+      "source_ids": [
+        "src-c02"
+      ],
+      "location": "Pasillo este",
+      "tags": [
+        "cruce",
+        "mochila_similar",
+        "pasillo",
+        "identidad_distinta"
+      ],
+      "indexable_text": "PX1 y PX2 coinciden en el pasillo este a las 18:17:10. Ambos portan mochilas oscuras de dimensiones similares; sin embargo, la mochila de PX1 tiene una franja reflectante plateada (O03), mientras que la mochila del mensajero PX2 es completamente lisa y negra. Son dos mochilas con identidad y procedencia distintas.",
+      "evidence": [
+        {
+          "id": "ev-004-1",
+          "session_id": "sess-incident-20260101",
+          "source_id": "src-c02",
+          "media_type": "image",
+          "file_path": "media/c02_181710_cruce_pasillo.png",
+          "external_capture_id": "c02_frame_181710"
+        }
+      ],
+      "observations": [
+        {
+          "content": "Coincidencia de dos individuos con mochilas oscuras: O03 posee banda reflectante, la de PX2 carece de bandas",
+          "provenance_kind": "visual_detection",
+          "author": "detector_feature_match",
+          "confidence": 0.92
+        }
+      ],
+      "annotations": []
+    },
+    {
+      "id": "ep-atlas-005",
+      "external_id": "ATLAS-EP-005",
+      "title": "Activación de la alarma de incendios",
+      "interval": {
+        "start": {
+          "absolute": "2026-01-01T18:22:47Z"
+        },
+        "end": {
+          "absolute": "2026-01-01T18:23:35Z"
+        }
+      },
+      "source_ids": [
+        "src-fire"
+      ],
+      "location": "Office / Cocina planta 1",
+      "tags": [
+        "alarma",
+        "incendio",
+        "evacuación",
+        "humo"
+      ],
+      "indexable_text": "El sensor central de incendios registra activación por detector de humo óptico en la cocina de la planta 1 a las 18:22:47. Se inicia protocolo de evacuación automática en pasillos.",
+      "evidence": [],
+      "observations": [
+        {
+          "content": "Disparo de sensor de humo en office planta 1 (código F-102)",
+          "provenance_kind": "system_derived",
+          "author": "fire_central",
+          "confidence": 1.0
+        }
+      ],
+      "annotations": []
+    },
+    {
+      "id": "ep-atlas-006",
+      "external_id": "ATLAS-EP-006",
+      "title": "Acceso no autorizado al laboratorio durante la alarma",
+      "interval": {
+        "start": {
+          "absolute": "2026-01-01T18:23:18Z"
+        },
+        "end": {
+          "absolute": "2026-01-01T18:25:06Z"
+        }
+      },
+      "source_ids": [
+        "src-c03",
+        "src-acc"
+      ],
+      "location": "Laboratorio Atlas puerta D-LAB-2",
+      "tags": [
+        "acceso_no_autorizado",
+        "alarma",
+        "credencial",
+        "simultáneo"
+      ],
+      "indexable_text": "Durante la alarma de incendios, la cerradura D-LAB-2 registra apertura a las 18:23:18 con la credencial técnica B0714. La cámara C03 capta a un individuo con chaqueta azul y mochila con franja reflectante acercándose rápidamente al armario C12.",
+      "evidence": [
+        {
+          "id": "ev-006-1",
+          "session_id": "sess-incident-20260101",
+          "source_id": "src-c03",
+          "media_type": "image",
+          "file_path": "media/c03_182345_lab_access.png",
+          "external_capture_id": "c03_frame_182345"
+        }
+      ],
+      "observations": [
+        {
+          "content": "Apertura electrónica de puerta D-LAB-2 validada con credencial B0714",
+          "provenance_kind": "system_derived",
+          "author": "access_sensor",
+          "confidence": 1.0,
+          "entity_id": "ent-b0714"
+        },
+        {
+          "content": "Individuo con zapatillas de suela blanca y mochila con franja reflectante accede al armario C12",
+          "provenance_kind": "visual_detection",
+          "author": "detector_yolo",
+          "confidence": 0.88
+        }
+      ],
+      "annotations": []
+    },
+    {
+      "id": "ep-atlas-007",
+      "external_id": "ATLAS-EP-007",
+      "title": "Localización simultánea del mensajero en recepción",
+      "interval": {
+        "start": {
+          "absolute": "2026-01-01T18:23:24Z"
+        },
+        "end": {
+          "absolute": "2026-01-01T18:25:12Z"
+        }
+      },
+      "source_ids": [
+        "src-c02"
+      ],
+      "location": "Recepción",
+      "tags": [
+        "simultáneo",
+        "coartada",
+        "recepción",
+        "mensajero"
+      ],
+      "indexable_text": "Al mismo tiempo que ocurre el acceso al laboratorio (18:23:24 a 18:25:12), la cámara C02 registra de forma continua al mensajero PX2 esperando en el mostrador de recepción junto al recepcionista. Queda demostrado que PX2 se encontraba en recepción y no pudo acceder al laboratorio.",
+      "evidence": [
+        {
+          "id": "ev-007-1",
+          "session_id": "sess-incident-20260101",
+          "source_id": "src-c02",
+          "media_type": "image",
+          "file_path": "media/c02_182410_px2_recepcion.png",
+          "external_capture_id": "c02_frame_182410"
+        }
+      ],
+      "observations": [
+        {
+          "content": "Presencia continuada de PX2 en recepción durante el intervalo exacto de la intrusión en laboratorio",
+          "provenance_kind": "visual_detection",
+          "author": "tracker_c02",
+          "confidence": 0.98,
+          "entity_id": "ent-px2"
+        }
+      ],
+      "annotations": []
+    },
+    {
+      "id": "ep-atlas-008",
+      "external_id": "ATLAS-EP-008",
+      "title": "Tránsito por la escalera de servicio y marca de suela",
+      "interval": {
+        "start": {
+          "absolute": "2026-01-01T18:25:42Z"
+        },
+        "end": {
+          "absolute": "2026-01-01T18:27:18Z"
+        }
+      },
+      "source_ids": [
+        "src-c04"
+      ],
+      "location": "Escalera de servicio norte",
+      "tags": [
+        "escalera",
+        "suela_blanca",
+        "huella",
+        "huida"
+      ],
+      "indexable_text": "A las 18:26:15, el sujeto de chaqueta azul desciende por la escalera de servicio con la mochila O03 visiblemente más abultada. Se aprecia una marca de suciedad con patrón parcial de suela blanca en el rellano de la planta baja.",
+      "evidence": [
+        {
+          "id": "ev-008-1",
+          "session_id": "sess-incident-20260101",
+          "source_id": "src-c04",
+          "media_type": "image",
+          "file_path": "media/c04_182615_escalera_huella.png",
+          "external_capture_id": "c04_frame_182615"
+        }
+      ],
+      "observations": [
+        {
+          "content": "Sujeto desciende con calzado de suela blanca y mochila con bulto rígido rectangular",
+          "provenance_kind": "visual_detection",
+          "author": "detector_yolo",
+          "confidence": 0.85
+        }
+      ],
+      "annotations": []
+    },
+    {
+      "id": "ep-atlas-009",
+      "external_id": "ATLAS-EP-009",
+      "title": "Salida rápida por el aparcamiento exterior",
+      "interval": {
+        "start": {
+          "absolute": "2026-01-01T18:28:09Z"
+        },
+        "end": {
+          "absolute": "2026-01-01T18:30:41Z"
+        }
+      },
+      "source_ids": [
+        "src-c05"
+      ],
+      "location": "Aparcamiento exterior",
+      "tags": [
+        "aparcamiento",
+        "vehículo",
+        "salida"
+      ],
+      "indexable_text": "El sujeto sale por la puerta de emergencia que da al aparcamiento a las 18:28:09 y sube a un sedán gris oscuro que abandona el recinto a gran velocidad por el vial sur.",
+      "evidence": [
+        {
+          "id": "ev-009-1",
+          "session_id": "sess-incident-20260101",
+          "source_id": "src-c05",
+          "media_type": "image",
+          "file_path": "media/c05_182900_parking_exit.png",
+          "external_capture_id": "c05_frame_182900"
+        }
+      ],
+      "observations": [
+        {
+          "content": "Vehículo sedan gris oscuro sale sin matrícula delantera visible",
+          "provenance_kind": "visual_detection",
+          "author": "anpr_camera",
+          "confidence": 0.7
+        }
+      ],
+      "annotations": []
+    },
+    {
+      "id": "ep-atlas-010",
+      "external_id": "ATLAS-EP-010",
+      "title": "Detección de la desaparición y evidencia de precinto",
+      "interval": {
+        "start": {
+          "absolute": "2026-01-01T18:36:30Z"
+        },
+        "end": {
+          "absolute": "2026-01-01T18:44:12Z"
+        }
+      },
+      "source_ids": [
+        "src-c03",
+        "src-manual"
+      ],
+      "location": "Laboratorio Atlas",
+      "tags": [
+        "desaparición",
+        "precinto_8419",
+        "auditoría",
+        "enriquecimiento",
+        "llave"
+      ],
+      "indexable_text": "A las 18:37:11, Laura Méndez comprueba que el portátil O01 no está en el armario C12. La llave estaba puesta en la cerradura exterior, circunstancia que P01 afirma no recordar (tensión entre declaración y evidencia física). En el suelo se halla un fragmento de precinto rojo con los números 8419, compatible con el precinto S88419 de O02.",
+      "evidence": [
+        {
+          "id": "ev-010-1",
+          "session_id": "sess-incident-20260101",
+          "source_id": "src-c03",
+          "media_type": "image",
+          "file_path": "media/f007_precinto_8419.png",
+          "external_capture_id": "f007_macro_precinto"
+        }
+      ],
+      "observations": [
+        {
+          "content": "Declaración de Laura Méndez: Afirma que cerró con llave a las 18:14 y guardó la llave en su bolsillo",
+          "provenance_kind": "human_declaration",
+          "author": "laura_mendez"
+        },
+        {
+          "content": "Inspección fotográfica: Llave insertada en la cerradura exterior del armario C12 sin signos de forzado",
+          "provenance_kind": "visual_detection",
+          "author": "inspeccion_forense",
+          "confidence": 1.0
+        },
+        {
+          "content": "Fragmento de precinto plástico rojo recuperado junto al armario; texto legible '8419'",
+          "provenance_kind": "ocr_extraction",
+          "author": "ocr_tesseract",
+          "confidence": 0.95
+        }
+      ],
+      "annotations": [
+        {
+          "revision_number": 1,
+          "content": "Revisión técnica de seguridad: La credencial B0714 fue extraviada por la contrata de limpieza el día anterior, no reportada oportunamente.",
+          "provenance_kind": "human_declaration",
+          "author": "supervisor_seguridad",
+          "evidence_ids": [
+            "ev-010-1"
+          ]
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,10 @@
+Episodio 7. Localización simultánea del mensajero
+ID: ATLAS-EP-007
+Intervalo: 18:23:24 a 18:25:12
+Fuentes: C05 Muelle, audio C05, aplicación de reparto
+Ubicación: Muelle de carga
+Texto indexable:
+Durante el intervalo en que PX2 permanece dentro del laboratorio, la cámara C05 muestra a Daniel Ríos junto a la furgoneta de mensajería. P02 sostiene el teléfono con la mano izquierda y una carpeta de reparto con la derecha. La ropa, el rostro y el identificador del chaleco resultan visibles durante la mayor parte de la grabación.
+El audio recoge parcialmente la conversación: “Sigue sin cerrar la entrega” y “Estoy todavía en el muelle”. La aplicación de reparto registra actividad desde el terminal asignado a P02 a las 18:24:03. La sirena se escucha en el mismo momento que en la cámara del laboratorio, una vez corregido el desfase entre relojes.
+La evidencia sitúa a P02 en el muelle mientras PX2 actúa dentro del laboratorio. Esto contradice una identificación directa basada únicamente en el chaleco amarillo. No descarta que otra persona utilizara ropa similar o una prenda perteneciente al servicio de mensajería.
+Etiquetas: coartada_visual, simultaneidad, contradicción, mensajero, audio, multicámara

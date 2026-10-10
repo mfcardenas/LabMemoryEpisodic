@@ -1,0 +1,9 @@
+Episodio 6. Acceso al laboratorio durante la alarma
+ID: ATLAS-EP-006
+Intervalo: 18:23:18 a 18:25:06
+Fuentes: C03 Laboratorio, lector de acceso D-LAB-2
+Ubicación: Laboratorio Atlas
+Texto indexable:
+Una persona identificada provisionalmente como PX2 entra en el Laboratorio Atlas durante la alarma. Lleva un chaleco amarillo de alta visibilidad y transporta una caja gris compatible con O02. El rostro queda cubierto por una gorra y por el ángulo elevado de la cámara. El lector de la puerta D-LAB-2 registra el uso de la credencial B0714 a las 18:23:21.
+PX2 se dirige directamente al armario C12, abre la puerta y coloca la caja en el suelo. Durante veintisiete segundos, su cuerpo oculta el interior del armario y la caja. Después levanta O02 con ambas manos. La caja parece presentar mayor deformación en la parte inferior, aunque la variación también podría deberse al cambio de agarre. En dos fotogramas se observa detrás del chaleco una banda plateada similar a la franja de O03. Las zapatillas muestran suela blanca. No existe una imagen suficiente para confirmar que PX2 corresponda a PX1.
+Etiquetas: acceso, credencial, armario, persona_desconocida, caja, posible_identidad
