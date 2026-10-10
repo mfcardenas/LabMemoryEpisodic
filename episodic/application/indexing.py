@@ -25,10 +25,15 @@ def episode_index_text(repository: EpisodicRepository, episode) -> str:
     parts = [episode.title, episode.indexable_text]
     for observation in repository.list_observations_for_episode(episode.id):
         parts.append(observation.description or observation.content)
-        if observation.attributes:
+        attributes = {
+            key: value
+            for key, value in observation.attributes.items()
+            if key not in {"keyframes", "generation"}
+        }
+        if attributes:
             parts.append(
                 json.dumps(
-                    observation.attributes,
+                    attributes,
                     ensure_ascii=False,
                     sort_keys=True,
                     separators=(",", ":"),

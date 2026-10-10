@@ -466,6 +466,19 @@ def create_api_app(
             filename=asset.original_filename or path.name,
         )
 
+    @app.get("/api/memory/events/{event_id}/keyframes/{index}")
+    def get_event_keyframe(event_id: str, index: int):
+        event = container.repository.get_event(event_id)
+        if event is None or not 0 <= index < len(event.keyframes):
+            raise HTTPException(status_code=404, detail="Fotograma clave no encontrado")
+        try:
+            path = container.evidence_store.resolve_path(event.keyframes[index]["internal_uri"])
+        except (KeyError, ValueError) as exc:
+            raise HTTPException(status_code=404, detail="Fotograma clave no encontrado") from exc
+        if not path.is_file():
+            raise HTTPException(status_code=404, detail="Fotograma clave no disponible")
+        return FileResponse(path, media_type="image/jpeg")
+
     @app.get("/api/memory/episodes/{episode_id}")
     def inspect_memory_episode(episode_id: str):
         try:

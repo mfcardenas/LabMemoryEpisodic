@@ -187,7 +187,20 @@ el registro de una captura a mitad.
 Salida: subir vídeo + audio + PDF juntos crea **un** episodio con los tres
 activos, y la subida muestra el progreso sin bloquear la página.
 
-### Fase C — Del vídeo a eventos (4–6 días)
+### Fase C — Del vídeo a eventos (4–6 días) · ✅ hecha (2026-10-10)
+
+Implementado: `PyAVFrameSampler` (PTS del decoder, 1 fps), `SceneSegmenter`
+(cambio de escena con mínimo 2 s y máximo 15 s, hasta 3 fotogramas clave),
+puerto `VisionDescriber` con `OllamaVisionDescriber` (esquema JSON,
+`think: false`) y `FakeVisionDescriber`, `VideoEventProcessor`,
+`EventDerivationService`, `Event` ampliado (Δt relativo, título, resumen,
+atributos, fotogramas), etapa "Eventos" en la captura, endpoint de
+fotogramas clave y ficha de episodio con reproductor y eventos.
+Banco de prueba (vídeo de muestra, RTX 5080, en caliente): `qwen3.5:4b`
+≈5 s/tramo, `gemma3:12b` ≈14 s/tramo con detalle similar ⇒ `qwen3.5:4b`
+por defecto. Pendiente validarlo con vídeos reales de 1–3 min.
+Corregido además: la conexión SQLite compartida por los hilos HTTP mezclaba
+resultados bajo peticiones paralelas; ahora se serializa.
 
 - Dependencia `av` (PyAV) en un extra `[video]`.
 - `VideoDecoder` con timestamps reales del decoder (PTS) y muestreo a 1 fps.

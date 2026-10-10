@@ -25,6 +25,10 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# Decodificación de vídeo para describir eventos (Fase C). Incluye FFmpeg.
+video = [
+  "av==19.0.1",
+]
 dev = [
   "httpx==0.28.1",
   "pytest==9.1.1",

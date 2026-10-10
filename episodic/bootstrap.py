@@ -32,6 +32,7 @@ from episodic.application.captures import (
     CaptureProcessingService,
     CaptureService,
 )
+from episodic.application.events import EventDerivationService
 from episodic.application.jobs import JobRunner
 from episodic.application.ingest import IngestService
 from episodic.application.lifecycle import LifecycleService
@@ -53,6 +54,78 @@ from episodic.ports.repository import EpisodicRepository, EvidenceStore
 from episodic.ports.vector_index import VectorIndex
 
 logger = logging.getLogger(__name__)
+
+
+def build_observation_extraction(
+    config: EpisodicConfig,
+    repository: EpisodicRepository,
+    store: EvidenceStore | None,
+) -> ObservationExtractionService:
+    """Procesadores por modalidad; el vídeo se describe si hay PyAV y visión."""
+    from episodic.processors import (
+        AudioProcessor,
+        DocumentProcessor,
+        ImageProcessor,
+        MockProcessor,
+        TextProcessor,
+        VideoProcessor,
+    )
+
+    processors = [
+        TextProcessor(repository),
+        DocumentProcessor(repository),
+        AudioProcessor(repository),
+        ImageProcessor(repository),
+        VideoProcessor(repository),
+        MockProcessor(repository),
+    ]
+    video_events = _build_video_event_processor(config, repository, store)
+    if video_events is not None:
+        # Registrado después: sustituye al procesador técnico de vídeo.
+        processors.append(video_events)
+    return ObservationExtractionService(repository, processors)
+
+
+def _build_video_event_processor(config, repository, store):
+    from episodic.adapters.video.decoder import PyAVFrameSampler, video_decoding_available
+
+    if config.vision_backend == "none" or store is None:
+        return None
+    if not video_decoding_available():
+        logger.warning(
+            "PyAV no está instalado: el vídeo solo producirá intervalos técnicos "
+            "(instale el extra [video])"
+        )
+        return None
+    from episodic.application.video_segmentation import SceneSegmenter, SegmentationConfig
+    from episodic.processors.video_events import VideoEventProcessor
+
+    if config.vision_backend == "fake":
+        from episodic.adapters.models.fake_vision import FakeVisionDescriber
+
+        describer = FakeVisionDescriber()
+    else:
+        from episodic.adapters.models.ollama_vision import OllamaVisionDescriber
+
+        describer = OllamaVisionDescriber(
+            model=config.vision_model,
+            base_url=config.ollama_url,
+            timeout_seconds=config.vision_timeout_seconds,
+        )
+    return VideoEventProcessor(
+        repository,
+        store,
+        PyAVFrameSampler(sample_fps=config.video_sample_fps),
+        SceneSegmenter(
+            SegmentationConfig(
+                min_segment_seconds=config.video_min_segment_seconds,
+                max_segment_seconds=config.video_max_segment_seconds,
+                scene_change_threshold=config.video_scene_threshold,
+            )
+        ),
+        describer,
+        language=config.description_language,
+    )
 
 
 @dataclass
@@ -129,7 +202,7 @@ def create_ingestion_container(
             repository, LocalFileInspector(), managed_store=store
         ),
         windowing_service=WindowingService(repository),
-        observation_extraction_service=ObservationExtractionService(repository),
+        observation_extraction_service=build_observation_extraction(config, repository, store),
         episode_composition_service=DeterministicEpisodeComposer(repository),
         logical_graph_service=LogicalGraphService(repository),
     )
@@ -256,7 +329,7 @@ def create_app_container(
         repo, LocalFileInspector(), managed_store=store
     )
     windowing_svc = WindowingService(repo)
-    observation_extraction_svc = ObservationExtractionService(repo)
+    observation_extraction_svc = build_observation_extraction(config, repo, store)
     episode_composition_svc = DeterministicEpisodeComposer(repo)
     workflow_svc = EpiGraphWorkflowService(
         repository=repo,
@@ -320,7 +393,8 @@ def _create_job_runner(
     processing = CaptureProcessingService(
         repository=repo,
         windowing=WindowingService(repo),
-        extraction=ObservationExtractionService(repo),
+        extraction=build_observation_extraction(config, repo, store),
+        events=EventDerivationService(repo),
         composition=DeterministicEpisodeComposer(repo),
         lifecycle=LifecycleService(
             repository=repo,

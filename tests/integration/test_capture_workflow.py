@@ -19,7 +19,7 @@ MANUAL = b"Manual: aplicar lubricante penetrante y esperar diez minutos antes de
 
 @pytest.fixture
 def app(tmp_path):
-    config = EpisodicConfig(project_root=tmp_path, data_dir="runtime")
+    config = EpisodicConfig(project_root=tmp_path, data_dir="runtime", vision_backend="fake")
     container = create_app_container(config, use_fake_encoders=True, use_memory_qdrant=True)
     try:
         with TestClient(create_api_app(container=container)) as client:
@@ -63,7 +63,7 @@ def test_joint_upload_becomes_one_episode_with_all_assets(app) -> None:
 
     job_view = client.get(f"/api/jobs/{job.id}").json()
     assert job_view["progress"] == 1.0
-    assert [stage["state"] for stage in job_view["stages"]] == ["completed"] * 4
+    assert [stage["state"] for stage in job_view["stages"]] == ["completed"] * 5
 
     capture = client.get(f"/api/captures/{created['id']}").json()
     assert capture["status"] == "ready"
@@ -76,6 +76,19 @@ def test_joint_upload_becomes_one_episode_with_all_assets(app) -> None:
         asset["id"] for asset in created["assets"]
     }
     assert detail["vector_projection"]["indexed"] is True
+
+    # El vídeo produce eventos con intervalo relativo, fotogramas y procedencia.
+    events = detail["events"]
+    assert events, "el vídeo debe generar al menos un evento"
+    first = events[0]
+    assert first["start_offset_seconds"] == 0.0
+    assert first["end_offset_seconds"] > first["start_offset_seconds"]
+    assert first["title"] and first["summary"]
+    assert first["metadata"]["generation"]["vision_model"] == "fake-vision"
+    keyframe = client.get(f"/api/memory/events/{first['id']}/keyframes/0")
+    assert keyframe.status_code == 200
+    assert keyframe.headers["content-type"] == "image/jpeg"
+    assert client.get(f"/api/memory/events/{first['id']}/keyframes/99").status_code == 404
     # Vídeo y audio comparten la hora declarada: quedan alineados.
     assert datetime.fromisoformat(detail["episode"]["start_time"]) == datetime(
         2026, 10, 10, 7, 0, tzinfo=timezone.utc

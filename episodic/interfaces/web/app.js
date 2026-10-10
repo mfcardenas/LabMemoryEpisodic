@@ -32,6 +32,14 @@ document.addEventListener("DOMContentLoaded", () => {
     const remM = Math.round((s % 3600) / 60);
     return remM ? `${h}h ${remM}m` : `${h}h`;
   };
+  const fmtClock = seconds => {
+    if (seconds === null || seconds === undefined || isNaN(seconds)) return "—";
+    const total = Math.max(0, Number(seconds));
+    const minutes = Math.floor(total / 60);
+    const rest = total - minutes * 60;
+    return `${String(minutes).padStart(2, "0")}:${rest.toFixed(1).padStart(4, "0")}`;
+  };
+  const paragraphs = text => String(text || "").split(/\n+/).filter(Boolean).map(line => `<p>${esc(line)}</p>`).join("");
   const itemDurationSeconds = item => {
     const rawStart = item.start_time ?? item.interval?.start?.absolute;
     const rawEnd = item.end_time ?? item.interval?.end?.absolute ?? item.start_time;
@@ -624,7 +632,11 @@ document.addEventListener("DOMContentLoaded", () => {
           <details class="technical-details compact"><summary>Datos técnicos de la observación</summary><dl><dt>ID</dt><dd>${esc(observation.id)}</dd><dt>Productor</dt><dd>${esc(observation.producer || "—")}</dd><dt>Modelo</dt><dd>${esc(observation.model_version || "—")}</dd><dt>Estado</dt><dd>${esc(observation.validation_state || "—")}</dd></dl></details></div>
         </article>`;
       };
-      const observationsHtml = allObservations.map(renderObservation).join("");
+      const hasVideoEvents = data.events.some(item => item.event_type === "video_segment");
+      const contentObservations = hasVideoEvents
+        ? allObservations.filter(item => item.observation_type !== "video_event")
+        : allObservations;
+      const observationsHtml = contentObservations.map(renderObservation).join("");
       const originsHtml = data.assets.map(asset => {
         const source = sourcesById.get(asset.source_id);
         const references = data.evidence_references.filter(item => item.asset_id === asset.id);
@@ -635,7 +647,33 @@ document.addEventListener("DOMContentLoaded", () => {
           ${asset.available ? `<a href="/api/memory/assets/${encodeURIComponent(asset.id)}/file" target="_blank">Abrir archivo original</a>` : `<div class="origin-unavailable">${isFixture ? "Fuente simulada: no existe un fichero físico" : "El fichero original no está disponible"}</div>`}
         </article>`;
       }).join("");
-      const eventsHtml = data.events.length ? `<section class="event-section"><div class="section-title"><p class="kicker">EVENTOS</p><h3>Acciones o cambios detectados</h3></div>${data.events.map(item => `<article class="event-card"><strong>${esc(humanize(item.event_type))}</strong><p>${esc(item.description)}</p><small>${fmtInterval(item)}</small></article>`).join("")}</section>` : "";
+      const orderedEvents = [...data.events].sort((a, b) =>
+        (a.asset_id || "").localeCompare(b.asset_id || "") || (a.sequence_number || 0) - (b.sequence_number || 0));
+      const videoAsset = data.assets.find(asset => asset.media_type === "video" && asset.available);
+      const renderEvent = item => {
+        const attributes = item.attributes || {};
+        const generation = item.metadata?.generation || {};
+        const hasOffsets = item.start_offset_seconds !== null && item.start_offset_seconds !== undefined;
+        const span = hasOffsets ? `${fmtClock(item.start_offset_seconds)} – ${fmtClock(item.end_offset_seconds)}` : fmtInterval(item);
+        const delta = hasOffsets ? fmtDeltaSeconds(item.end_offset_seconds - item.start_offset_seconds) : fmtDeltaSeconds(itemDurationSeconds(item));
+        const frames = (item.keyframes || []).map((frame, index) => `<button type="button" class="keyframe" data-seek="${esc(frame.offset_seconds)}" title="Ver en el vídeo (${fmtClock(frame.offset_seconds)})"><img loading="lazy" alt="Fotograma ${fmtClock(frame.offset_seconds)}" src="/api/memory/events/${encodeURIComponent(item.id)}/keyframes/${index}"><span>${fmtClock(frame.offset_seconds)}</span></button>`).join("");
+        const chips = (label, values) => values?.length ? `<div class="event-chips"><b>${label}</b>${values.map(value => `<span>${esc(typeof value === "string" ? value : [value.label, ...(value.attributes || []), value.description].filter(Boolean).join(" · "))}</span>`).join("")}</div>` : "";
+        return `<article class="event-card rich" data-event-start="${hasOffsets ? esc(item.start_offset_seconds) : ""}">
+          <header><span class="event-seq">${String((item.sequence_number || 0) + 1).padStart(2, "0")}</span><div><strong>${esc(item.title || humanize(item.event_type))}</strong><small>${esc(span)} · Δt ${esc(delta)}</small></div>${hasOffsets && videoAsset ? `<button type="button" class="button-mini ghost" data-seek="${esc(item.start_offset_seconds)}">▶ ${fmtClock(item.start_offset_seconds)}</button>` : ""}</header>
+          ${item.summary ? `<p class="event-summary">${esc(item.summary)}</p>` : ""}
+          ${frames ? `<div class="keyframes">${frames}</div>` : ""}
+          <details class="event-detail"><summary>Descripción detallada</summary><div class="event-detail-body">${paragraphs(item.description)}
+            ${chips("Acciones", attributes.actions)}${chips("Personas", attributes.actors)}${chips("Objetos", attributes.objects)}${chips("Texto visible", attributes.visible_text)}
+            ${attributes.scene ? `<p class="event-meta"><b>Escena:</b> ${esc(attributes.scene)}</p>` : ""}
+            ${attributes.changes_from_previous ? `<p class="event-meta"><b>Cambio respecto al anterior:</b> ${esc(attributes.changes_from_previous)}</p>` : ""}
+            ${attributes.uncertainty ? `<p class="event-meta uncertain"><b>Incertidumbre:</b> ${esc(attributes.uncertainty)}</p>` : ""}
+          </div></details>
+          ${generation.vision_model ? `<p class="event-provenance">Descripción generada por ${esc(generation.vision_model)} · no verificada</p>` : ""}
+        </article>`;
+      };
+      const playerHtml = videoAsset && orderedEvents.length
+        ? `<div class="episode-player"><video id="episode-video" controls preload="metadata" src="/api/memory/assets/${encodeURIComponent(videoAsset.id)}/file"></video></div>` : "";
+      const eventsHtml = orderedEvents.length ? `<section class="event-section"><div class="section-title"><p class="kicker">EVENTOS</p><h3>Qué ocurrió, tramo a tramo</h3><p>Cada evento es un tramo del vídeo descrito por el modelo de visión. Pulsa un fotograma para verlo en el vídeo.</p></div>${playerHtml}${orderedEvents.map(renderEvent).join("")}</section>` : "";
       const microHtml = data.microepisodes.map(({microepisode, observations, events}, index) => {
         const rules = (microepisode.metadata?.grouping_decisions || []).flatMap(item => item.rules || []);
         return `<article class="micro-summary"><span>Microepisodio ${index + 1}</span><b>${observations.length} observación(es) · ${events.length} evento(s)</b><small>${fmtInterval(microepisode)}</small><p>${[...new Set(rules)].map(groupingRuleLabel).join(" · ") || "Sin reglas declaradas"}</p></article>`;
@@ -646,12 +684,19 @@ document.addEventListener("DOMContentLoaded", () => {
       const environmentIds = episode.environment_ids?.length ? episode.environment_ids : [episode.location].filter(Boolean);
       const environment = environmentIds.map(environmentLabel).join(", ") || "Ambiente no declarado";
       root.innerHTML = `<header class="episode-hero"><div><p class="kicker">EPISODIO EN LA MEMORIA</p><h2>${esc(episodeTitle(episode))}</h2><p>${esc(fmtInterval(episode))}${episode.metadata?.captured_at_origin ? ` · ${esc(timeOriginLabel(episode.metadata.captured_at_origin))}` : ""}</p></div><span class="episode-place">${esc(environment)}</span></header>${compatibilityNotice}
-        <div class="memory-facts"><div><span>CONTENIDO EXTRAÍDO</span><b>${allObservations.length} observación(es)</b></div><div><span>PROCEDENCIA</span><b>${data.assets.length} activo(s)</b></div><div><span>EVENTOS</span><b>${data.events.length}</b></div><div><span>ESTRUCTURA</span><b>${data.microepisodes.length} microepisodio(s)</b></div></div>
-        <div class="episode-readable"><main><section class="content-section"><div class="section-title"><p class="kicker">QUÉ CONTIENE</p><h3>Contenido extraído</h3><p>Texto o descripción producido por los procesadores. No sustituye al original.</p></div>${observationsHtml || '<div class="empty">No hay contenido extraído asociado a este episodio.</div>'}</section>${eventsHtml}</main>
+        <div class="memory-facts"><div><span>CONTENIDO EXTRAÍDO</span><b>${allObservations.length} observación(es)</b></div><div><span>PROCEDENCIA</span><b>${data.assets.length} activo(s)</b></div><div><span>EVENTOS</span><b>${data.events.length || "Sin eventos"}</b></div><div><span>ESTRUCTURA</span><b>${data.microepisodes.length} microepisodio(s)</b></div></div>
+        <div class="episode-readable"><main>${eventsHtml}<section class="content-section"><div class="section-title"><p class="kicker">QUÉ CONTIENE</p><h3>${hasVideoEvents ? "Otro contenido extraído" : "Contenido extraído"}</h3><p>Texto o descripción producido por los procesadores. No sustituye al original.</p></div>${observationsHtml || '<div class="empty">No hay más contenido extraído en este episodio.</div>'}</section></main>
           <aside class="origin-section"><div class="section-title"><p class="kicker">DE DÓNDE PROCEDE</p><h3>Archivos y fuentes</h3><p>Cada observación debe poder volver a su evidencia original.</p></div>${originsHtml || '<div class="empty">No hay activos originales enlazados.</div>'}</aside></div>
         ${hypothesesHtml}
         <details class="episode-structure"><summary><span>Cómo se construyó este episodio</span><small>Reglas deterministas y microepisodios</small></summary><div class="structure-content">${structureHtml}</div></details>
         <details class="technical-details episode-technical"><summary>Identificadores y datos técnicos</summary><dl><dt>ID del episodio</dt><dd>${esc(episode.id)}</dd><dt>Productor</dt><dd>${esc(episode.producer || "—")}</dd><dt>Versión</dt><dd>${esc(episode.model_version || "—")}</dd><dt>Confianza</dt><dd>${episode.confidence ?? "—"}</dd><dt>Qdrant</dt><dd>${data.compatibility_mode ? "No consultado" : data.vector_projection.indexed ? "Indexado" : "Pendiente"}</dd><dt>Relaciones</dt><dd>${data.relations.length}</dd></dl></details>`;
+      root.querySelectorAll("[data-seek]").forEach(button => button.addEventListener("click", () => {
+        const video = root.querySelector("#episode-video");
+        if (!video) return;
+        video.currentTime = Number(button.dataset.seek) || 0;
+        video.scrollIntoView({ behavior: "smooth", block: "center" });
+        video.play().catch(() => {});
+      }));
     } catch (error) {
       if (requestToken !== state.inspectRequest) return;
       state.inspectedEpisode = null;

@@ -5,12 +5,12 @@ EpiGraph conserva lo que ocurre en un entorno a partir de capturas reales
 evidencia verificable: cada respuesta vuelve al archivo original y al
 instante exacto en que ocurrió.
 
-> **Estado (2026-10-10).** La base técnica está operativa: custodia de
-> originales por SHA‑256, SQLite como fuente de verdad, Qdrant Edge como
-> índice reconstruible, búsqueda híbrida y herramientas de consulta. Lo que
-> **todavía no hace** es entender el contenido: el vídeo solo produce
-> intervalos técnicos y el audio no se transcribe. La hoja de ruta para que
-> cada vídeo genere eventos con descripciones detalladas está en
+> **Estado (2026-10-10).** Cada captura (vídeo, audio y documentos subidos
+> juntos) forma un episodio. El vídeo se divide en **eventos con su Δt**,
+> fotogramas clave y una descripción detallada generada por un modelo de
+> visión local (Ollama). Pendiente: transcripción de audio (fase D), fusión
+> de vídeo + audio + documentos en la descripción (fase E) y búsqueda por
+> eventos (fase G). Hoja de ruta:
 > [`docs/plan-mejora-uso-real.md`](docs/plan-mejora-uso-real.md).
 
 ## Cómo funciona
@@ -37,9 +37,16 @@ Requisitos: Python 3.13 y el entorno Conda `LabMemoryEpic01`.
 
 ```powershell
 conda activate LabMemoryEpic01
-python -m pip install -e ".[dev]"
+python -m pip install -e ".[dev,video]"
+ollama pull qwen3.5:4b          # modelo de visión por defecto
 epigraph --data .runtime/demo --fake-encoders serve
 ```
+
+El vídeo se describe con `qwen3.5:4b` en Ollama (unos 5 s por tramo en una
+RTX 5080). Para comparar modelos con vídeos propios sin tocar la memoria:
+`python scripts/benchmark_vision.py VIDEO.mp4 --models qwen3.5:4b gemma3:12b`.
+Sin Ollama o sin PyAV la captura sigue funcionando, pero el vídeo no tendrá
+eventos y la etapa lo indica.
 
 Abra <http://127.0.0.1:8100/> y vaya a **Ingesta**: seleccione a la vez el
 vídeo, el audio y los documentos de una misma grabación. Se crea una

@@ -8,11 +8,13 @@ from __future__ import annotations
 import json
 import logging
 import sqlite3
+import threading
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
 
 from episodic.adapters.sqlite.migrations import apply_migrations, init_connection
+from episodic.adapters.sqlite.serialized import SerializedConnection
 from episodic.domain.captures import Capture, Job, JobState
 from episodic.domain.entities import (
     Annotation,
@@ -80,14 +82,16 @@ class SqliteEpisodicRepository:
     def __init__(self, db_path: Union[str, Path]) -> None:
         self.db_path = Path(db_path)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        self._conn = sqlite3.connect(
+        raw = sqlite3.connect(
             str(self.db_path),
             check_same_thread=False,
             isolation_level=None,  # Autocommit por defecto para manejar BEGIN/COMMIT explícitos
         )
-        init_connection(self._conn)
-        apply_migrations(self._conn)
-        self._in_transaction = False
+        init_connection(raw)
+        apply_migrations(raw)
+        # Las rutas HTTP comparten esta conexión desde varios hilos.
+        self._conn = SerializedConnection(raw)
+        self._transaction_owner: int | None = None
 
     def close(self) -> None:
         if self._conn:
@@ -96,21 +100,43 @@ class SqliteEpisodicRepository:
     # -----------------------------------------------------------------------
     # Transacciones
     # -----------------------------------------------------------------------
+    # La transacción pertenece al hilo que la abre: mantiene el lock de la
+    # conexión hasta COMMIT/ROLLBACK, de modo que otro hilo no puede ni
+    # intercalar sentencias en ella ni confirmarla. Las llamadas anidadas del
+    # mismo hilo se unen a la transacción en curso, como antes.
+
+    @property
+    def _in_transaction(self) -> bool:
+        return self._transaction_owner == threading.get_ident()
 
     def begin_transaction(self) -> None:
-        if not self._in_transaction:
+        if self._in_transaction:
+            return
+        self._conn.lock.acquire()
+        try:
             self._conn.execute("BEGIN IMMEDIATE;")
-            self._in_transaction = True
+        except Exception:
+            self._conn.lock.release()
+            raise
+        self._transaction_owner = threading.get_ident()
 
     def commit_transaction(self) -> None:
-        if self._in_transaction:
+        if not self._in_transaction:
+            return
+        try:
             self._conn.execute("COMMIT;")
-            self._in_transaction = False
+        finally:
+            self._transaction_owner = None
+            self._conn.lock.release()
 
     def rollback_transaction(self) -> None:
-        if self._in_transaction:
+        if not self._in_transaction:
+            return
+        try:
             self._conn.execute("ROLLBACK;")
-            self._in_transaction = False
+        finally:
+            self._transaction_owner = None
+            self._conn.lock.release()
 
     def _require_existing(self, table: str, ids: List[str], field_name: str) -> None:
         """Valida referencias para tablas internas conocidas."""

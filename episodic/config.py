@@ -84,6 +84,29 @@ class EpisodicConfig:
     outbox_batch_size: int = field(default_factory=lambda: _env("OUTBOX_BATCH_SIZE", 50, int))
     outbox_retry_limit: int = field(default_factory=lambda: _env("OUTBOX_RETRY_LIMIT", 3, int))
 
+    # Percepción de vídeo (Fase C). ``vision_backend``: ollama | fake | none.
+    vision_backend: str = field(default_factory=lambda: _env("VISION_BACKEND", "ollama"))
+    vision_model: str = field(default_factory=lambda: _env("VISION_MODEL", "qwen3.5:4b"))
+    ollama_url: str = field(
+        default_factory=lambda: _env("OLLAMA_URL", "http://127.0.0.1:11434")
+    )
+    vision_timeout_seconds: float = field(
+        default_factory=lambda: _env("VISION_TIMEOUT_SECONDS", 300.0, float)
+    )
+    video_sample_fps: float = field(default_factory=lambda: _env("VIDEO_SAMPLE_FPS", 1.0, float))
+    video_min_segment_seconds: float = field(
+        default_factory=lambda: _env("VIDEO_MIN_SEGMENT_SECONDS", 2.0, float)
+    )
+    video_max_segment_seconds: float = field(
+        default_factory=lambda: _env("VIDEO_MAX_SEGMENT_SECONDS", 15.0, float)
+    )
+    video_scene_threshold: float = field(
+        default_factory=lambda: _env("VIDEO_SCENE_THRESHOLD", 0.12, float)
+    )
+    description_language: str = field(
+        default_factory=lambda: _env("DESCRIPTION_LANGUAGE", "es")
+    )
+
     # Directorio permitido para importaciones; su aplicación estricta pertenece
     # a la fase del modelo de procedencia, no a esta fase de infraestructura.
     import_root: str | Path = field(default_factory=lambda: _env("IMPORT_ROOT", ""))
@@ -93,6 +116,8 @@ class EpisodicConfig:
         self.log_level = self.log_level.upper()
         if self.vector_backend not in {"edge", "http"}:
             raise ValueError(f"Backend vectorial no soportado: {self.vector_backend}")
+        if self.vision_backend not in {"ollama", "fake", "none"}:
+            raise ValueError(f"Backend de visión no soportado: {self.vision_backend}")
 
     @classmethod
     def from_env(cls, **overrides: Any) -> "EpisodicConfig":

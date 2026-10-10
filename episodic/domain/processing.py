@@ -129,6 +129,16 @@ class Event(SerializableDomainModel):
     confidence: float | None = None
     created_at: datetime = field(default_factory=utc_now)
     metadata: dict[str, Any] = field(default_factory=dict)
+    # Localización dentro del activo y contenido legible (Fase C). Todo texto
+    # generado conserva su procedencia en ``metadata["generation"]``.
+    asset_id: str | None = None
+    sequence_number: int = 0
+    start_offset_seconds: float | None = None
+    end_offset_seconds: float | None = None
+    title: str = ""
+    summary: str = ""
+    attributes: dict[str, Any] = field(default_factory=dict)
+    keyframes: list[dict[str, Any]] = field(default_factory=list)
 
     def __post_init__(self) -> None:
         validate_identifier(self.id)

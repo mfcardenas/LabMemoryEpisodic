@@ -16,6 +16,7 @@ from typing import Callable, Sequence
 from episodic.adapters.files.metadata import FileInspection, LocalFileInspector
 from episodic.application.asset_ingestion import AssetIngestionService
 from episodic.application.episode_composition import DeterministicEpisodeComposer
+from episodic.application.events import EventDerivationService
 from episodic.application.indexing import IndexingWorker
 from episodic.application.lifecycle import LifecycleService
 from episodic.application.observation_extraction import ObservationExtractionService
@@ -36,6 +37,7 @@ CAPTURE_JOB_KIND = "process_capture"
 CAPTURE_STAGES: tuple[tuple[str, str], ...] = (
     ("windows", "Ventanas temporales"),
     ("observations", "Observaciones"),
+    ("events", "Eventos"),
     ("episode", "Episodio"),
     ("index", "Indexación"),
 )
@@ -67,6 +69,7 @@ class CaptureProcessingResult:
     processing_window_ids: tuple[str, ...]
     observation_ids: tuple[str, ...]
     microepisode_ids: tuple[str, ...]
+    event_ids: tuple[str, ...]
     processor_failures: tuple[str, ...]
     indexed_points: int
     removed_episode_ids: tuple[str, ...] = field(default=())
@@ -78,6 +81,7 @@ class CaptureProcessingResult:
             "processing_window_ids": list(self.processing_window_ids),
             "observation_ids": list(self.observation_ids),
             "microepisode_ids": list(self.microepisode_ids),
+            "event_ids": list(self.event_ids),
             "processor_failures": list(self.processor_failures),
             "indexed_points": self.indexed_points,
         }
@@ -178,6 +182,7 @@ class CaptureProcessingService:
         repository: EpisodicRepository,
         windowing: WindowingService,
         extraction: ObservationExtractionService,
+        events: EventDerivationService,
         composition: DeterministicEpisodeComposer,
         lifecycle: LifecycleService,
         indexing_worker: IndexingWorker,
@@ -185,6 +190,7 @@ class CaptureProcessingService:
         self.repository = repository
         self.windowing = windowing
         self.extraction = extraction
+        self.events = events
         self.composition = composition
         self.lifecycle = lifecycle
         self.indexing_worker = indexing_worker
@@ -258,8 +264,16 @@ class CaptureProcessingService:
             + (f", {len(failures)} fallo(s)" if failures else ""),
         )
 
+        report("events", StageState.RUNNING, "")
+        events = self.events.derive_for_assets(capture.asset_ids)
+        report(
+            "events",
+            StageState.COMPLETED,
+            f"{len(events)} evento(s)" if events else "sin vídeo descrito: no hay eventos",
+        )
+
         report("episode", StageState.RUNNING, "")
-        composed = self.composition.compose_capture(capture)
+        composed = self.composition.compose_capture(capture, events)
         episode = composed.episodes[0]
         report(
             "episode",
@@ -286,6 +300,7 @@ class CaptureProcessingService:
             processing_window_ids=tuple(window_ids),
             observation_ids=tuple(observation_ids),
             microepisode_ids=tuple(item.id for item in composed.microepisodes),
+            event_ids=tuple(item.id for item in events),
             processor_failures=tuple(failures),
             indexed_points=len(indexed),
             removed_episode_ids=composed.removed_episode_ids,

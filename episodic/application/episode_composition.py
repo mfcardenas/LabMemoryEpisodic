@@ -12,6 +12,7 @@ from typing import Any, Iterable, Sequence
 from episodic.domain.captures import Capture
 from episodic.domain.entities import Episode, Observation
 from episodic.domain.episodes import MicroEpisode
+from episodic.domain.processing import Event
 from episodic.ports.repository import EpisodicRepository
 
 
@@ -167,14 +168,19 @@ class DeterministicEpisodeComposer:
             environment_id, environment_id, observations, microepisodes, episodes
         )
 
-    def compose_capture(self, capture: Capture) -> EpisodeCompositionResult:
-        """Construye exactamente un episodio con todas las observaciones de la captura."""
+    def compose_capture(
+        self, capture: Capture, events: Sequence[Event] = ()
+    ) -> EpisodeCompositionResult:
+        """Construye exactamente un episodio con todas las observaciones de la captura.
+
+        Cada evento se enlaza al microepisodio que contiene su observación de origen.
+        """
         asset_ids = set(capture.asset_ids)
-        observations = [
+        observations = latest_processor_outputs(
             item
             for item in self.repository.list_observations(capture.environment_id)
             if item.asset_id in asset_ids
-        ]
+        )
         if not observations:
             raise ValueError(f"La captura {capture.id} no tiene observaciones que componer")
         # Los archivos de una captura se tomaron juntos: sus fuentes están
@@ -188,9 +194,23 @@ class DeterministicEpisodeComposer:
             ),
         )
         groups = scoped._group_observations(observations)
+        events_by_observation: dict[str, list[str]] = {}
+        for event in sorted(events, key=lambda item: (item.start_time, item.sequence_number)):
+            for observation_id in event.metadata.get("observation_ids", []):
+                events_by_observation.setdefault(observation_id, []).append(event.id)
         microepisodes = tuple(
-            scoped._make_microepisode(group, capture.environment_id, scope=capture.id)
-            for group in groups
+            replace(
+                micro,
+                event_ids=_ordered_unique(
+                    event_id
+                    for observation_id in micro.observation_ids
+                    for event_id in events_by_observation.get(observation_id, [])
+                ),
+            )
+            for micro in (
+                scoped._make_microepisode(group, capture.environment_id, scope=capture.id)
+                for group in groups
+            )
         )
         episode = scoped._make_capture_episode(capture, microepisodes)
         return self._persist_reconstruction(
@@ -587,6 +607,26 @@ class DeterministicEpisodeComposer:
             removed_microepisode_ids=stale_micro_ids,
             removed_episode_ids=stale_episode_ids,
         )
+
+
+def latest_processor_outputs(observations: Iterable[Observation]) -> list[Observation]:
+    """Por activo y procesador, conserva solo la versión más reciente.
+
+    Reprocesar con otro modelo crea observaciones nuevas (los IDs incluyen la
+    versión); las anteriores se conservan en SQLite pero no se mezclan.
+    """
+    items = list(observations)
+    latest: dict[tuple[str | None, str], tuple] = {}
+    for item in items:
+        key = (item.asset_id, item.producer)
+        marker = (item.created_at, item.model_version or "")
+        if key not in latest or marker > latest[key]:
+            latest[key] = marker
+    return [
+        item
+        for item in items
+        if (item.model_version or "") == latest[(item.asset_id, item.producer)][1]
+    ]
 
 
 def _decision(target_id: str, action: str, rules: Sequence[str]) -> dict[str, Any]:

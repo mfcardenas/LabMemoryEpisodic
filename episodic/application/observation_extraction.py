@@ -65,15 +65,18 @@ class ObservationExtractionService:
         asset = self.repository.get_asset(asset_id)
         if asset is None:
             raise ValueError(f"Asset inexistente: {asset_id}")
+        processor = self._select(asset.media_type, processor_name)
         targets: list[ProcessorTarget] = [asset]
-        if asset.media_type in {EvidenceMediaType.AUDIO, EvidenceMediaType.VIDEO}:
+        if (
+            asset.media_type in {EvidenceMediaType.AUDIO, EvidenceMediaType.VIDEO}
+            and not getattr(processor, "processes_whole_asset", False)
+        ):
             windows = self.repository.list_processing_windows_for_asset(asset.id)
             if windows:
                 targets = list(windows)
 
         result = ExtractionResult()
         for target in targets:
-            processor = self._select(asset.media_type, processor_name)
             try:
                 result.observations.extend(processor.process(target))
             except ProcessorExecutionError as exc:
