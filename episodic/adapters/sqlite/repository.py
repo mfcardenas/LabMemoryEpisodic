@@ -1746,13 +1746,24 @@ class SqliteEpisodicRepository:
         ]
         return entries if after_id else entries[::-1]
 
-    def prune_activity(self, keep: int) -> int:
+    def prune_activity(
+        self, keep: int, levels: Optional[List[ActivityLevel]] = None
+    ) -> int:
+        """Conserva las ``keep`` líneas más recientes (de esos niveles, si se dan)."""
+        scope, params = "1 = 1", []
+        if levels:
+            scope = f"level IN ({', '.join('?' for _ in levels)})"
+            params = [level.value for level in levels]
+        # Id de la línea más antigua que se conserva; sin ella, no sobra ninguna.
         cursor = self._conn.execute(
-            """
+            f"""
             DELETE FROM activity_log
-            WHERE id <= (SELECT COALESCE(MAX(id), 0) FROM activity_log) - ?
+            WHERE {scope} AND id < COALESCE((
+                SELECT id FROM activity_log WHERE {scope}
+                ORDER BY id DESC LIMIT 1 OFFSET ?
+            ), 0)
             """,
-            (keep,),
+            [*params, *params, max(keep, 1) - 1],
         )
         return cursor.rowcount
 

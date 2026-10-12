@@ -23,6 +23,11 @@ Ejemplo::
 
 La captura se identifica como ``<environment_id>_<captured_at>`` (epoch
 entero): ese es el nombre del episodio en la memoria y en Qdrant.
+
+Para cargas manuales (sin la herramienta), ``draft_capture_manifest`` propone
+un manifiesto a partir de una carpeta ``<entorno>_<epoch>`` y de sus ficheros,
+un dispositivo por fichero. Solo se usa cuando una persona lo pide: el
+vigilante nunca lo deduce por su cuenta.
 """
 from __future__ import annotations
 
@@ -30,7 +35,7 @@ import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import PurePosixPath
-from typing import Any
+from typing import Any, Mapping
 
 from episodic.domain.types import EvidenceMediaType, SourceType
 
@@ -50,6 +55,17 @@ DEVICE_MEDIA: dict[SourceType, frozenset[EvidenceMediaType]] = {
     SourceType.MANUAL: frozenset({EvidenceMediaType.DOCUMENT, EvidenceMediaType.TEXT}),
     SourceType.SENSOR: frozenset(EvidenceMediaType),
 }
+
+
+# Dispositivo que se propone para cada tipo de fichero en un borrador.
+DRAFT_DEVICE_KIND: dict[EvidenceMediaType, SourceType] = {
+    EvidenceMediaType.VIDEO: SourceType.CAMERA,
+    EvidenceMediaType.AUDIO: SourceType.MICROPHONE,
+    EvidenceMediaType.IMAGE: SourceType.PHOTO_SET,
+    EvidenceMediaType.DOCUMENT: SourceType.DOCUMENT,
+    EvidenceMediaType.TEXT: SourceType.DOCUMENT,
+}
+_FOLDER_NAME = re.compile(r"^(?P<environment>.+)_(?P<epoch>\d{9,10})$")
 
 
 class CaptureManifestError(ValueError):
@@ -124,6 +140,53 @@ def parse_capture_manifest(data: Any) -> CaptureManifest:
         devices=devices,
         title=title.strip() if title else None,
     )
+
+
+def split_capture_folder_name(name: str) -> tuple[str, int]:
+    """``env_context_01_1791786600`` -> (``env_context_01``, 1791786600)."""
+    match = _FOLDER_NAME.match(name)
+    if match is None:
+        raise CaptureManifestError(
+            f"el nombre '{name}' no sigue el patrón <entorno>_<epoch en segundos>"
+        )
+    environment_id = _identifier(match["environment"], f"entorno de '{name}'")
+    epoch = int(match["epoch"])
+    _epoch(epoch, f"epoch de '{name}'")
+    return environment_id, epoch
+
+
+def draft_capture_manifest(
+    folder_name: str, files: Mapping[str, EvidenceMediaType]
+) -> dict[str, Any]:
+    """Manifiesto propuesto: entorno e instante del nombre de la carpeta y un
+    dispositivo por fichero, con su clase según el tipo de fichero."""
+    environment_id, epoch = split_capture_folder_name(folder_name)
+    if not files:
+        raise CaptureManifestError(f"'{folder_name}' no tiene ficheros utilizables")
+    devices: list[dict[str, Any]] = []
+    taken: set[str] = set()
+    for name, media_type in sorted(files.items()):
+        base = _device_slug(PurePosixPath(name).stem)
+        device_id, number = base, 2
+        while device_id in taken:
+            device_id, number = f"{base}_{number}", number + 1
+        taken.add(device_id)
+        devices.append(
+            {"id": device_id, "kind": DRAFT_DEVICE_KIND[media_type].value, "files": [name]}
+        )
+    draft = {
+        "schema": MANIFEST_SCHEMA,
+        "environment_id": environment_id,
+        "captured_at": epoch,
+        "devices": devices,
+    }
+    parse_capture_manifest(draft)  # el borrador cumple el mismo contrato
+    return draft
+
+
+def _device_slug(stem: str) -> str:
+    slug = re.sub(r"[^A-Za-z0-9_.-]+", "_", stem).strip("_.-")[:64]
+    return slug or "fichero"
 
 
 def _device(item: Any, index: int, captured_epoch: float) -> DeviceDeclaration:

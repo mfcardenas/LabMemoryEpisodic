@@ -14,6 +14,7 @@ from dataclasses import replace
 from typing import Callable, Mapping, Sequence
 
 from episodic.application.activity import ActivityLog
+from episodic.application.progress import progress_sink
 from episodic.domain.captures import Job, JobStage, JobState, StageState
 from episodic.domain.times import utc_now
 from episodic.ports.repository import EpisodicRepository
@@ -32,7 +33,8 @@ class JobRunner:
 
     ``repository`` debe ser una conexión propia del hilo de trabajo: SQLite
     en modo WAL permite que la API lea mientras el trabajo escribe.
-    ``activity`` (opcional) recibe el inicio, cada etapa y el final de cada
+    ``activity`` (opcional) recibe el inicio, cada etapa, cada paso interno
+    que anuncien los procesadores (``progress.note``) y el final de cada
     trabajo; ``describe`` da el nombre legible de su objetivo.
     """
 
@@ -148,8 +150,11 @@ class JobRunner:
             + (f" (intento {job.attempts})" if job.attempts > 1 else ""),
         )
 
+        running_stage: str | None = None
+
         def report(name: str, state: StageState, detail: str = "") -> None:
-            nonlocal job
+            nonlocal job, running_stage
+            running_stage = name if state == StageState.RUNNING else None
             stages = [
                 replace(stage, state=state, detail=detail) if stage.name == name else stage
                 for stage in job.stages
@@ -164,8 +169,27 @@ class JobRunner:
                 stage=name,
             )
 
+        def step(message: str) -> None:
+            """Paso dentro de la etapa en curso: se ve en su ficha y en el registro."""
+            nonlocal job
+            stage = next((item for item in job.stages if item.name == running_stage), None)
+            if stage is None:
+                self._log("info", job, message)
+                return
+            job = replace(
+                job,
+                stages=[
+                    replace(item, detail=message) if item.name == stage.name else item
+                    for item in job.stages
+                ],
+                updated_at=utc_now(),
+            )
+            self.repository.save_job(job)
+            self._log("info", job, f"{stage.label} · {message}", stage=stage.name, step=True)
+
         try:
-            result = self.handlers[job.job_type](job, report)
+            with progress_sink(step):
+                result = self.handlers[job.job_type](job, report)
         except Exception as exc:
             logger.exception("El trabajo %s falló", job.id)
             stages = [

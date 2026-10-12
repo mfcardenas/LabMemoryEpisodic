@@ -7,6 +7,7 @@ from episodic.processors.base import BaseObservationProcessor, ObservationDraft,
 
 class MockProcessor(BaseObservationProcessor):
     name = "mock-processor"
+    label = "procesador simulado"  # nombre en el registro de ejecución
     model_version = "phase4-mock-v1"
     supported_modalities = frozenset(EvidenceMediaType)
 

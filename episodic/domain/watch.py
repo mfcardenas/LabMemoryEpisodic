@@ -74,6 +74,7 @@ class InboxFile(SerializableDomainModel):
 
 
 class ActivityLevel(str, Enum):
+    DEBUG = "debug"  # pase del vigilante: se poda aparte para no desplazar lo importante
     INFO = "info"
     WARNING = "warning"
     ERROR = "error"

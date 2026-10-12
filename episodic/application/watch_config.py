@@ -63,6 +63,7 @@ class WatchSource:
     ready_marker: str = ""
     manifest_file: str = "capture.json"
     missing_files_timeout_seconds: float = 600.0
+    manifest_warning_seconds: float = 60.0
     include: tuple[str, ...] = ("*",)
     exclude: tuple[str, ...] = DEFAULT_EXCLUDE
     after: str = "keep"
@@ -91,6 +92,7 @@ class WatchSource:
             "ready_marker": self.ready_marker,
             "manifest_file": self.manifest_file,
             "missing_files_timeout_seconds": self.missing_files_timeout_seconds,
+            "manifest_warning_seconds": self.manifest_warning_seconds,
             "include": list(self.include),
             "exclude": list(self.exclude),
             "after": self.after,
@@ -130,6 +132,7 @@ _SOURCE_KEYS = {
     "ready_marker",
     "manifest_file",
     "missing_files_timeout_seconds",
+    "manifest_warning_seconds",
     "include",
     "exclude",
     "after",
@@ -217,9 +220,13 @@ def _parse_source(entry: Any, index: int, base_dir: Path) -> WatchSource:
         environment_id = ""
     else:
         environment_id = _text(entry.get("environment_id"), f"{where}.environment_id")
-        if "manifest_file" in entry or "missing_files_timeout_seconds" in entry:
+        manifest_only = sorted(
+            {"manifest_file", "missing_files_timeout_seconds", "manifest_warning_seconds"}
+            & set(entry)
+        )
+        if manifest_only:
             raise WatchConfigError(
-                f"{where}: manifest_file y missing_files_timeout_seconds solo se usan "
+                f"{where}: {', '.join(manifest_only)}: opciones que solo se usan "
                 "con grouping = \"manifest\""
             )
     after = entry.get("after", "keep")
@@ -258,6 +265,9 @@ def _parse_source(entry: Any, index: int, base_dir: Path) -> WatchSource:
         missing_files_timeout_seconds=_positive(
             entry.get("missing_files_timeout_seconds", 600.0),
             f"{where}.missing_files_timeout_seconds",
+        ),
+        manifest_warning_seconds=_non_negative(
+            entry.get("manifest_warning_seconds", 60.0), f"{where}.manifest_warning_seconds"
         ),
         include=_patterns(entry.get("include", ["*"]), f"{where}.include"),
         exclude=_patterns(entry.get("exclude", list(DEFAULT_EXCLUDE)), f"{where}.exclude"),

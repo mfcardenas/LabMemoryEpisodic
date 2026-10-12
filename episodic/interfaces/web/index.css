@@ -640,6 +640,14 @@ button.speech-time:hover { outline: 2px solid var(--signal); }
 .source-flag.error { color: var(--signal-dark); }
 .source-error { margin: 10px 0 0; color: var(--signal-dark); font: 11px var(--mono); }
 .state-chips { display: flex; flex-wrap: wrap; gap: 5px; }
+.awaiting { margin-top: 12px; padding: 10px; border: 1px dashed var(--signal-dark); background: #f3e6d9; }
+.awaiting header { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-bottom: 6px; }
+.awaiting h4 { margin: 0; color: var(--signal-dark); font: 700 10px/1.4 var(--mono); text-transform: uppercase; letter-spacing: .6px; }
+.awaiting p { margin: 0 0 8px; font-size: 12px; }
+.awaiting-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 4px 10px; align-items: center; padding: 5px 0; border-top: 1px solid #dcc9b6; }
+.awaiting-row code { font: 11px var(--mono); overflow-wrap: anywhere; }
+.awaiting-row small { grid-column: 1; color: var(--muted); font-size: 11px; }
+.awaiting-row .awaiting-error { color: var(--signal-dark); }
 .state-chip { justify-self: start; align-self: start; padding: 4px 6px; border: 1px solid currentColor; color: var(--muted); font: 700 9px var(--mono); text-transform: uppercase; white-space: nowrap; }
 .state-chip.pending { color: var(--blue); }
 .state-chip.ready { color: #1f7f82; }
@@ -685,6 +693,11 @@ button.speech-time:hover { outline: 2px solid var(--signal); }
 .log-comp { color: var(--acid); font-weight: 700; font-size: 10px; line-height: 1.95; }
 .log-line.warning .log-msg { color: #f3d27a; }
 .log-line.error .log-msg { color: #ffb09c; }
+.log-line.debug .log-msg, .log-line.debug .log-comp { color: #8f998b; }
+.log-line.debug.busy .log-msg { color: #b9c4b4; }
+.log-line.step .log-msg { padding-left: 14px; color: #c3cdbf; }
+.log-line.step .log-msg::before { content: "↳ "; color: #8f998b; }
+.log-repeat { margin-left: 8px; color: #6f786b; }
 .log-msg { overflow-wrap: anywhere; white-space: pre-wrap; }
 .log-empty { padding: 18px; color: #8f998b; }
 

@@ -27,6 +27,7 @@ path = "D:/capturas/entrada"
 grouping = "manifest"                 # manifest | folder | file | time_gap
 manifest_file = "capture.json"
 missing_files_timeout_seconds = 600   # espera por ficheros declarados que aún no llegan
+manifest_warning_seconds = 60         # aviso si una carpeta completa sigue sin manifiesto
 after = "keep"                        # keep: dejar los originales | move: moverlos a archive_dir
 # archive_dir = "_procesados"         # solo con after = "move"; relativa a la carpeta vigilada
 # include = ["*"]                     # patrones de ficheros que se leen

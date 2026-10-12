@@ -481,3 +481,37 @@ class QdrantVectorIndex:
             return res.count
         except Exception:
             return 0
+
+
+def logical_collection_members(client: QdrantClient, collection_name: str) -> tuple[list[str], bool]:
+    """Colecciones físicas que pertenecen a la colección lógica y si su alias existe.
+
+    Son la propia colección (esquema anterior a los alias), sus generaciones
+    ``__gen_*``, las ``__staging_*`` que quedaran a medias y la que apunte el
+    alias. Ninguna otra colección del servidor se considera.
+    """
+    alias_targets = [
+        item.collection_name for item in client.get_aliases().aliases if item.alias_name == collection_name
+    ]
+    prefixes = (f"{collection_name}__gen_", f"{collection_name}__staging_")
+    members = [
+        item.name
+        for item in client.get_collections().collections
+        if item.name == collection_name or item.name.startswith(prefixes)
+    ]
+    members += [name for name in alias_targets if name not in members]
+    return sorted(members), bool(alias_targets)
+
+
+def drop_logical_collection(client: QdrantClient, collection_name: str) -> list[str]:
+    """Borra el alias y todas las colecciones físicas de la colección lógica."""
+    members, has_alias = logical_collection_members(client, collection_name)
+    if has_alias:
+        client.update_collection_aliases(
+            change_aliases_operations=[
+                models.DeleteAliasOperation(delete_alias=models.DeleteAlias(alias_name=collection_name))
+            ]
+        )
+    for name in members:
+        client.delete_collection(name)
+    return members

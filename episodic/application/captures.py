@@ -20,6 +20,7 @@ from episodic.application.episode_composition import DeterministicEpisodeCompose
 from episodic.application.events import EventDerivationService
 from episodic.application.indexing import IndexingWorker
 from episodic.application.lifecycle import LifecycleService
+from episodic.application.progress import progress_scope
 from episodic.application.observation_extraction import ObservationExtractionService
 from episodic.application.windowing import WindowingService
 from episodic.domain.captures import (
@@ -294,12 +295,10 @@ class CaptureProcessingService:
         observation_ids: list[str] = []
         failures: list[str] = []
         for index, asset in enumerate(assets, start=1):
-            report(
-                "observations",
-                StageState.RUNNING,
-                f"{asset.original_filename or asset.id} ({index}/{len(assets)})",
-            )
-            extracted = self.extraction.process_asset(asset.id)
+            current = f"{asset.original_filename or asset.id} ({index}/{len(assets)})"
+            report("observations", StageState.RUNNING, current)
+            with progress_scope(current):
+                extracted = self.extraction.process_asset(asset.id)
             observation_ids.extend(item.id for item in extracted.observations)
             failures.extend(item.error for item in extracted.failures)
         if not observation_ids:

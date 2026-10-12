@@ -6,8 +6,10 @@ alineación con los eventos de vídeo se hace después, al derivar los eventos.
 """
 from __future__ import annotations
 
+import time
 from datetime import timedelta
 
+from episodic.application.progress import note
 from episodic.domain.types import EvidenceMediaType, EvidenceReferenceKind, ProvenanceKind
 from episodic.ports.repository import EpisodicRepository
 from episodic.ports.speech import AudioExtractor, SpeechTranscriber
@@ -18,6 +20,7 @@ SPEECH_OBSERVATION = "speech_segment"
 
 class SpeechTranscriptionProcessor(BaseObservationProcessor):
     name = "speech-transcription-processor"
+    label = "transcripción del habla"  # nombre en el registro de ejecución
     supported_modalities = frozenset({EvidenceMediaType.AUDIO, EvidenceMediaType.VIDEO})
     processes_whole_asset = True
     """Se transcribe el archivo completo: las frases no respetan las ventanas técnicas."""
@@ -44,9 +47,16 @@ class SpeechTranscriptionProcessor(BaseObservationProcessor):
         audio = self.extractor.extract(path)
         if audio is None:
             # Vídeo sin pista de audio: no hay nada que transcribir.
+            note("sin pista de audio")
             return []
+        note(f"transcribiendo el audio con {self.transcriber.model_id}")
+        started = time.monotonic()
         transcript = self.transcriber.transcribe(
             audio.wav, f"{path.stem}.wav", self.language
+        )
+        note(
+            f"{len(transcript.segments)} frase(s) transcritas"
+            f" en {time.monotonic() - started:.1f} s"
         )
         origin = target.window.start_time if target.window else target.start_time
         # Dentro de un vídeo, el desfase de la pista respecto al contenedor

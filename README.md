@@ -28,8 +28,10 @@ Captura (vídeo + audio + documentos subidos juntos)
 
 - **SQLite** guarda el dominio y es la única verdad.
 - **El almacén de medios** conserva cada original por su hash; nunca se modifica.
-- **Qdrant Edge** es una proyección de embeddings que puede borrarse y
-  reconstruirse desde SQLite.
+- **Qdrant** (servidor, por HTTP) guarda la proyección de embeddings en la
+  colección `EPIGRAPH_QDRANT_COLLECTION`; puede borrarse y reconstruirse desde
+  SQLite con `epigraph rebuild-index`. Qdrant Edge (ficheros locales) queda
+  solo para demos y pruebas sin servidor: `--vector-backend edge`.
 - Todo lo generado por un modelo queda marcado como tal, con su versión y
   sus evidencias; las hipótesis nunca se presentan como hechos.
 
@@ -41,7 +43,7 @@ Requisitos: Python 3.13 y el entorno Conda `LabMemoryEpic01`.
 conda activate LabMemoryEpic01
 python -m pip install -e ".[dev,video]"
 ollama pull qwen3.5:4b          # modelo de visión por defecto
-epigraph --data .runtime/demo --fake-encoders serve
+epigraph --data .runtime/demo --vector-backend edge --fake-encoders serve
 ```
 
 El vídeo se describe con `qwen3.5:4b` en Ollama (unos 5 s por tramo en una
@@ -49,6 +51,26 @@ RTX 5080). Para comparar modelos con vídeos propios sin tocar la memoria:
 `python scripts/benchmark_vision.py VIDEO.mp4 --models qwen3.5:4b gemma3:12b`.
 Sin Ollama o sin PyAV la captura sigue funcionando, pero el vídeo no tendrá
 eventos y la etapa lo indica.
+
+Para el uso diario, `start.bat` (Windows) o `./start.sh` levantan Qdrant y la
+transcripción con Docker y arrancan la API con el front en el puerto de
+`EPIGRAPH_PORT`; los argumentos se pasan a `epigraph serve`. El servidor
+procesa lo que haya en la carpeta vigilada de `watch.toml`: las cargas se
+ponen ahí a mano (o las deja la herramienta de captura).
+
+Para repetir pruebas de carga desde cero, con EpiGraph parado:
+`reset.bat` (o `./reset.sh`; `--yes` para no confirmar) borra SQLite, los
+medios, el índice local y la colección de EpiGraph en Qdrant
+(`epigraph reset-data`). No toca la carpeta vigilada ni `_procesados`, ni
+otras colecciones del servidor: para reprocesar una carga, vuelva a ponerla
+en la carpeta vigilada.
+
+Los vectores se guardan en el servidor Qdrant del `docker-compose.yml`
+(volumen persistente, arranque automático; ver `docs/qdrant.md`):
+
+```powershell
+docker compose up -d qdrant
+```
 
 El habla se transcribe en un **servicio aparte** con la API de OpenAI
 (`/v1/audio/transcriptions`). El repositorio trae Speaches (faster-whisper)
@@ -123,6 +145,7 @@ trabajos con sus etapas y el registro de ejecución en vivo.
 | `epigraph search --text "…"` | Búsqueda; admite `--source`, `--start`, `--end`, `--intent`. |
 | `epigraph last-observation --entity ID` | Última observación confirmada de una entidad. |
 | `epigraph rebuild-index` | Reconstruye Qdrant desde SQLite sin perder el índice activo si falla. |
+| `epigraph reset-data [--yes]` | Borra SQLite, medios y la colección de EpiGraph en Qdrant para repetir cargas; no toca la carpeta vigilada. |
 
 `epigraph --help` muestra el resto. La configuración usa variables
 `EPIGRAPH_*` (ver `.env.example`); las rutas relativas se anclan a la raíz

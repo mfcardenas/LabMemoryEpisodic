@@ -23,7 +23,13 @@ from episodic.application.captures import (
     CaptureConflictError,
     CaptureFile,
 )
-from episodic.application.watch import LEASE_NAME, retry_failed_group
+from episodic.application.watch import (
+    ACTIVITY_COMPONENT as WATCH_COMPONENT,
+    LEASE_NAME,
+    draft_group_manifest,
+    retry_failed_group,
+    write_manifest,
+)
 from episodic.bootstrap import AppContainer, create_app_container
 from episodic.config import EpisodicConfig
 from episodic.domain.captures import JobState
@@ -517,6 +523,7 @@ def create_api_app(
             "has_lease": runtime["has_lease"],
             "last_scan_at": runtime["last_scan_at"],
             "last_error": runtime["last_error"],
+            "pass_count": runtime["pass_count"],
             "lease": holder,
             "sources": [
                 {
@@ -554,6 +561,39 @@ def create_api_app(
         if watcher is not None and watcher.running:
             watcher.request_scan()
         return {"reset": reset}
+
+    @app.post("/api/watch/manifest")
+    def watch_manifest(
+        source: str = Form(...), group_key: str = Form(...), write: bool = Form(False)
+    ):
+        """Propone (o escribe, con ``write``) el manifiesto de una carpeta que
+        espera el suyo: para cargas manuales sin la herramienta de captura."""
+        if watcher is None:
+            raise HTTPException(status_code=404, detail="Este servidor no tiene vigilancia configurada")
+        selected = next((item for item in watcher.settings.sources if item.name == source), None)
+        if selected is None:
+            raise HTTPException(status_code=404, detail=f"Fuente desconocida: {source}")
+        try:
+            target, manifest = draft_group_manifest(container.repository, selected, group_key)
+        except LookupError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except FileExistsError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        if write:
+            write_manifest(target, manifest)
+            container.activity_log.info(
+                WATCH_COMPONENT,
+                f"Manifiesto creado a mano para {target.parent.name}: "
+                f"{len(manifest['devices'])} dispositivo(s) deducidos del nombre y de los ficheros",
+                source_name=source,
+                path=target.parent.name,
+                data={"manifest": manifest},
+            )
+            if watcher.running:
+                watcher.request_scan()
+        return {"path": str(target), "manifest": manifest, "written": write}
 
     @app.get("/api/activity")
     def list_activity(

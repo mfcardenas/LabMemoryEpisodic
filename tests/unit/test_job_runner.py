@@ -120,3 +120,61 @@ def test_activity_log_records_each_stage_and_the_outcome(tmp_path) -> None:
     assert repository.prune_activity(keep=2) == len(entries) - 2
     assert [e.message for e in repository.list_activity()] == messages[-2:]
     repository.close()
+
+
+def test_progress_notes_update_the_running_stage_and_the_log(tmp_path) -> None:
+    from episodic.application.activity import ActivityLog
+    from episodic.application.progress import note, progress_scope
+
+    seen = []
+
+    def handler(job, report):
+        note("fuera de etapa")
+        report("uno", StageState.RUNNING, "video.mp4 (1/1)")
+        with progress_scope("video.mp4 (1/1)"):
+            note("tramo 1/2 descrito")
+            seen.append(repository.get_job(job.id).stages[0].detail)
+            note("tramo 2/2 descrito")
+        report("uno", StageState.COMPLETED, "2 observación(es)")
+        return {}
+
+    repository = SqliteEpisodicRepository(tmp_path / "jobs.db")
+    runner = JobRunner(repository, {"demo": handler}, activity=ActivityLog(repository))
+    job = runner.submit("demo", "objetivo", STAGES)
+    assert runner.run_next()
+
+    # La ficha del trabajo muestra el paso en curso mientras dura la etapa.
+    assert seen == ["video.mp4 (1/1) · tramo 1/2 descrito"]
+    assert repository.get_job(job.id).stages[0].detail == "2 observación(es)"
+    steps = [entry for entry in repository.list_activity() if entry.data.get("step")]
+    assert [entry.message for entry in steps] == [
+        "Uno · video.mp4 (1/1) · tramo 1/2 descrito",
+        "Uno · video.mp4 (1/1) · tramo 2/2 descrito",
+    ]
+    assert steps[0].data["stage"] == "uno" and steps[0].job_id == job.id
+    assert "fuera de etapa" in [entry.message for entry in repository.list_activity()]
+    note("sin trabajo en curso: no hace nada")
+    repository.close()
+
+
+def test_watcher_passes_are_pruned_apart_from_the_rest(tmp_path) -> None:
+    from episodic.application.activity import ActivityLog
+    from episodic.domain.watch import ActivityLevel
+
+    repository = SqliteEpisodicRepository(tmp_path / "jobs.db")
+    log = ActivityLog(repository, max_rows=3, max_debug_rows=2)
+    log.info("watch", "Captura creada")
+    for number in range(1, 6):
+        log.debug("watch", f"Pase {number}")
+    log.info("jobs", "Completado")
+
+    # Los pases no desplazan las líneas importantes, ni al revés.
+    assert repository.prune_activity(2, [ActivityLevel.DEBUG]) == 3
+    assert repository.prune_activity(3, [ActivityLevel.INFO]) == 0
+    assert [entry.message for entry in repository.list_activity()] == [
+        "Captura creada",
+        "Pase 4",
+        "Pase 5",
+        "Completado",
+    ]
+    repository.close()

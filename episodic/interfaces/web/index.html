@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="description" content="EpiGraph: memoria episódica multimodal trazable">
   <title>EpiGraph · Consola de memoria</title>
-  <link rel="stylesheet" href="/static/index.css?v=vigilancia-4">
+  <link rel="stylesheet" href="/static/index.css?v=vigilancia-6">
 </head>
 <body>
   <div class="shell">
@@ -274,7 +274,8 @@
                 <option value="jobs">Trabajos</option>
               </select>
               <select id="log-level" aria-label="Nivel">
-                <option value="">Todos los niveles</option>
+                <option value="">Todo, con cada pase</option>
+                <option value="info,warning,error">Sin los pases del vigilante</option>
                 <option value="warning,error">Avisos y errores</option>
                 <option value="error">Solo errores</option>
               </select>
@@ -361,6 +362,6 @@
   </div>
 
   <dialog id="asset-dialog" class="detail-dialog"><button class="dialog-close" data-close-dialog aria-label="Cerrar">×</button><div id="asset-dialog-content"></div></dialog>
-  <script src="/static/app.js?v=vigilancia-4"></script>
+  <script src="/static/app.js?v=vigilancia-6"></script>
 </body>
 </html>

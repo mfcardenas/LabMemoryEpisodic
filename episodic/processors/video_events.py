@@ -7,8 +7,10 @@ estas observaciones, para que la percepción y el dominio queden separados.
 """
 from __future__ import annotations
 
+import time
 from datetime import timedelta
 
+from episodic.application.progress import note
 from episodic.application.video_segmentation import SceneSegmenter
 from episodic.domain.types import EvidenceMediaType, EvidenceReferenceKind, ProvenanceKind
 from episodic.ports.repository import EpisodicRepository, EvidenceStore
@@ -21,6 +23,7 @@ VIDEO_EVENT_OBSERVATION = "video_event"
 
 class VideoEventProcessor(BaseObservationProcessor):
     name = "video-event-processor"
+    label = "descripción visual por tramos"  # nombre en el registro de ejecución
     supported_modalities = frozenset({EvidenceMediaType.VIDEO})
     processes_whole_asset = True
     """El tramo lo decide el cambio de escena, no las ventanas técnicas."""
@@ -53,6 +56,10 @@ class VideoEventProcessor(BaseObservationProcessor):
         duration = video.duration_seconds or target.asset.duration_seconds
         segments = self.segmenter.segment(video.frames, duration)
         origin = target.window.start_time if target.window else target.start_time
+        note(
+            f"{len(video.frames)} fotograma(s) muestreados a {self.sampler.sample_fps:g} fps"
+            f" en {duration or 0:.1f} s de vídeo: {len(segments)} tramo(s) por cambio de escena"
+        )
 
         drafts: list[ObservationDraft] = []
         previous_summary: str | None = None
@@ -67,8 +74,21 @@ class VideoEventProcessor(BaseObservationProcessor):
                 previous_summary=previous_summary,
                 language=self.language,
             )
+            span = (
+                f"tramo {segment.index + 1}/{len(segments)}"
+                f" ({segment.start_offset_seconds:.1f}–{segment.end_offset_seconds:.1f} s)"
+            )
+            note(
+                f"{span}: describiendo {len(segment.keyframes)} fotograma(s) clave"
+                f" con {self.describer.model_id}"
+            )
+            started = time.monotonic()
             description = self.describer.describe_segment(
                 [item.jpeg for item in segment.keyframes], context
+            )
+            note(
+                f"{span} descrito en {time.monotonic() - started:.1f} s"
+                + (f": «{_short(description.title)}»" if description.title else "")
             )
             keyframes = []
             for frame in segment.keyframes:
@@ -125,3 +145,8 @@ class VideoEventProcessor(BaseObservationProcessor):
             )
             previous_summary = description.summary
         return drafts
+
+
+def _short(text: str, limit: int = 80) -> str:
+    text = " ".join(text.split())
+    return text if len(text) <= limit else text[: limit - 1].rstrip() + "…"

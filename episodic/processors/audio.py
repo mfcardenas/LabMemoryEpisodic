@@ -11,6 +11,7 @@ from episodic.processors.base import BaseObservationProcessor, ObservationDraft,
 
 class AudioProcessor(BaseObservationProcessor):
     name = "audio-processor"
+    label = "señal de audio"  # nombre en el registro de ejecución
     model_version = "phase4-audio-metrics-v1"
     supported_modalities = frozenset({EvidenceMediaType.AUDIO})
 

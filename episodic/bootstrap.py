@@ -307,13 +307,21 @@ def create_app_container(
             image_dim=config.clip_dim,
         )
     elif config.vector_backend == "http":
-        vector_index = QdrantVectorIndex(
-            host=config.qdrant_host,
-            port=config.qdrant_port,
-            collection_name=config.qdrant_collection,
-            text_dim=config.nomic_dim,
-            image_dim=config.clip_dim,
-        )
+        try:
+            vector_index = QdrantVectorIndex(
+                host=config.qdrant_host,
+                port=config.qdrant_port,
+                collection_name=config.qdrant_collection,
+                text_dim=config.nomic_dim,
+                image_dim=config.clip_dim,
+            )
+        except Exception as exc:
+            repo.close()
+            raise RuntimeError(
+                f"No se puede usar Qdrant en {config.qdrant_host}:{config.qdrant_port} "
+                f"(colección {config.qdrant_collection}): {exc}. Arranque el contenedor "
+                "o revise EPIGRAPH_QDRANT_HOST / EPIGRAPH_QDRANT_PORT."
+            ) from exc
     else:
         raise ValueError(f"Backend vectorial no soportado: {config.vector_backend}")
 
@@ -436,7 +444,7 @@ def create_app_container(
         inspection_service=inspection_svc,
         capture_service=capture_svc,
         job_runner=job_runner,
-        activity_log=ActivityLog(repo, config.activity_log_max_rows),
+        activity_log=ActivityLog(repo, config.activity_log_max_rows, config.activity_log_max_passes),
         watcher=watcher,
     )
 
@@ -458,7 +466,7 @@ def create_inbox_watcher(
         capture_service,
         settings,
         submit=lambda capture_id: job_runner.submit(CAPTURE_JOB_KIND, capture_id, CAPTURE_STAGES),
-        activity=ActivityLog(repo, config.activity_log_max_rows),
+        activity=ActivityLog(repo, config.activity_log_max_rows, config.activity_log_max_passes),
         **kwargs,
     )
 
@@ -509,6 +517,6 @@ def _create_job_runner(
     return JobRunner(
         repo,
         {CAPTURE_JOB_KIND: process_capture},
-        activity=ActivityLog(repo, config.activity_log_max_rows),
+        activity=ActivityLog(repo, config.activity_log_max_rows, config.activity_log_max_passes),
         describe=describe,
     )

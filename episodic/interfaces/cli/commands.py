@@ -75,7 +75,7 @@ def _config_from_args(args: argparse.Namespace, **overrides: object) -> Episodic
     """Construye una configuración explícita y compartida para cada comando."""
     values: dict[str, object] = {
         "data_dir": args.data,
-        "vector_backend": getattr(args, "vector_backend", "edge"),
+        "vector_backend": getattr(args, "vector_backend", "http"),
         "qdrant_host": args.qdrant_host,
         "qdrant_port": args.qdrant_port,
         "qdrant_collection": args.qdrant_collection,
@@ -94,6 +94,39 @@ def cmd_init(args: argparse.Namespace) -> None:
     print(f"Sistema episódico inicializado en: {config.data_path}")
     print(f"Base de datos SQLite: {config.sqlite_path}")
     print(f"Directorio de medios: {config.media_dir}")
+
+
+def cmd_reset_data(args: argparse.Namespace) -> None:
+    """Borra los datos de EpiGraph para repetir una carga desde cero."""
+    from episodic.maintenance import ResetError, apply_reset, plan_reset
+
+    config = _config_from_args(args)
+    try:
+        plan, client = plan_reset(config)
+        if plan.empty:
+            print("No hay datos de EpiGraph que borrar.")
+        else:
+            print("Se borrará:")
+            print("\n".join(plan.describe()))
+            if not args.yes:
+                if not sys.stdin.isatty():
+                    raise ResetError("Sin terminal para confirmar: repita con --yes.")
+                if input("Escriba 'borrar' para continuar: ").strip().lower() != "borrar":
+                    print("Cancelado; no se ha borrado nada.")
+                    sys.exit(1)
+            apply_reset(plan, config, client)
+            print("Limpieza terminada.")
+    except ResetError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        sys.exit(1)
+
+    # Las cargas las pone la persona: solo se informa de lo que hay.
+    for name, count in plan.inbox_pending.items():
+        if count:
+            print(f"[{name}] {count} elemento(s) en la carpeta vigilada: se procesarán al arrancar.")
+    for name, (archive, count) in plan.archived.items():
+        if count:
+            print(f"[{name}] {count} carpeta(s) en {archive}: para reprocesarlas, muévalas a la carpeta vigilada.")
 
 
 def cmd_import(args: argparse.Namespace) -> None:
@@ -563,7 +596,7 @@ def _add_common_arguments(
         "--vector-backend",
         choices=("edge", "http"),
         default=default(config.vector_backend),
-        help="Backend vectorial: Edge embebido (predeterminado) o servidor HTTP",
+        help="Backend vectorial: servidor Qdrant por HTTP (predeterminado) o Edge embebido en local",
     )
     parser.add_argument(
         "--fake-encoders",
@@ -610,6 +643,15 @@ def main() -> None:
     # init
     p_init = subparsers.add_parser("init", parents=[subcommand_common], help="Inicializa el repositorio SQLite y directorios")
     p_init.set_defaults(func=cmd_init)
+
+    # reset-data
+    p_reset = subparsers.add_parser(
+        "reset-data",
+        parents=[subcommand_common],
+        help="Borra SQLite, medios y la colección de Qdrant de EpiGraph (no la carpeta vigilada)",
+    )
+    p_reset.add_argument("--yes", action="store_true", help="No pedir confirmación")
+    p_reset.set_defaults(func=cmd_reset_data)
 
     # import
     p_import = subparsers.add_parser("import", parents=[subcommand_common], help="Importa un manifiesto estructurado de episodios")

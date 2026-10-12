@@ -104,3 +104,20 @@ veces invalidan la captura con un mensaje explícito. Si la herramienta
 el valor por defecto; `EPIGRAPH_WATCH_CONFIG=watch.toml` en `.env`. El estado
 de cada captura, cada fichero leído y el registro de ejecución se ven en la
 sección **Vigilancia** del front.
+
+## 5. Carpeta sin manifiesto y cargas manuales
+
+Sin `capture.json` no se crea la captura: EpiGraph no deduce el entorno ni
+los dispositivos por su cuenta. Una carpeta cuyos ficheros están completos y
+que sigue sin manifiesto pasados `manifest_warning_seconds` (60 s por
+defecto) se avisa en el registro y aparece en **Vigilancia → Carpetas**,
+en el recuadro «Sin capture.json».
+
+Para una carga hecha a mano (sin la herramienta), si la carpeta se llama
+`<environment_id>_<epoch en segundos>`, el botón **Crear manifiesto** (o
+«Crear los N») propone uno: el entorno y el instante salen del nombre y hay un
+dispositivo por fichero (vídeo → `camera`, audio → `microphone`, imagen →
+`photo_set`, PDF o texto → `document`), todos empezando en `captured_at`. Se
+muestra antes de escribirlo y solo se escribe si se confirma; a partir de ahí
+sigue el camino normal. Si hacen falta otros dispositivos, otro título o
+`started_at` distintos, escriba el manifiesto a mano.

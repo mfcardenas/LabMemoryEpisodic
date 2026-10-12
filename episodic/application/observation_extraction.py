@@ -3,6 +3,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from episodic.application.progress import note, progress_scope
+
 from episodic.domain.entities import Observation
 from episodic.domain.provenance import Asset
 from episodic.domain.types import EvidenceMediaType
@@ -80,10 +82,17 @@ class ObservationExtractionService:
             )
         result = ExtractionResult()
         for processor in selected:
-            for target in self._targets(asset, processor):
+            label = getattr(processor, "label", processor.name)
+            targets = self._targets(asset, processor)
+            for position, target in enumerate(targets, start=1):
+                scope = label if len(targets) == 1 else f"{label}, ventana {position}/{len(targets)}"
                 try:
-                    result.observations.extend(processor.process(target))
+                    with progress_scope(scope):
+                        produced = processor.process(target)
+                        note(f"{len(produced)} observación(es)")
+                    result.observations.extend(produced)
                 except ProcessorExecutionError as exc:
+                    note(f"{scope} · falló: {exc}")
                     result.failures.append(
                         ProcessorFailure(
                             processor=processor.name,

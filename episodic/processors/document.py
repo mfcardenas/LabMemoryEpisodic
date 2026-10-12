@@ -29,6 +29,7 @@ class PyPdfTextExtractor:
 
 class DocumentProcessor(BaseObservationProcessor):
     name = "document-processor"
+    label = "lectura del documento"  # nombre en el registro de ejecución
     model_version = "phase4-pypdf-v1"
     supported_modalities = frozenset({EvidenceMediaType.DOCUMENT})
 

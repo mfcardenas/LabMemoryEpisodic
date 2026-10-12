@@ -1,11 +1,37 @@
-# Servicios de modelos que EpiGraph consume por HTTP.
+# Servicios que EpiGraph consume por HTTP.
 #
-#   docker compose up -d speech
+#   docker compose up -d qdrant speech
 #
 # Todos los valores se pueden cambiar en un fichero .env junto a este (ver
 # .env.example). EpiGraph solo necesita la URL y el nombre del modelo
 # (EPIGRAPH_SPEECH_URL / EPIGRAPH_SPEECH_MODEL).
 services:
+  qdrant:
+    # Proyección vectorial (EPIGRAPH_VECTOR_BACKEND=http). Los datos viven en
+    # el volumen con nombre "qdrant-storage": sobreviven a borrar o recrear el
+    # contenedor. En Windows, Qdrant recomienda volumen con nombre y no una
+    # carpeta montada del disco (problemas de sistema de ficheros en WSL).
+    # La versión va fijada: cambiarla es una actualización de datos, de una
+    # versión menor en una (ver docs/qdrant.md).
+    image: ${QDRANT_IMAGE:-qdrant/qdrant:v1.16.2}
+    container_name: ${QDRANT_CONTAINER_NAME:-epigraph-qdrant}
+    ports:
+      - "${QDRANT_HOST_PORT:-6333}:6333"   # REST y dashboard (/dashboard)
+      - "${QDRANT_GRPC_HOST_PORT:-6334}:6334"
+    environment:
+      QDRANT__LOG_LEVEL: ${QDRANT_LOG_LEVEL:-INFO}
+      # Para exigir clave, declararla aquí y en EpiGraph.
+      # QDRANT__SERVICE__API_KEY: ${QDRANT_API_KEY}
+    volumes:
+      - qdrant-storage:/qdrant/storage
+      - qdrant-snapshots:/qdrant/snapshots
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c ':> /dev/tcp/127.0.0.1/6333' || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    restart: unless-stopped
+
   speech:
     # Transcripción con faster-whisper y API compatible con OpenAI
     # (/v1/audio/transcriptions). Para CPU: ghcr.io/speaches-ai/speaches:latest-cpu
@@ -44,4 +70,6 @@ services:
     restart: unless-stopped
 
 volumes:
+  qdrant-storage:
+  qdrant-snapshots:
   speech-models:

@@ -75,7 +75,7 @@ class EpisodicConfig:
     data_dir: str | Path = field(default_factory=lambda: _env("DATA_DIR", "episodic-data"))
 
     # Backend vectorial existente; esta fase no añade ni cambia backends.
-    vector_backend: str = field(default_factory=lambda: _env("VECTOR_BACKEND", "edge"))
+    vector_backend: str = field(default_factory=lambda: _env("VECTOR_BACKEND", "http"))
     qdrant_host: str = field(default_factory=lambda: _env("QDRANT_HOST", "127.0.0.1"))
     qdrant_port: int = field(default_factory=lambda: _env("QDRANT_PORT", 6333, int))
     qdrant_collection: str = field(
@@ -195,6 +195,11 @@ class EpisodicConfig:
     # Líneas que se conservan del registro de ejecución (0: sin límite).
     activity_log_max_rows: int = field(
         default_factory=lambda: _env("ACTIVITY_LOG_MAX_ROWS", 5000, int)
+    )
+    # Pases del vigilante que se conservan, aparte de las líneas anteriores
+    # (0: sin límite). 1000 son ~1,5 h con un barrido cada 5 s.
+    activity_log_max_passes: int = field(
+        default_factory=lambda: _env("ACTIVITY_LOG_MAX_PASSES", 1000, int)
     )
 
     # Directorio permitido para importaciones; su aplicación estricta pertenece

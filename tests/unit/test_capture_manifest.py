@@ -86,3 +86,39 @@ def test_contract_violations_are_explicit(overrides, message) -> None:
 def test_manifest_must_be_an_object() -> None:
     with pytest.raises(CaptureManifestError, match="objeto JSON"):
         parse_capture_manifest([1, 2])
+
+
+def test_draft_from_folder_name_proposes_one_device_per_file() -> None:
+    from episodic.domain.capture_manifest import draft_capture_manifest, split_capture_folder_name
+    from episodic.domain.types import EvidenceMediaType as M
+
+    assert split_capture_folder_name("env_context_A001_1791814875") == ("env_context_A001", 1791814875)
+    draft = draft_capture_manifest(
+        "env_context_A001_1791814875",
+        {
+            "13653860_1080_1920_30fps.mp4": M.VIDEO,
+            "Manual taller (v2).pdf": M.DOCUMENT,
+            "sub/Manual taller (v2).txt": M.TEXT,
+            "foto.jpg": M.IMAGE,
+        },
+    )
+    assert draft["environment_id"] == "env_context_A001"
+    assert draft["captured_at"] == 1791814875
+    assert [(d["id"], d["kind"], d["files"]) for d in draft["devices"]] == [
+        ("13653860_1080_1920_30fps", "camera", ["13653860_1080_1920_30fps.mp4"]),
+        ("Manual_taller_v2", "document", ["Manual taller (v2).pdf"]),
+        ("foto", "photo_set", ["foto.jpg"]),
+        ("Manual_taller_v2_2", "document", ["sub/Manual taller (v2).txt"]),
+    ]
+    parse_capture_manifest(draft)
+
+
+@pytest.mark.parametrize(
+    "name",
+    ["env_context_A001", "env_context_A001_1791814875000", "_1791814875", "env_context_A001_12"],
+)
+def test_draft_rejects_folder_names_without_entorno_and_epoch(name) -> None:
+    from episodic.domain.capture_manifest import split_capture_folder_name
+
+    with pytest.raises(CaptureManifestError):
+        split_capture_folder_name(name)

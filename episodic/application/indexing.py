@@ -9,9 +9,11 @@ from __future__ import annotations
 
 import logging
 import json
+import time
 from typing import Optional
 
 from episodic.domain.types import EvidenceState, IndexingState, RepresentationSpace
+from episodic.application.progress import note
 from episodic.application.temporal_index import timeline_payload
 from episodic.ports.encoders import EpisodeTextEncoder, ImageEncoder
 from episodic.ports.repository import EpisodicRepository, EvidenceStore
@@ -84,6 +86,8 @@ class IndexingWorker:
                     if not text:
                         text = "Episodio sin contenido textual"
 
+                    note(f"codificando el texto del episodio con {_model_name(self.text_encoder)}")
+                    started = time.monotonic()
                     vectors = self.text_encoder.embed_documents([text])
                     if not vectors:
                         raise ValueError("El encoder de texto devolvió un vector vacío")
@@ -145,6 +149,7 @@ class IndexingWorker:
                     self.repository.update_representation_state(
                         rep.id, IndexingState.INDEXED, qdrant_point_id=point_id
                     )
+                    note(f"episodio codificado e indexado en {time.monotonic() - started:.1f} s")
                     processed_count += 1
 
                 # 2. Representación visual de evidencia (CLIP vision)
@@ -167,6 +172,7 @@ class IndexingWorker:
                         processed_count += 1
                         continue
 
+                    note(f"codificando la imagen {abs_path.name} con {_model_name(self.image_encoder)}")
                     vectors = self.image_encoder.embed_images([str(abs_path)])
                     if not vectors:
                         raise ValueError("El encoder visual devolvió un vector vacío")
@@ -239,3 +245,8 @@ class IndexingWorker:
                     raise RuntimeError(f"Falló la representación {rep.id}") from e
 
         return processed_count
+
+
+def _model_name(encoder: object) -> str:
+    info = getattr(encoder, "info", None)
+    return getattr(info, "model_id", None) or type(encoder).__name__

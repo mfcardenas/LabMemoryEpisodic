@@ -1292,7 +1292,7 @@ document.addEventListener("DOMContentLoaded", () => {
     let kind = "idle"; let text; let summary;
     if (status.configured && status.running && status.has_lease) {
       kind = "ok"; text = "Vigilando";
-      summary = `Cada ${fmtDeltaSeconds(status.interval_seconds)} · un fichero está completo tras ${fmtDeltaSeconds(status.settle_seconds)} sin cambios · último barrido ${fmtClockTime(status.last_scan_at)}`;
+      summary = `Cada ${fmtDeltaSeconds(status.interval_seconds)} · un fichero está completo tras ${fmtDeltaSeconds(status.settle_seconds)} sin cambios · pase ${status.pass_count || 0} a las ${fmtClockTime(status.last_scan_at)}`;
     } else if (status.configured && status.running) {
       kind = "warn"; text = "En espera";
       summary = `Otro proceso vigila estas carpetas${lease ? ` (${lease.owner})` : ""}; este toma el relevo si se detiene.`;
@@ -1306,6 +1306,9 @@ document.addEventListener("DOMContentLoaded", () => {
       text = "Sin vigilancia";
       summary = "Defina EPIGRAPH_WATCH_CONFIG con un fichero de carpetas (ver watch.example.toml) y reinicie, o ejecute «epigraph watch --config …».";
     }
+    const awaitingTotal = status.sources.reduce((total, source) => total + (source.awaiting_manifest?.length || 0), 0);
+    if (awaitingTotal) { kind = kind === "ok" ? "warn" : kind; summary += ` · ${awaitingTotal} carpeta(s) completas sin manifiesto: no se procesarán hasta tenerlo`; }
+    state.awaitingGroups = new Set(status.sources.flatMap(source => (source.awaiting_manifest || []).map(item => `${source.name}\u0000${item.group}`)));
     if (status.last_error) { kind = "error"; summary += ` · Último error: ${status.last_error}`; }
     light.className = `watch-state ${kind}`;
     label.textContent = text;
@@ -1333,9 +1336,60 @@ document.addEventListener("DOMContentLoaded", () => {
           <dt>Después</dt><dd>${esc(after)}</dd>
         </dl>
         <div class="state-chips">${chips}</div>
+        ${awaitingManifestHtml(source)}
         ${source.error && source.available !== false ? `<p class="source-error">${esc(source.error)}</p>` : ""}
       </div>`;
     }).join("");
+    container.querySelectorAll("[data-draft-group]").forEach(button => button.addEventListener("click", () => createManifests(button.dataset.draftSource, [button.dataset.draftGroup])));
+    container.querySelectorAll("[data-draft-all]").forEach(button => button.addEventListener("click", () => {
+      const source = status.sources.find(item => item.name === button.dataset.draftAll);
+      createManifests(source.name, source.awaiting_manifest.filter(item => item.draftable).map(item => item.group));
+    }));
+  }
+
+  function awaitingManifestHtml(source) {
+    const awaiting = source.awaiting_manifest || [];
+    if (!awaiting.length) return "";
+    const draftable = awaiting.filter(item => item.draftable).length;
+    const rows = awaiting.map(item => `<div class="awaiting-row">
+        <code>${esc(item.folder)}</code>
+        ${item.draftable ? `<button type="button" class="button-mini" data-draft-source="${esc(source.name)}" data-draft-group="${esc(item.group)}">Crear manifiesto</button>` : "<span></span>"}
+        <small>${item.files} fichero(s) completos · esperando desde ${esc(fmtClockTime(item.since))}</small>
+        ${item.draft_error ? `<small class="awaiting-error">${esc(item.draft_error)}</small>` : ""}
+      </div>`).join("");
+    return `<div class="awaiting">
+      <header><h4>Sin ${esc(source.manifest_file)} (${awaiting.length})</h4>
+        ${draftable > 1 ? `<button type="button" class="button-mini" data-draft-all="${esc(source.name)}">Crear los ${draftable}</button>` : ""}</header>
+      <p>La herramienta de captura escribe el manifiesto al terminar. Si la carga es manual, EpiGraph puede proponerlo a partir del nombre <code>&lt;entorno&gt;_&lt;epoch&gt;</code>: un dispositivo por fichero.</p>
+      ${rows}
+    </div>`;
+  }
+
+  // Carga manual: se pide el borrador, se enseña y solo se escribe si se confirma.
+  async function createManifests(source, groups) {
+    if (!groups.length) return;
+    const drafts = [];
+    for (const group of groups) {
+      const body = new FormData();
+      body.set("source", source); body.set("group_key", group);
+      try { drafts.push({group, ...(await api("/api/watch/manifest", {method: "POST", body}))}); }
+      catch (error) { alert(`${group}: ${error.message}`); return; }
+    }
+    const describe = draft => {
+      const manifest = draft.manifest;
+      const when = new Date(manifest.captured_at * 1000).toISOString().replace(".000Z", "Z");
+      const devices = manifest.devices.map(device => `   · ${device.id} (${device.kind}): ${device.files.join(", ")}`).join("\n");
+      return `${draft.group}\n   entorno ${manifest.environment_id} · captured_at ${manifest.captured_at} (${when})\n${devices}`;
+    };
+    const text = `Se escribirá ${drafts.length === 1 ? "este manifiesto" : `${drafts.length} manifiestos`} (capture.json), deducido(s) del nombre de la carpeta y de sus ficheros:\n\n${drafts.map(describe).join("\n\n")}\n\nRevise el entorno, el instante y los dispositivos. ¿Continuar?`;
+    if (!confirm(text)) return;
+    for (const draft of drafts) {
+      const body = new FormData();
+      body.set("source", source); body.set("group_key", draft.group); body.set("write", "true");
+      try { await api("/api/watch/manifest", {method: "POST", body}); }
+      catch (error) { alert(`${draft.group}: ${error.message}`); break; }
+    }
+    await refreshWatch(false);
   }
 
   function renderWatchJobs(data) {
@@ -1375,7 +1429,8 @@ document.addEventListener("DOMContentLoaded", () => {
       if (retry) retryable.add(groupId);
       const archivedTail = file.archived_to ? file.archived_to.split(/[\\/]/).slice(-3).join("/") : "";
       const where = file.archived_to ? `archivado en …/${archivedTail}` : file.present ? "" : "ya no está en la carpeta";
-      const note = [file.error, where].filter(Boolean).join(" · ");
+      const waiting = file.state === "ready" && !file.capture_id && state.awaitingGroups?.has(groupId) ? "esperando el manifiesto de su carpeta" : "";
+      const note = [file.error, waiting, where].filter(Boolean).join(" · ");
       return `<div class="inbox-row">
         <span class="state-chip ${esc(file.state)}">${esc(inboxStateLabel(file.state))}</span>
         <div><strong title="${esc(file.rel_path)}">${esc(file.rel_path)}</strong>
@@ -1419,12 +1474,36 @@ document.addEventListener("DOMContentLoaded", () => {
       return;
     }
     log.querySelector(".log-empty")?.remove();
-    log.insertAdjacentHTML("beforeend", data.entries.map(entry => {
-      const component = entry.component === "watch" ? "VIGILANTE" : entry.component === "jobs" ? "TRABAJO" : entry.component.toUpperCase();
-      return `<div class="log-line ${esc(entry.level)}" title="${esc(fmtTime(entry.at))}"><time>${esc(fmtClockTime(entry.at))}</time><span class="log-comp">${esc(component)}</span><span class="log-msg">${esc(entry.message)}</span></div>`;
-    }).join(""));
+    data.entries.forEach(entry => appendLogLine(log, entry));
     while (log.children.length > 1000) log.firstElementChild.remove();
     if ($("#log-follow").checked) log.scrollTop = log.scrollHeight;
+  }
+
+  // Cada pase del vigilante es una línea; los pases seguidos sin novedades
+  // sobre la misma carpeta se funden en la última, que avanza su número y su
+  // hora y cuenta las repeticiones, para que lo demás no se pierda de vista.
+  function appendLogLine(log, entry) {
+    const data = entry.data || {};
+    const idlePass = entry.level === "debug" && data.idle && data.summary;
+    const last = log.lastElementChild;
+    if (idlePass && last?.dataset.idleSummary === data.summary) {
+      const repeats = Number(last.dataset.repeats || 1) + 1;
+      last.dataset.repeats = String(repeats);
+      last.title = fmtTime(entry.at);
+      last.querySelector("time").textContent = fmtClockTime(entry.at);
+      last.querySelector(".log-msg").innerHTML = `${esc(entry.message)}<span class="log-repeat">×${repeats} desde ${esc(last.dataset.since)}</span>`;
+      return;
+    }
+    const component = entry.component === "watch" ? "VIGILANTE" : entry.component === "jobs" ? "TRABAJO" : entry.component.toUpperCase();
+    const classes = ["log-line", entry.level];
+    if (entry.level === "debug" && !data.idle) classes.push("busy");
+    if (data.step) classes.push("step");
+    log.insertAdjacentHTML("beforeend", `<div class="${esc(classes.join(" "))}" title="${esc(fmtTime(entry.at))}"><time>${esc(fmtClockTime(entry.at))}</time><span class="log-comp">${esc(component)}</span><span class="log-msg">${esc(entry.message)}</span></div>`);
+    if (idlePass) {
+      const line = log.lastElementChild;
+      line.dataset.idleSummary = data.summary;
+      line.dataset.since = fmtClockTime(entry.at);
+    }
   }
 
   $("#watch-scan-now").addEventListener("click", async event => {

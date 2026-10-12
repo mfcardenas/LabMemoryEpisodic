@@ -10,6 +10,7 @@ from episodic.processors.base import BaseObservationProcessor, ObservationDraft,
 
 class TextProcessor(BaseObservationProcessor):
     name = "text-processor"
+    label = "lectura del texto"  # nombre en el registro de ejecución
     model_version = "phase4-text-v1"
     supported_modalities = frozenset({EvidenceMediaType.TEXT})
 

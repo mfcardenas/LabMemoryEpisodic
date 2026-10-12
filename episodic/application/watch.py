@@ -40,7 +40,9 @@ from episodic.application.watch_config import WatchSettings, WatchSource
 from episodic.domain.capture_manifest import (
     CaptureManifest,
     CaptureManifestError,
+    draft_capture_manifest,
     parse_capture_manifest,
+    split_capture_folder_name,
 )
 from episodic.domain.captures import Job
 from episodic.domain.types import EvidenceMediaType
@@ -71,6 +73,8 @@ class _SourceStatus:
     error: str | None = None
     last_scan_at: float | None = None
     files_on_disk: int = 0
+    # Carpetas con todos sus ficheros completos que aún no tienen manifiesto.
+    awaiting_manifest: list[dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass
@@ -80,6 +84,17 @@ class ScanReport:
     open_groups: int = 0
     capture_ids: list[str] = field(default_factory=list)
     job_ids: list[str] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class _ReportMark:
+    detected: int
+    ready: int
+    captures: int
+
+    @classmethod
+    def of(cls, report: ScanReport) -> "_ReportMark":
+        return cls(report.detected, report.ready, len(report.capture_ids))
 
 
 class InboxWatcher:
@@ -115,11 +130,15 @@ class InboxWatcher:
         self._waiting_logged = False
         self.last_scan_at: float | None = None
         self.last_error: str | None = None
+        self.pass_count = 0
         self._status = {source.name: _SourceStatus() for source in settings.sources}
         # Por (fuente, grupo): cuándo se vio el manifiesto esperando ficheros y
         # con qué huella falló, para reintentar si la herramienta lo reescribe.
         self._manifest_waiting: dict[tuple[str, str], float] = {}
         self._manifest_failed: dict[tuple[str, str], tuple[int, int]] = {}
+        # Desde cuándo una carpeta completa espera su manifiesto, y si ya se avisó.
+        self._manifest_missing: dict[tuple[str, str], float] = {}
+        self._manifest_warned: set[tuple[str, str]] = set()
         self._scan_lock = threading.Lock()
         self._thread: threading.Thread | None = None
         self._stop = threading.Event()
@@ -198,11 +217,14 @@ class InboxWatcher:
     def scan_once(self) -> ScanReport:
         report = ScanReport()
         with self._scan_lock:
+            self.pass_count += 1
             for source in self.settings.sources:
                 if not source.enabled:
                     continue
+                before = _ReportMark.of(report)
                 try:
                     self._scan_source(source, report)
+                    self._log_pass(source, before, report)
                 except Exception as exc:
                     status = self._status[source.name]
                     status.error = str(exc)
@@ -232,16 +254,59 @@ class InboxWatcher:
             "owner": self.owner,
             "last_scan_at": _iso(self.last_scan_at),
             "last_error": self.last_error,
+            "pass_count": self.pass_count,
             "sources": {
                 name: {
                     "available": status.available,
                     "error": status.error,
                     "last_scan_at": _iso(status.last_scan_at),
                     "files_on_disk": status.files_on_disk,
+                    "awaiting_manifest": list(status.awaiting_manifest),
                 }
                 for name, status in self._status.items()
             },
         }
+
+    def _log_pass(self, source: WatchSource, before: "_ReportMark", report: ScanReport) -> None:
+        """Una línea por pase y carpeta: lo que ha cambiado y lo que espera."""
+        status = self._status[source.name]
+        if status.available is False:
+            parts = ["carpeta no disponible"]
+            news = False
+        else:
+            detected = report.detected - before.detected
+            ready = report.ready - before.ready
+            captures = len(report.capture_ids) - before.captures
+            rows = self.repository.list_live_inbox_files(source.name)
+            writing = sum(row.state == InboxFileState.PENDING for row in rows)
+            waiting = sum(
+                row.state == InboxFileState.READY and row.capture_id is None for row in rows
+            )
+            news = bool(detected or ready or captures)
+            parts = [f"{status.files_on_disk} fichero(s) en carpeta"]
+            if detected:
+                parts.append(f"{detected} nuevo(s)")
+            if ready:
+                parts.append(f"{ready} completo(s)")
+            if captures:
+                parts.append(f"{captures} captura(s) creada(s)")
+            if writing:
+                parts.append(f"{writing} escribiéndose")
+            if waiting:
+                parts.append(
+                    f"{waiting} esperando su manifiesto"
+                    if source.grouping == "manifest"
+                    else f"{waiting} esperando a cerrar el grupo"
+                )
+            if not news and not writing and not waiting:
+                parts.append("sin novedades")
+        summary = f"{source.name}: " + " · ".join(parts)
+        self.activity.debug(
+            ACTIVITY_COMPONENT,
+            f"Pase {self.pass_count} · {summary}",
+            source_name=source.name,
+            data={"pass": self.pass_count, "summary": summary, "idle": not news},
+        )
 
     def _scan_source(self, source: WatchSource, report: ScanReport) -> None:
         status = self._status[source.name]
@@ -566,12 +631,16 @@ class InboxWatcher:
         for row in live_rows:
             if row.capture_id is None and row.state in _OPEN_STATES:
                 by_key.setdefault(row.group_key, []).append(row)
+        awaiting: list[dict[str, Any]] = []
         for key, open_rows in sorted(by_key.items()):
             folder = _top_folder(open_rows[0].rel_path)
             manifest_path = controls.get(folder or "")
             if folder is None or manifest_path is None:
                 report.open_groups += 1  # la herramienta aún no ha escrito el manifiesto
+                self._note_missing_manifest(source, key, folder, open_rows, now, awaiting)
                 continue
+            self._manifest_missing.pop((source.name, key), None)
+            self._manifest_warned.discard((source.name, key))
             try:
                 raw = json.loads(manifest_path.read_text(encoding="utf-8"))
                 manifest = parse_capture_manifest(raw)
@@ -654,6 +723,60 @@ class InboxWatcher:
             self._register_manifest_group(
                 source, key, folder, usable, declared, manifest, raw, closed_keys, report
             )
+        self._status[source.name].awaiting_manifest = awaiting
+
+    def _note_missing_manifest(
+        self,
+        source: WatchSource,
+        key: str,
+        folder: str | None,
+        open_rows: list[InboxFile],
+        now: float,
+        awaiting: list[dict[str, Any]],
+    ) -> None:
+        """Una carpeta completa sin manifiesto no avanza: se dice, una vez y a
+        la vista, en lugar de esperar en silencio."""
+        ident = (source.name, key)
+        if any(row.state != InboxFileState.READY for row in open_rows):
+            self._manifest_missing.pop(ident, None)  # aún se está escribiendo
+            return
+        since = self._manifest_missing.setdefault(ident, now)
+        name = folder or open_rows[0].rel_path
+        draft_error = None
+        if folder is None:
+            draft_error = (
+                "fichero suelto en la raíz: en modo manifiesto cada captura va en su subcarpeta"
+            )
+        else:
+            try:
+                split_capture_folder_name(folder)
+            except CaptureManifestError as exc:
+                draft_error = str(exc)
+        awaiting.append(
+            {
+                "group": key,
+                "folder": name,
+                "files": len(open_rows),
+                "since": _iso(since),
+                "draftable": draft_error is None,
+                "draft_error": draft_error,
+            }
+        )
+        if now - since < source.manifest_warning_seconds or ident in self._manifest_warned:
+            return
+        self._manifest_warned.add(ident)
+        hint = (
+            "para una carga manual, «Crear manifiesto» en Vigilancia lo propone a partir del nombre"
+            if draft_error is None
+            else draft_error
+        )
+        self.activity.warning(
+            ACTIVITY_COMPONENT,
+            f"{name}: {len(open_rows)} fichero(s) completos sin {source.manifest_file}; "
+            f"la captura no se creará hasta que la herramienta escriba el manifiesto ({hint})",
+            source_name=source.name,
+            path=name,
+        )
 
     def _register_manifest_group(
         self,
@@ -962,6 +1085,45 @@ def retry_failed_group(
             source_name=source_name,
         )
     return len(rows)
+
+
+def draft_group_manifest(
+    repository: EpisodicRepository, source: WatchSource, group_key: str
+) -> tuple[Path, dict[str, Any]]:
+    """Borrador del manifiesto de una carpeta que espera el suyo (carga manual).
+
+    Devuelve dónde escribirlo y su contenido; no escribe nada.
+    """
+    if source.grouping != "manifest":
+        raise ValueError(f"La fuente {source.name} no trabaja con manifiestos")
+    rows = [
+        row
+        for row in repository.list_live_inbox_files(source.name)
+        if row.group_key == group_key and row.capture_id is None and row.state in _OPEN_STATES
+    ]
+    if not rows:
+        raise LookupError(f"No hay ficheros esperando en el grupo {group_key}")
+    if any(row.state != InboxFileState.READY for row in rows):
+        raise ValueError("Aún hay ficheros escribiéndose en esa carpeta")
+    folder = _top_folder(rows[0].rel_path)
+    if folder is None:
+        raise ValueError("Un fichero suelto en la raíz no forma captura en modo manifiesto")
+    target = source.path / folder / source.manifest_file
+    if target.exists():
+        raise FileExistsError(f"{folder} ya tiene {source.manifest_file}")
+    files = {
+        row.rel_path[len(folder) + 1 :]: EvidenceMediaType(row.media_type)
+        for row in rows
+        if row.media_type
+    }
+    return target, draft_capture_manifest(folder, files)
+
+
+def write_manifest(target: Path, manifest: dict[str, Any]) -> None:
+    """Escritura atómica, como pide el contrato a la herramienta."""
+    temporary = target.with_name(f".{target.name}.tmp")
+    temporary.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+    os.replace(temporary, target)
 
 
 def _top_folder(rel_path: str) -> str | None:

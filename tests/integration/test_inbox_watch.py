@@ -178,12 +178,49 @@ def test_each_folder_becomes_one_capture_whatever_it_contains(env) -> None:
     assert any(message.startswith("Observaciones · en curso: camara.mp4") for message in jobs_log)
     assert "Completado: captura «solo_audio»" in jobs_log
 
+    # Cada pase deja su línea, con lo que ha cambiado y lo que espera.
+    passes = [
+        entry
+        for entry in env.container.repository.list_activity(limit=1000, component="watch")
+        if entry.level.value == "debug"
+    ]
+    assert [entry.message for entry in passes] == [
+        "Pase 1 · taller: 3 fichero(s) en carpeta · 3 nuevo(s) · 3 escribiéndose",
+        "Pase 2 · taller: 3 fichero(s) en carpeta · 3 completo(s) · 3 esperando a cerrar el grupo",
+        "Pase 3 · taller: 3 fichero(s) en carpeta · 2 captura(s) creada(s)",
+    ]
+    assert passes[0].data == {
+        "pass": 1,
+        "summary": "taller: 3 fichero(s) en carpeta · 3 nuevo(s) · 3 escribiéndose",
+        "idle": False,
+    }
+
+    # Y los pasos internos del trabajo: cada tramo del vídeo, la transcripción
+    # y la indexación, bajo la etapa y el fichero en curso.
+    steps = [
+        entry.message
+        for entry in env.container.repository.list_activity(limit=1000, component="jobs")
+        if entry.data.get("step")
+    ]
+    assert (
+        "Observaciones · camara.mp4 (1/2) · descripción visual por tramos"
+        " · tramo 1/1 (0.0–5.4 s): describiendo 3 fotograma(s) clave con fake-vision"
+    ) in steps
+    assert (
+        "Observaciones · conversacion.mp3 (1/1) · transcripción del habla"
+        " · transcribiendo el audio con fake-speech"
+    ) in steps
+    assert "Indexación · codificando el texto del episodio con fake-nomic-text" in steps
+
     # Un nuevo barrido (o un reinicio) no vuelve a capturar nada.
     restarted = env.make(owner="otro-arranque")
     watcher.stop()
     env.clock.advance(60)
     assert restarted.tick().capture_ids == []
     assert len(env.container.repository.list_captures()) == 2
+    last = env.container.repository.list_activity(limit=1, component="watch")[0]
+    assert last.message == "Pase 1 · taller: 3 fichero(s) en carpeta · sin novedades"
+    assert last.data["idle"] is True
 
 
 def test_file_still_being_copied_waits_until_it_stops_changing(env) -> None:
@@ -398,11 +435,18 @@ def test_watch_api_exposes_sources_files_jobs_and_log(tmp_path) -> None:
             assert jobs["jobs"][0]["capture"]["origin"]["kind"] == "watch"
             assert jobs["jobs"][0]["capture"]["title"] == "env_context_01_1791786600"
 
-            log = client.get("/api/activity", params={"limit": 3}).json()
+            status = client.get("/api/watch").json()
+            assert status["pass_count"] == 2
+
+            # Sin los pases del vigilante (que pueden llegar tras el trabajo).
+            main_levels = {"level": ["info", "warning", "error"]}
+            log = client.get("/api/activity", params={"limit": 3, **main_levels}).json()
             assert len(log["entries"]) == 3
             assert log["entries"][-1]["message"] == "Completado: captura «env_context_01_1791786600»"
-            newer = client.get("/api/activity", params={"after_id": log["last_id"]}).json()
+            newer = client.get("/api/activity", params={"after_id": log["last_id"], **main_levels}).json()
             assert newer["entries"] == [] and newer["last_id"] == log["last_id"]
+            passes = client.get("/api/activity", params={"level": "debug"}).json()["entries"]
+            assert [entry["data"]["pass"] for entry in passes] == [1, 2]
             only_watch = client.get("/api/activity", params={"component": "watch"}).json()
             assert {entry["component"] for entry in only_watch["entries"]} == {"watch"}
     finally:
@@ -642,3 +686,109 @@ def test_manifest_contract_violations_are_reported(env) -> None:
     assert keys == {"env_context_01_1791786620"}
     assert files["repetida/otra.txt"].state == InboxFileState.FAILED
     assert files["repetida/otra.txt"].error == "La captura env_context_01_1791786620 ya existe"
+
+
+def test_folder_without_manifest_is_reported_and_can_be_drafted_by_hand(env) -> None:
+    """Carga manual: la carpeta espera su manifiesto a la vista, y la persona
+    puede pedir que se proponga a partir del nombre <entorno>_<epoch>."""
+    folder = env.inbox / f"env_context_A015_{T0}"
+    _put(folder, "camara.mp4", VIDEO)
+    _put(folder, "conversacion.mp3", AUDIO)
+    _put(folder, "notas.txt", b"Se revisa el contador.")
+    _put(env.inbox / "sin_patron", "notas.txt", b"Otra carga.")
+    watcher = env.make(grouping="manifest", manifest_warning_seconds=30)
+    watcher.tick()
+    env.clock.advance(SETTLE + 1)
+    assert watcher.tick().capture_ids == []
+
+    awaiting = {item["folder"]: item for item in watcher.status()["sources"]["taller"]["awaiting_manifest"]}
+    assert set(awaiting) == {folder.name, "sin_patron"}
+    assert awaiting[folder.name]["files"] == 3 and awaiting[folder.name]["draftable"] is True
+    assert awaiting["sin_patron"]["draftable"] is False
+    assert "<entorno>_<epoch en segundos>" in awaiting["sin_patron"]["draft_error"]
+    assert not [m for m in _messages(env, "watch") if "sin capture.json" in m]
+
+    # Pasado el plazo se avisa, una sola vez por carpeta.
+    env.clock.advance(31)
+    watcher.tick()
+    watcher.tick()
+    warnings = [m for m in _messages(env, "watch") if "sin capture.json" in m]
+    assert len(warnings) == 2
+    assert any(m.startswith(f"{folder.name}: 3 fichero(s) completos sin capture.json") for m in warnings)
+    passes = [e.message for e in env.container.repository.list_activity(limit=5, component="watch") if e.level.value == "debug"]
+    assert passes[-1].endswith("4 esperando su manifiesto")
+
+    from episodic.application.watch import draft_group_manifest, write_manifest
+
+    source = watcher.settings.sources[0]
+    target, manifest = draft_group_manifest(env.container.repository, source, folder.name)
+    assert target == folder / "capture.json"
+    assert manifest == {
+        "schema": "epigraph.capture/v1",
+        "environment_id": "env_context_A015",
+        "captured_at": T0,
+        "devices": [
+            {"id": "camara", "kind": "camera", "files": ["camara.mp4"]},
+            {"id": "conversacion", "kind": "microphone", "files": ["conversacion.mp3"]},
+            {"id": "notas", "kind": "document", "files": ["notas.txt"]},
+        ],
+    }
+    with pytest.raises(ValueError, match="<entorno>_<epoch"):
+        draft_group_manifest(env.container.repository, source, "sin_patron")
+
+    write_manifest(target, manifest)
+    with pytest.raises(FileExistsError):
+        draft_group_manifest(env.container.repository, source, folder.name)
+    report = watcher.tick()
+    assert len(report.capture_ids) == 1
+    capture = env.container.repository.get_capture(report.capture_ids[0])
+    assert capture.metadata["capture_key"] == f"env_context_A015_{T0}"
+    awaiting = watcher.status()["sources"]["taller"]["awaiting_manifest"]
+    assert [item["folder"] for item in awaiting] == ["sin_patron"]
+
+
+def test_manifest_api_previews_and_writes_the_draft(tmp_path) -> None:
+    inbox = tmp_path / "entrada"
+    folder = inbox / f"env_context_A001_{T0}"
+    _put(folder, "notas.txt", b"hola")
+    config_file = tmp_path / "watch.toml"
+    config_file.write_text(
+        "[watch]\ninterval_seconds = 1\nsettle_seconds = 0\n\n"
+        "[[sources]]\nname = \"taller\"\npath = \"entrada\"\n",
+        encoding="utf-8",
+    )
+    config = EpisodicConfig(
+        project_root=tmp_path,
+        data_dir="runtime",
+        vision_backend="fake",
+        speech_backend="fake",
+        watch_config="watch.toml",
+    )
+    container = create_app_container(config, use_fake_encoders=True, use_memory_qdrant=True)
+    try:
+        with TestClient(create_api_app(container=container, start_watcher=False)) as client:
+            container.watcher.tick()
+            container.watcher.tick()
+            status = client.get("/api/watch").json()
+            assert [item["folder"] for item in status["sources"][0]["awaiting_manifest"]] == [folder.name]
+
+            form = {"source": "taller", "group_key": folder.name}
+            preview = client.post("/api/watch/manifest", data=form).json()
+            assert preview["written"] is False and not (folder / "capture.json").exists()
+            assert preview["manifest"]["environment_id"] == "env_context_A001"
+
+            written = client.post("/api/watch/manifest", data={**form, "write": "true"}).json()
+            assert written["written"] is True
+            assert json.loads((folder / "capture.json").read_text(encoding="utf-8")) == preview["manifest"]
+            assert client.post("/api/watch/manifest", data=form).status_code == 409
+            assert client.post("/api/watch/manifest", data={**form, "group_key": "otra"}).status_code == 404
+            assert any(
+                entry["message"].startswith(f"Manifiesto creado a mano para {folder.name}")
+                for entry in client.get("/api/activity", params={"component": "watch"}).json()["entries"]
+            )
+
+            report = container.watcher.tick()
+            job = container.job_runner.wait(report.job_ids[0], timeout=60)
+            assert job.state == JobState.COMPLETED
+    finally:
+        container.close()
