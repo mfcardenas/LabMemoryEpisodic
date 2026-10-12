@@ -1,0 +1,56 @@
+# Entrada automática: carpetas que EpiGraph vigila y convierte en capturas.
+#
+# Uso: copie este fichero a watch.toml (fuera de git) y en .env ponga
+#   EPIGRAPH_WATCH_CONFIG=watch.toml
+# · `epigraph serve` vigila mientras el servidor está en marcha
+#   (sección «Vigilancia» del front), o
+# · `epigraph watch` vigila sin servidor web; `epigraph watch --once`
+#   procesa lo que haya y termina.
+# Solo un proceso vigila a la vez; si arranca otro, queda a la espera.
+#
+# Rutas: relativas a la carpeta de este fichero. En Windows use barras
+# normales ("D:/datos/jobs") o comillas simples ('D:\datos\jobs'): entre
+# comillas dobles, la barra invertida es un carácter de escape en TOML.
+# Una clave mal escrita es un error al arrancar, no se ignora.
+
+[watch]
+interval_seconds = 5     # cada cuánto se revisan las carpetas
+settle_seconds = 10      # un fichero está completo tras este tiempo sin cambiar
+
+# Modo recomendado: la herramienta de captura deja cada captura en una
+# subcarpeta con un manifiesto epigraph.capture/v1 que declara el entorno,
+# el instante (epoch en segundos) y los dispositivos con sus ficheros.
+# Contrato completo: docs/contrato-captura.md
+[[sources]]
+name = "capturas"
+path = "D:/capturas/entrada"
+grouping = "manifest"                 # manifest | folder | file | time_gap
+manifest_file = "capture.json"
+missing_files_timeout_seconds = 600   # espera por ficheros declarados que aún no llegan
+after = "keep"                        # keep: dejar los originales | move: moverlos a archive_dir
+# archive_dir = "_procesados"         # solo con after = "move"; relativa a la carpeta vigilada
+# include = ["*"]                     # patrones de ficheros que se leen
+# exclude = [".*", "~$*", "*.tmp", "*.part", "*.partial", "*.crdownload", "*.download", "Thumbs.db", "desktop.ini"]
+window_duration_seconds = 60
+overlap_seconds = 5
+# enabled = false                     # desactivar sin borrar la entrada
+
+# Modos sin manifiesto, para carpetas que no controla una herramienta:
+# el entorno y las fuentes se fijan aquí.
+# [[sources]]
+# name = "taller_manual"
+# path = "D:/capturas/manual"
+# grouping = "folder"           # cada subcarpeta es una captura
+# environment_id = "taller_01"
+# close_after_seconds = 30      # se cierra tras 30 s sin cambios…
+# ready_marker = ""             # …o al aparecer este fichero (p. ej. "LISTO")
+# audio_offset_seconds = 0      # audio grabado aparte respecto al vídeo
+# [sources.source_ids]          # fuente por tipo de fichero
+# video = "taller_01.camara_fija"
+#
+# [[sources]]
+# name = "movil"
+# path = "//nas/capturas/movil"
+# grouping = "time_gap"         # ficheros sueltos a menos de max_gap_seconds entre sí
+# environment_id = "taller_01"
+# max_gap_seconds = 120

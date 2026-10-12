@@ -456,6 +456,42 @@ CREATE INDEX idx_jobs_state ON jobs(state, created_at);
 CREATE INDEX idx_jobs_target ON jobs(target_id, created_at);
 """
 
+MIGRATION_V7 = """
+-- Entrada automática: ficheros de las carpetas vigiladas, registro de
+-- ejecución visible en el front y concesión del vigilante entre procesos.
+CREATE TABLE inbox_files (
+    id TEXT PRIMARY KEY,
+    source_name TEXT NOT NULL,
+    rel_path TEXT NOT NULL,
+    group_key TEXT NOT NULL DEFAULT '',
+    state TEXT NOT NULL,
+    capture_id TEXT,
+    archived INTEGER NOT NULL DEFAULT 0,
+    updated_at TEXT NOT NULL,
+    payload_json TEXT NOT NULL
+);
+CREATE INDEX idx_inbox_files_live ON inbox_files(source_name, archived, rel_path);
+CREATE INDEX idx_inbox_files_group ON inbox_files(source_name, group_key);
+CREATE INDEX idx_inbox_files_updated ON inbox_files(updated_at);
+
+CREATE TABLE activity_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    at TEXT NOT NULL,
+    level TEXT NOT NULL,
+    component TEXT NOT NULL,
+    job_id TEXT,
+    capture_id TEXT,
+    payload_json TEXT NOT NULL
+);
+CREATE INDEX idx_activity_component ON activity_log(component, id);
+
+CREATE TABLE leases (
+    name TEXT PRIMARY KEY,
+    owner TEXT NOT NULL,
+    expires_at REAL NOT NULL
+);
+"""
+
 MIGRATIONS: List[Tuple[int, str]] = [
     (1, MIGRATION_V1),
     (2, MIGRATION_V2),
@@ -463,6 +499,7 @@ MIGRATIONS: List[Tuple[int, str]] = [
     (4, MIGRATION_V4),
     (5, MIGRATION_V5),
     (6, MIGRATION_V6),
+    (7, MIGRATION_V7),
 ]
 
 

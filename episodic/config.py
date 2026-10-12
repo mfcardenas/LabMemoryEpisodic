@@ -189,6 +189,14 @@ class EpisodicConfig:
         default_factory=lambda: _env("SPEECH_SAMPLE_RATE_HZ", 16000, int)
     )
 
+    # Entrada automática: fichero TOML con las carpetas vigiladas. Vacío: sin
+    # vigilancia. ``epigraph serve`` la arranca si está definido.
+    watch_config: str | Path = field(default_factory=lambda: _env("WATCH_CONFIG", ""))
+    # Líneas que se conservan del registro de ejecución (0: sin límite).
+    activity_log_max_rows: int = field(
+        default_factory=lambda: _env("ACTIVITY_LOG_MAX_ROWS", 5000, int)
+    )
+
     # Directorio permitido para importaciones; su aplicación estricta pertenece
     # a la fase del modelo de procedencia, no a esta fase de infraestructura.
     import_root: str | Path = field(default_factory=lambda: _env("IMPORT_ROOT", ""))
@@ -242,6 +250,10 @@ class EpisodicConfig:
     @property
     def log_file_path(self) -> Path | None:
         return self.resolve_path(self.log_file) if self.log_file else None
+
+    @property
+    def watch_config_path(self) -> Path | None:
+        return self.resolve_path(self.watch_config) if self.watch_config else None
 
     @property
     def default_manifest_path(self) -> Path:

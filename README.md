@@ -5,8 +5,9 @@ EpiGraph conserva lo que ocurre en un entorno a partir de capturas reales
 evidencia verificable: cada respuesta vuelve al archivo original y al
 instante exacto en que ocurrió.
 
-> **Estado (2026-10-11).** Cada captura (vídeo, audio y documentos subidos
-> juntos) forma un episodio. El vídeo se divide en **eventos con su Δt**,
+> **Estado (2026-10-12).** Cada captura (vídeo, audio y documentos subidos
+> juntos, o dejados por otro proceso en una carpeta vigilada) forma un
+> episodio. El vídeo se divide en **eventos con su Δt**,
 > fotogramas clave y una descripción detallada generada por un modelo de
 > visión local (Ollama), y cada evento muestra **lo que se dijo** durante su
 > intervalo (transcripción con Whisper en un servicio aparte). Pendiente:
@@ -74,11 +75,46 @@ semántica real con Nomic y CLIP. El catálogo de la API está en
 Material de prueba: `data_samples/phase4_input/` contiene un vídeo, un audio
 y un manual de taller que forman una misma captura.
 
+### Entrada automática: carpetas vigiladas
+
+La herramienta que graba los entornos es externa y entrega cada captura en
+una subcarpeta con un **manifiesto** (`capture.json`,
+`epigraph.capture/v1`) que declara el **entorno**, el **instante** (epoch
+en segundos, UTC) y los **dispositivos** con sus ficheros y, si se quiere,
+el instante en que empezó cada uno. EpiGraph no deduce nada de los nombres.
+Contrato completo para el equipo de la herramienta:
+[`docs/contrato-captura.md`](docs/contrato-captura.md).
+
+- La captura se llama `<entorno>_<epoch>` (p. ej.
+  `env_context_01_1791786600`): es el `external_id` del episodio en SQLite
+  y en Qdrant, y no puede repetirse.
+- Cada dispositivo es una fuente `<entorno>.<dispositivo>` con su carril en
+  la línea temporal; todo lo extraído de un fichero lleva hora absoluta
+  desde el inicio de su dispositivo, de modo que cámaras y micrófonos se
+  alinean y las capturas se ordenan por su instante real.
+- Una captura puede traer solo vídeo, solo audio o todo junto. Se registra
+  cuando el manifiesto existe y todos sus ficheros están completos; si
+  alguno no llega a tiempo, o el manifiesto incumple el contrato, queda
+  fallida con el motivo y se reintenta al reescribir el manifiesto.
+- Cada fichero queda anotado en SQLite: reiniciar no reprocesa ni pierde
+  nada. Los originales pueden quedarse o moverse a `_procesados`.
+
+Configuración: copie `watch.example.toml` a `watch.toml` (fuera de git) y
+ponga `EPIGRAPH_WATCH_CONFIG=watch.toml` en `.env`. Para carpetas sin
+herramienta quedan los modos `folder`, `file` y `time_gap`.
+
+`epigraph serve` vigila mientras está en marcha (`--no-watch` lo evita);
+`epigraph watch` vigila sin web y `epigraph watch --once` procesa lo
+pendiente y termina. Solo un proceso vigila a la vez. La sección
+**Vigilancia** del front muestra las carpetas, los ficheros leídos, los
+trabajos con sus etapas y el registro de ejecución en vivo.
+
 ## Comandos principales
 
 | Comando | Para qué |
 |---|---|
-| `epigraph serve` | API y front en `127.0.0.1:8100`. |
+| `epigraph serve [--no-watch]` | API y front en `127.0.0.1:8100`; vigila las carpetas de `EPIGRAPH_WATCH_CONFIG`. |
+| `epigraph watch [--config F] [--once]` | Vigila las carpetas sin servidor web; `--once` procesa lo pendiente y termina. |
 | `epigraph capture FILES… --environment ENV [--title T] [--captured-at ISO] [--audio-offset S]` | Sube los archivos tomados juntos como una captura y crea su episodio. |
 | `epigraph speech-check [--download] [--file F]` | Comprueba el servicio de transcripción y su modelo. |
 | `epigraph ingest FILE --environment ENV --source SRC` | Registra un original en custodia. |

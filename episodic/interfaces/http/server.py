@@ -6,6 +6,7 @@ import mimetypes
 from contextlib import asynccontextmanager
 import shutil
 import tempfile
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -22,8 +23,11 @@ from episodic.application.captures import (
     CaptureConflictError,
     CaptureFile,
 )
+from episodic.application.watch import LEASE_NAME, retry_failed_group
 from episodic.bootstrap import AppContainer, create_app_container
 from episodic.config import EpisodicConfig
+from episodic.domain.captures import JobState
+from episodic.domain.watch import ActivityLevel, InboxFileState
 from episodic.domain.times import Interval, TimeSpec
 from episodic.domain.retrieval import HybridSearchFilters
 from episodic.domain.types import (
@@ -55,21 +59,32 @@ def create_api_app(
     config: Optional[EpisodicConfig] = None,
     container: Optional[AppContainer] = None,
     use_fake_encoders: bool = False,
+    start_watcher: bool = True,
 ) -> FastAPI:
-    """Crea y configura la aplicación FastAPI con todas las rutas episódicas."""
+    """Crea y configura la aplicación FastAPI con todas las rutas episódicas.
+
+    Si el contenedor trae vigilante (``EPIGRAPH_WATCH_CONFIG``) y
+    ``start_watcher`` es cierto, las carpetas se vigilan mientras el servidor
+    está en marcha.
+    """
     if container is None:
         container = create_app_container(config, use_fake_encoders=use_fake_encoders)
 
     job_runner = getattr(container, "job_runner", None)
+    watcher = getattr(container, "watcher", None)
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
         # La cola reanuda al arrancar los trabajos que quedaron pendientes.
         if job_runner is not None:
             job_runner.start()
+        if watcher is not None and start_watcher:
+            watcher.start()
         try:
             yield
         finally:
+            if watcher is not None:
+                watcher.stop()
             if job_runner is not None:
                 job_runner.stop()
 
@@ -404,6 +419,7 @@ def create_api_app(
                 window_duration_seconds=window_duration_seconds,
                 overlap_seconds=overlap_seconds,
                 audio_offset_seconds=audio_offset_seconds,
+                origin={"kind": "upload"},
             )
         except CaptureConflictError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
@@ -436,12 +452,121 @@ def create_api_app(
             raise HTTPException(status_code=404, detail="Captura no encontrada")
         return capture_response(capture)
 
+    @app.get("/api/jobs")
+    def list_jobs(limit: int = Query(30, ge=1, le=200)):
+        """Trabajos recientes con la captura a la que pertenecen."""
+        jobs = []
+        for job in container.repository.list_recent_jobs(limit):
+            capture = container.repository.get_capture(job.target_id)
+            jobs.append(
+                {
+                    **job_response(job),
+                    "capture": {
+                        "id": capture.id,
+                        "title": capture.title,
+                        "environment_id": capture.environment_id,
+                        "status": capture.status.value,
+                        "episode_id": capture.episode_id,
+                        "asset_count": len(capture.asset_ids),
+                        "origin": capture.metadata.get("origin", {}),
+                    }
+                    if capture
+                    else None,
+                }
+            )
+        active = container.repository.list_jobs(states=[JobState.QUEUED, JobState.RUNNING])
+        return {"jobs": jobs, "active_count": len(active)}
+
     @app.get("/api/jobs/{job_id}")
     def get_job(job_id: str):
         job = container.repository.get_job(job_id)
         if job is None:
             raise HTTPException(status_code=404, detail="Trabajo no encontrado")
         return job_response(job)
+
+    # -----------------------------------------------------------------------
+    # Entrada automática (carpetas vigiladas) y registro de ejecución
+    # -----------------------------------------------------------------------
+
+    @app.get("/api/watch")
+    def watch_status():
+        lease = container.repository.get_lease(LEASE_NAME)
+        holder = None
+        if lease is not None:
+            owner, expires_at = lease
+            holder = {
+                "owner": owner,
+                "expires_at": datetime.fromtimestamp(expires_at).astimezone().isoformat(),
+                "active": expires_at > time.time(),
+                "this_process": watcher is not None and owner == watcher.owner,
+            }
+        if watcher is None:
+            return {
+                "configured": False,
+                "config_path": None,
+                "lease": holder,
+                "sources": [],
+            }
+        runtime = watcher.status()
+        return {
+            "configured": True,
+            "config_path": str(watcher.settings.config_path or ""),
+            "interval_seconds": watcher.settings.interval_seconds,
+            "settle_seconds": watcher.settings.settle_seconds,
+            "running": runtime["running"],
+            "has_lease": runtime["has_lease"],
+            "last_scan_at": runtime["last_scan_at"],
+            "last_error": runtime["last_error"],
+            "lease": holder,
+            "sources": [
+                {
+                    **source.to_dict(),
+                    **runtime["sources"].get(source.name, {}),
+                    "counts": container.repository.count_inbox_files(source.name),
+                }
+                for source in watcher.settings.sources
+            ],
+        }
+
+    @app.post("/api/watch/scan", status_code=202)
+    def watch_scan_now():
+        if watcher is None or not watcher.running:
+            raise HTTPException(status_code=409, detail="La vigilancia no está en marcha en este servidor")
+        watcher.request_scan()
+        return {"requested": True}
+
+    @app.get("/api/watch/files")
+    def watch_files(
+        source: Optional[str] = None,
+        state: Optional[List[InboxFileState]] = Query(None),
+        limit: int = Query(200, ge=1, le=1000),
+    ):
+        files = container.repository.list_inbox_files(source, state, limit)
+        return {"files": [item.to_dict() for item in files]}
+
+    @app.post("/api/watch/retry")
+    def watch_retry(source: str = Form(...), group_key: str = Form(...)):
+        reset = retry_failed_group(
+            container.repository, container.activity_log, source, group_key
+        )
+        if not reset:
+            raise HTTPException(status_code=404, detail="No hay ficheros fallidos en ese grupo")
+        if watcher is not None and watcher.running:
+            watcher.request_scan()
+        return {"reset": reset}
+
+    @app.get("/api/activity")
+    def list_activity(
+        after_id: int = Query(0, ge=0),
+        limit: int = Query(200, ge=1, le=1000),
+        component: Optional[str] = None,
+        level: Optional[List[ActivityLevel]] = Query(None),
+    ):
+        entries = container.repository.list_activity(after_id, limit, component, level)
+        return {
+            "entries": [entry.to_dict() for entry in entries],
+            "last_id": entries[-1].id if entries else after_id,
+        }
 
     @app.get("/api/memory/assets")
     def list_memory_assets(environment_id: Optional[str] = None):

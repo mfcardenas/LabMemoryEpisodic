@@ -13,6 +13,7 @@ import time
 from dataclasses import replace
 from typing import Callable, Mapping, Sequence
 
+from episodic.application.activity import ActivityLog
 from episodic.domain.captures import Job, JobStage, JobState, StageState
 from episodic.domain.times import utc_now
 from episodic.ports.repository import EpisodicRepository
@@ -21,6 +22,9 @@ logger = logging.getLogger(__name__)
 
 StageReporter = Callable[[str, StageState, str], None]
 JobHandler = Callable[[Job, StageReporter], dict]
+JobDescriber = Callable[[Job], str]
+
+ACTIVITY_COMPONENT = "jobs"
 
 
 class JobRunner:
@@ -28,6 +32,8 @@ class JobRunner:
 
     ``repository`` debe ser una conexión propia del hilo de trabajo: SQLite
     en modo WAL permite que la API lea mientras el trabajo escribe.
+    ``activity`` (opcional) recibe el inicio, cada etapa y el final de cada
+    trabajo; ``describe`` da el nombre legible de su objetivo.
     """
 
     def __init__(
@@ -35,10 +41,14 @@ class JobRunner:
         repository: EpisodicRepository,
         handlers: Mapping[str, JobHandler],
         max_attempts: int = 2,
+        activity: ActivityLog | None = None,
+        describe: JobDescriber | None = None,
     ) -> None:
         self.repository = repository
         self.handlers = dict(handlers)
         self.max_attempts = max_attempts
+        self.activity = activity
+        self.describe = describe
         self._queue: queue.Queue[str | None] = queue.Queue()
         self._lock = threading.Lock()
         self._thread: threading.Thread | None = None
@@ -79,6 +89,7 @@ class JobRunner:
         )
         self.repository.save_job(job)
         self._queue.put(job.id)
+        self._log("info", job, f"Trabajo encolado: {self._name(job)}")
         return job
 
     def wait(self, job_id: str, timeout: float = 60.0) -> Job:
@@ -130,6 +141,12 @@ class JobRunner:
             updated_at=utc_now(),
         )
         self.repository.save_job(job)
+        self._log(
+            "info",
+            job,
+            f"Inicio: {self._name(job)}"
+            + (f" (intento {job.attempts})" if job.attempts > 1 else ""),
+        )
 
         def report(name: str, state: StageState, detail: str = "") -> None:
             nonlocal job
@@ -139,6 +156,13 @@ class JobRunner:
             ]
             job = replace(job, stages=stages, updated_at=utc_now())
             self.repository.save_job(job)
+            label = next((stage.label for stage in stages if stage.name == name), name)
+            self._log(
+                "error" if state == StageState.FAILED else "info",
+                job,
+                f"{label} · {_STAGE_VERB[state]}" + (f": {detail}" if detail else ""),
+                stage=name,
+            )
 
         try:
             result = self.handlers[job.job_type](job, report)
@@ -160,7 +184,10 @@ class JobRunner:
             )
             self.repository.save_job(job)
             if retry:
+                self._log("warning", job, f"Fallo transitorio, se reintentará: {exc}")
                 self._queue.put(job.id)
+            else:
+                self._log("error", job, f"Fallido: {self._name(job)}: {exc}")
         else:
             job = replace(
                 job,
@@ -169,6 +196,35 @@ class JobRunner:
                 updated_at=utc_now(),
             )
             self.repository.save_job(job)
+            self._log("info", job, f"Completado: {self._name(job)}")
         finally:
             with self._finished:
                 self._finished.notify_all()
+
+    # -- Registro -----------------------------------------------------------
+
+    def _name(self, job: Job) -> str:
+        if self.describe is not None:
+            try:
+                return self.describe(job)
+            except Exception:  # pragma: no cover - el nombre nunca debe romper el trabajo
+                logger.exception("No se pudo describir el trabajo %s", job.id)
+        return f"{job.job_type} {job.target_id}"
+
+    def _log(self, level: str, job: Job, message: str, **data) -> None:
+        if self.activity is None:
+            return
+        getattr(self.activity, level)(
+            ACTIVITY_COMPONENT,
+            message,
+            job_id=job.id,
+            data={"job_type": job.job_type, "target_id": job.target_id, **data},
+        )
+
+
+_STAGE_VERB = {
+    StageState.PENDING: "pendiente",
+    StageState.RUNNING: "en curso",
+    StageState.COMPLETED: "hecho",
+    StageState.FAILED: "falló",
+}

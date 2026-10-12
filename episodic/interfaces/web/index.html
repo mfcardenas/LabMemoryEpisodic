@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="description" content="EpiGraph: memoria episódica multimodal trazable">
   <title>EpiGraph · Consola de memoria</title>
-  <link rel="stylesheet" href="/static/index.css?v=fase-d-1">
+  <link rel="stylesheet" href="/static/index.css?v=vigilancia-3">
 </head>
 <body>
   <div class="shell">
@@ -19,8 +19,9 @@
         <button class="nav-item active" data-view="episodes"><span>01</span>Memoria</button>
         <button class="nav-item" data-view="timeline"><span>02</span>Línea temporal</button>
         <button class="nav-item" data-view="ingest"><span>03</span>Ingesta</button>
-        <button class="nav-item" data-view="search"><span>04</span>Consultas</button>
-        <button class="nav-item" data-view="system"><span>05</span>Sistema</button>
+        <button class="nav-item" data-view="watch"><span>04</span>Vigilancia</button>
+        <button class="nav-item" data-view="search"><span>05</span>Consultas</button>
+        <button class="nav-item" data-view="system"><span>06</span>Sistema</button>
       </nav>
 
       <div class="rail-status">
@@ -224,6 +225,66 @@
         </article>
       </section>
 
+      <section class="view" id="view-watch">
+        <article class="panel watch-status-panel">
+          <div class="panel-heading">
+            <div><p class="kicker">ENTRADA AUTOMÁTICA</p><h2>Carpetas vigiladas</h2></div>
+            <div class="watch-actions">
+              <span class="watch-state" id="watch-state"><i></i><b>Cargando…</b></span>
+              <button class="button-mini" id="watch-scan-now" type="button" disabled>Barrer ahora</button>
+            </div>
+          </div>
+          <p class="watch-summary" id="watch-summary"></p>
+          <div class="watch-sources" id="watch-sources"><div class="empty">Cargando…</div></div>
+        </article>
+
+        <div class="watch-grid">
+          <article class="panel">
+            <div class="panel-heading">
+              <div><p class="kicker">COLA DE TRABAJOS</p><h2>Trabajos</h2></div>
+              <span class="counter" id="watch-jobs-active">—</span>
+            </div>
+            <div class="watch-jobs" id="watch-jobs"><div class="empty">Cargando…</div></div>
+          </article>
+          <article class="panel">
+            <div class="panel-heading">
+              <div><p class="kicker">LECTURA DE FICHEROS</p><h2>Ficheros leídos</h2></div>
+              <select id="watch-file-state" aria-label="Estado de los ficheros">
+                <option value="">Todos los estados</option>
+                <option value="pending">Copiándose</option>
+                <option value="ready">Listos, esperando cierre</option>
+                <option value="captured">Capturados</option>
+                <option value="duplicate">Duplicados</option>
+                <option value="ignored">Ignorados</option>
+                <option value="failed">Fallidos</option>
+                <option value="vanished">Desaparecidos</option>
+              </select>
+            </div>
+            <div class="watch-files" id="watch-files"><div class="empty">Cargando…</div></div>
+          </article>
+        </div>
+
+        <article class="panel watch-log-panel">
+          <div class="panel-heading">
+            <div><p class="kicker">REGISTRO DE EJECUCIÓN</p><h2>Log del vigilante y de los trabajos</h2></div>
+            <div class="inline-filters">
+              <select id="log-component" aria-label="Componente">
+                <option value="">Todo</option>
+                <option value="watch">Vigilante</option>
+                <option value="jobs">Trabajos</option>
+              </select>
+              <select id="log-level" aria-label="Nivel">
+                <option value="">Todos los niveles</option>
+                <option value="warning,error">Avisos y errores</option>
+                <option value="error">Solo errores</option>
+              </select>
+              <label class="switch"><input type="checkbox" id="log-follow" checked><span></span>Seguir</label>
+            </div>
+          </div>
+          <div class="activity-log" id="activity-log" role="log" aria-live="polite"><div class="log-empty">Cargando…</div></div>
+        </article>
+      </section>
+
       <section class="view" id="view-search">
         <div class="search-mode-tabs">
           <button class="search-tab-btn active" data-search-tab="hybrid">Búsqueda Híbrida (Qdrant + SQLite)</button>
@@ -300,6 +361,6 @@
   </div>
 
   <dialog id="asset-dialog" class="detail-dialog"><button class="dialog-close" data-close-dialog aria-label="Cerrar">×</button><div id="asset-dialog-content"></div></dialog>
-  <script src="/static/app.js?v=fase-d-1"></script>
+  <script src="/static/app.js?v=vigilancia-3"></script>
 </body>
 </html>

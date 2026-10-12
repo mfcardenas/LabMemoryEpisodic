@@ -187,6 +187,49 @@ el registro de una captura a mitad.
 Salida: subir vídeo + audio + PDF juntos crea **un** episodio con los tres
 activos, y la subida muestra el progreso sin bloquear la página.
 
+### Fase B2 — Entrada automática desde carpetas · ✅ hecha (2026-10-12)
+
+Otro proceso graba el entorno y deja cada captura (vídeo, audio, textos o
+solo parte) en una carpeta; EpiGraph la convierte en captura sin pasar por
+el front. No es un agente con modelo: es un vigilante determinista.
+
+Implementado: `InboxWatcher` (sondeo, no avisos del sistema, que fallan en
+Windows y en carpetas de red), configuración TOML validada
+(`watch.example.toml`, `EPIGRAPH_WATCH_CONFIG`), migración v7 con
+`inbox_files` (cada fichero: tamaño, fecha, SHA-256, estado, grupo y
+captura), `activity_log` (registro de ejecución) y `leases` (un solo
+vigilante entre procesos). Reglas de agrupación `folder` (subcarpeta =
+captura; cierre por inactividad o marcador), `file` y `time_gap`;
+`capture.json` opcional; estabilidad por tamaño y fecha sin cambios y
+fichero legible; duplicados por hash; formatos no admitidos ignorados sin
+bloquear el resto; recuperación si el proceso se corta entre registrar la
+captura y anotarla; archivado opcional. La captura guarda su origen
+(`metadata.origin`) y, sin hora declarada ni del vídeo, usa la del fichero
+(`file_time`). La cola de trabajos escribe en el mismo registro cada etapa
+con el fichero en lectura. API `GET /api/watch`, `POST /api/watch/scan`,
+`GET /api/watch/files`, `POST /api/watch/retry`, `GET /api/jobs`,
+`GET /api/activity`; CLI `epigraph watch [--once]` y `serve --no-watch`;
+sección **Vigilancia** del front con refresco cada 2 s.
+Verificado con Ollama y Speaches reales: un vídeo escrito por trozos se
+esperó hasta completarse (1,7 → 4,4 MB) y produjo dos eventos; una
+carpeta solo con audio produjo su episodio sin eventos.
+Fuera de alcance: grabación continua (horas o RTSP), que exige trocear y
+decidir los límites del episodio por contenido.
+
+Ajuste (2026-10-12): la herramienta de captura es externa, así que es ella
+quien declara entorno, dispositivos e instante. Modo `manifest` (por
+defecto) con el contrato `epigraph.capture/v1`
+([`contrato-captura.md`](contrato-captura.md)): epoch en segundos UTC,
+dispositivos con sus ficheros y `started_at` opcional. La captura se llama
+`<entorno>_<epoch>`, su id se deriva de ese nombre y es el `external_id`
+del episodio (SQLite y payload de Qdrant); cada dispositivo es una fuente
+`<entorno>.<dispositivo>` y cada fichero toma la hora de su dispositivo.
+Validación estricta (milisegundos, tipos que no corresponden al dispositivo,
+claves desconocidas, ficheros fuera de la carpeta, capturas repetidas),
+espera acotada por ficheros declarados que aún no han llegado y reintento
+automático al reescribirse el manifiesto. El `capture.json` libre del modo
+`folder` se retira: hay un único contrato.
+
 ### Fase C — Del vídeo a eventos (4–6 días) · ✅ hecha (2026-10-10)
 
 Implementado: `PyAVFrameSampler` (PTS del decoder, 1 fps), `SceneSegmenter`

@@ -12,6 +12,10 @@ document.addEventListener("DOMContentLoaded", () => {
     episodeGroupMode: "blocks",
     timelineZoom: 1,
     timelineRawData: null,
+    watchTimer: null,
+    watchBusy: false,
+    logLastId: 0,
+    logFilterKey: null,
   };
   const $ = selector => document.querySelector(selector);
   const $$ = selector => [...document.querySelectorAll(selector)];
@@ -125,6 +129,7 @@ document.addEventListener("DOMContentLoaded", () => {
     episodes: ["MEMORIA CANÓNICA", "Explorador de episodios", "Dossier auditable: observaciones extraídas, eventos, microepisodios y evidencias originales."],
     timeline: ["CRONOLOGÍA MULTI-FUENTE", "Eje temporal continuo", "Visualización temporal por carriles: duración real de intervalos, simultaneidad y solapamientos."],
     ingest: ["RECORRIDO CANÓNICO", "Registro y custodia de activos", "El archivo original inicia la memoria; SHA-256 inmutable y procesamiento observable."],
+    watch: ["ENTRADA AUTOMÁTICA", "Vigilancia y trabajos", "Lo que llega a las carpetas vigiladas se convierte en capturas: cada fichero leído, cada trabajo y su registro de ejecución."],
     search: ["CONSULTA Y AUDITORÍA", "Búsqueda híbrida y herramientas", "Recuperación semántica vectorial en Qdrant y herramientas tipadas de la Fase 8."],
     system: ["ARQUITECTURA Y ESTADO", "Proyección vectorial y runtime", "Separación estricta entre la verdad canónica (SQLite) y la proyección reconstruible (Qdrant)."],
   };
@@ -145,6 +150,7 @@ document.addEventListener("DOMContentLoaded", () => {
     if (loadData && name === "timeline") loadTimeline().catch(showTimelineError);
     if (loadData && name === "ingest") Promise.all([loadAssets(), loadCaptures()]).catch(error => console.error(error));
     if (loadData && name === "search") loadToolsCatalog().catch(error => console.error(error));
+    if (name === "watch") startWatchPolling(); else stopWatchPolling();
     if (loadData && name === "system") loadSystem().catch(error => console.error(error));
   }
 
@@ -277,7 +283,8 @@ document.addEventListener("DOMContentLoaded", () => {
     received: "Recibida", processing: "Procesando", ready: "Lista", failed: "Fallida",
   })[value] || value;
   const timeOriginLabel = value => ({
-    declared: "hora declarada", media_metadata: "hora del vídeo", upload_time: "hora de subida (no declarada)",
+    declared: "hora declarada", media_metadata: "hora del vídeo", file_time: "hora del fichero",
+    upload_time: "hora de subida (no declarada)",
   })[value] || value;
   const stageIcon = state => ({ completed: "✓", running: "…", failed: "✗" })[state] || "·";
 
@@ -333,11 +340,12 @@ document.addEventListener("DOMContentLoaded", () => {
     ledger.innerHTML = data.captures.map(capture => {
       const files = capture.assets.map(asset => `${asset.original_filename} · ${modalityLabel(asset.media_type)}`).join("<br>");
       const when = capture.captured_at ? `${fmtTime(capture.captured_at)} · ${timeOriginLabel(capture.captured_at_origin)}` : "Tiempo no declarado";
+      const origin = originLabel(capture.metadata?.origin);
       const action = capture.episode_id
         ? `<button type="button" class="button-mini ghost" data-open-episode="${esc(capture.episode_id)}">Abrir episodio</button>`
         : capture.job && ["queued", "running"].includes(capture.job.state)
           ? `<button type="button" class="button-mini ghost" data-follow-job="${esc(capture.job.id)}">Ver progreso</button>` : "";
-      return `<div class="capture-row"><div><strong>${esc(capture.title)}</strong><small>${esc(capture.environment_id)} · ${esc(when)}</small></div><small>${files}</small><span class="capture-status ${esc(capture.status)}">${esc(captureStatusLabel(capture.status))}</span><div>${action}</div></div>`;
+      return `<div class="capture-row"><div><strong>${esc(capture.title)}</strong><small>${esc(capture.environment_id)} · ${esc(when)} · ${esc(origin)}</small></div><small>${files}</small><span class="capture-status ${esc(capture.status)}">${esc(captureStatusLabel(capture.status))}</span><div>${action}</div></div>`;
     }).join("");
     ledger.querySelectorAll("[data-open-episode]").forEach(button => button.addEventListener("click", () => openEpisode(button.dataset.openEpisode)));
     ledger.querySelectorAll("[data-follow-job]").forEach(button => button.addEventListener("click", () => {
@@ -1192,6 +1200,237 @@ document.addEventListener("DOMContentLoaded", () => {
     $$(".result-open").forEach(button => button.addEventListener("click", () => openEpisode(button.dataset.episodeId)));
   }
   function score(label, value, cls = "") { return value === null || value === undefined ? "" : `<span class="score ${cls}">${label} ${Number(value).toFixed(3)}</span>`; }
+
+  // -- Vigilancia: carpetas, ficheros leídos, trabajos y registro ----------
+
+  const originLabel = origin => {
+    if (!origin || !origin.kind) return "subida";
+    if (origin.kind === "watch") return `carpeta «${origin.source}»`;
+    return ({ upload: "subida desde el front", cli: "línea de comandos" })[origin.kind] || origin.kind;
+  };
+  const inboxStateLabel = value => ({
+    pending: "Copiándose", ready: "Listo", captured: "Capturado", duplicate: "Duplicado",
+    ignored: "Ignorado", failed: "Fallido", vanished: "Desaparecido",
+  })[value] || value;
+  const jobStateLabel = value => ({
+    queued: "En cola", running: "En curso", completed: "Completado", failed: "Fallido",
+  })[value] || value;
+  const groupingLabel = source => ({
+    manifest: "Cada subcarpeta con su manifiesto epigraph.capture/v1",
+    folder: "Cada subcarpeta es una captura",
+    file: "Cada fichero es una captura",
+    time_gap: `Ficheros a menos de ${fmtDeltaSeconds(source.max_gap_seconds)} entre sí`,
+  })[source.grouping] || source.grouping;
+  const closeRuleLabel = source => {
+    if (source.grouping === "manifest") {
+      return `al aparecer «${source.manifest_file}» con todos sus ficheros completos (espera hasta ${fmtDeltaSeconds(source.missing_files_timeout_seconds)} por los que falten)`;
+    }
+    if (source.grouping !== "folder") return "se captura en cuanto está completo";
+    return source.ready_marker
+      ? `se cierra al aparecer «${source.ready_marker}»`
+      : `se cierra tras ${fmtDeltaSeconds(source.close_after_seconds)} sin cambios`;
+  };
+  const fmtBytes = size => {
+    let value = Number(size || 0);
+    for (const unit of ["B", "KB", "MB", "GB"]) {
+      if (value < 1024 || unit === "GB") return unit === "B" ? `${value} B` : `${value.toFixed(1)} ${unit}`;
+      value /= 1024;
+    }
+    return `${size} B`;
+  };
+  const fmtClockTime = value => value ? new Date(value).toLocaleTimeString("es-ES") : "—";
+
+  function startWatchPolling() {
+    stopWatchPolling();
+    refreshWatch(true);
+    state.watchTimer = setInterval(() => { if (!document.hidden) refreshWatch(false); }, 2000);
+  }
+  function stopWatchPolling() {
+    if (state.watchTimer) clearInterval(state.watchTimer);
+    state.watchTimer = null;
+  }
+
+  async function refreshWatch(full) {
+    if (state.watchBusy) return;
+    state.watchBusy = true;
+    try {
+      const fileState = $("#watch-file-state").value;
+      const filesUrl = `/api/watch/files?limit=300${fileState ? `&state=${encodeURIComponent(fileState)}` : ""}`;
+      const [status, jobs, files] = await Promise.all([api("/api/watch"), api("/api/jobs?limit=30"), api(filesUrl)]);
+      renderWatchStatus(status);
+      renderWatchJobs(jobs);
+      renderWatchFiles(files.files);
+      await loadActivity(full);
+    } catch (error) {
+      // Sin respuesta útil, ningún panel debe quedarse en «Cargando…».
+      const message = error.status === 404
+        ? "Este servidor no tiene la API de vigilancia: se arrancó con una versión anterior. Reinicie «epigraph serve»."
+        : `No se pudo consultar la vigilancia: ${error.message}`;
+      $("#watch-state").className = "watch-state error";
+      $("#watch-state b").textContent = error.status === 404 ? "Servidor desactualizado" : "Error";
+      $("#watch-summary").textContent = message;
+      $("#watch-scan-now").disabled = true;
+      ["#watch-sources", "#watch-jobs", "#watch-files"].forEach(selector => {
+        $(selector).innerHTML = `<div class="empty">${esc(message)}</div>`;
+      });
+      $("#activity-log").innerHTML = `<div class="log-empty">${esc(message)}</div>`;
+      state.logFilterKey = null;
+    } finally {
+      state.watchBusy = false;
+    }
+  }
+
+  function renderWatchStatus(status) {
+    const light = $("#watch-state");
+    const label = light.querySelector("b");
+    const lease = status.lease;
+    const other = lease && lease.active && !lease.this_process;
+    let kind = "idle"; let text; let summary;
+    if (status.configured && status.running && status.has_lease) {
+      kind = "ok"; text = "Vigilando";
+      summary = `Cada ${fmtDeltaSeconds(status.interval_seconds)} · un fichero está completo tras ${fmtDeltaSeconds(status.settle_seconds)} sin cambios · último barrido ${fmtClockTime(status.last_scan_at)}`;
+    } else if (status.configured && status.running) {
+      kind = "warn"; text = "En espera";
+      summary = `Otro proceso vigila estas carpetas${lease ? ` (${lease.owner})` : ""}; este toma el relevo si se detiene.`;
+    } else if (other) {
+      kind = "ok"; text = "Vigilando desde otro proceso";
+      summary = `Este servidor no vigila, pero ${lease.owner} sí: sus ficheros, trabajos y registro aparecen aquí igualmente.`;
+    } else if (status.configured) {
+      text = "Detenida";
+      summary = "La configuración existe, pero este servidor se arrancó sin vigilancia (--no-watch).";
+    } else {
+      text = "Sin vigilancia";
+      summary = "Defina EPIGRAPH_WATCH_CONFIG con un fichero de carpetas (ver watch.example.toml) y reinicie, o ejecute «epigraph watch --config …».";
+    }
+    if (status.last_error) { kind = "error"; summary += ` · Último error: ${status.last_error}`; }
+    light.className = `watch-state ${kind}`;
+    label.textContent = text;
+    $("#watch-summary").textContent = status.config_path ? `${summary} · ${status.config_path}` : summary;
+    $("#watch-scan-now").disabled = !(status.running && status.has_lease);
+
+    const container = $("#watch-sources");
+    if (!status.sources.length) { container.innerHTML = '<div class="empty">No hay carpetas configuradas en este servidor.</div>'; return; }
+    container.innerHTML = status.sources.map(source => {
+      const counts = source.counts || {};
+      const chips = ["pending", "ready", "captured", "duplicate", "ignored", "failed"]
+        .filter(key => counts[key])
+        .map(key => `<span class="state-chip ${key}">${esc(inboxStateLabel(key))} ${counts[key]}</span>`).join("") || '<span class="state-chip">Sin ficheros todavía</span>';
+      const availability = source.available === false ? `<span class="source-flag error">NO DISPONIBLE</span>`
+        : source.enabled === false ? `<span class="source-flag">DESACTIVADA</span>`
+        : source.available ? `<span class="source-flag ok">${source.files_on_disk} EN CARPETA</span>` : "";
+      const after = source.after === "move" ? `mueve los originales a ${source.archive_dir}` : "conserva los originales en su sitio";
+      return `<div class="source-card">
+        <header><h3>${esc(source.name)}</h3>${availability}</header>
+        <code>${esc(source.path)}</code>
+        <dl>
+          <dt>Ambiente</dt><dd>${esc(source.environment_id || "lo declara cada manifiesto")}</dd>
+          <dt>Agrupación</dt><dd>${esc(groupingLabel(source))}</dd>
+          <dt>Cierre</dt><dd>${esc(closeRuleLabel(source))}</dd>
+          <dt>Después</dt><dd>${esc(after)}</dd>
+        </dl>
+        <div class="state-chips">${chips}</div>
+        ${source.error && source.available !== false ? `<p class="source-error">${esc(source.error)}</p>` : ""}
+      </div>`;
+    }).join("");
+  }
+
+  function renderWatchJobs(data) {
+    $("#watch-jobs-active").textContent = data.active_count ? `${data.active_count} activo(s)` : "En reposo";
+    const container = $("#watch-jobs");
+    if (!data.jobs.length) { container.innerHTML = '<div class="empty">Todavía no hay trabajos.</div>'; return; }
+    container.innerHTML = data.jobs.map(job => {
+      const capture = job.capture;
+      const percent = Math.round((job.progress || 0) * 100);
+      const current = job.stages.find(stage => stage.state === "running") || job.stages.find(stage => stage.state === "failed");
+      const stages = job.stages.map(stage => `<span class="stage-pill ${esc(stage.state)}" title="${esc(stage.label)}${stage.detail ? `: ${esc(stage.detail)}` : ""}">${stageIcon(stage.state)} ${esc(stage.label)}</span>`).join("");
+      const action = capture?.episode_id && job.state === "completed"
+        ? `<button type="button" class="button-mini" data-open-episode="${esc(capture.episode_id)}">Abrir episodio</button>` : "";
+      return `<div class="job-card ${esc(job.state)}">
+        <header>
+          <div><strong>${esc(capture?.title || job.target_id)}</strong>
+            <small>${esc(originLabel(capture?.origin))} · ${capture ? `${capture.asset_count} fichero(s) · ` : ""}${fmtClockTime(job.created_at)}${job.attempts > 1 ? ` · intento ${job.attempts}` : ""}</small></div>
+          <span class="capture-status ${job.state === "completed" ? "ready" : job.state === "failed" ? "failed" : "processing"}">${esc(jobStateLabel(job.state))}${job.state === "running" ? ` ${percent}%` : ""}</span>
+        </header>
+        <div class="job-bar"><i style="width:${percent}%"></i></div>
+        <div class="stage-pills">${stages}</div>
+        ${current?.detail ? `<p class="job-detail">${esc(current.label)}: ${esc(current.detail)}</p>` : ""}
+        ${job.error ? `<p class="job-error">${esc(job.error)}</p>` : ""}
+        ${action ? `<div class="job-card-actions">${action}</div>` : ""}
+      </div>`;
+    }).join("");
+    container.querySelectorAll("[data-open-episode]").forEach(button => button.addEventListener("click", () => openEpisode(button.dataset.openEpisode)));
+  }
+
+  function renderWatchFiles(files) {
+    const container = $("#watch-files");
+    if (!files.length) { container.innerHTML = '<div class="empty">Ningún fichero con este estado.</div>'; return; }
+    const retryable = new Set();
+    container.innerHTML = files.map(file => {
+      const groupId = `${file.source_name}\u0000${file.group_key}`;
+      const retry = file.state === "failed" && file.present && !retryable.has(groupId);
+      if (retry) retryable.add(groupId);
+      const archivedTail = file.archived_to ? file.archived_to.split(/[\\/]/).slice(-3).join("/") : "";
+      const where = file.archived_to ? `archivado en …/${archivedTail}` : file.present ? "" : "ya no está en la carpeta";
+      const note = [file.error, where].filter(Boolean).join(" · ");
+      return `<div class="inbox-row">
+        <span class="state-chip ${esc(file.state)}">${esc(inboxStateLabel(file.state))}</span>
+        <div><strong title="${esc(file.rel_path)}">${esc(file.rel_path)}</strong>
+          <small>${esc(file.source_name)}${file.group_key ? ` · grupo ${esc(file.group_key)}` : ""}${file.media_type ? ` · ${esc(modalityLabel(file.media_type))}` : ""} · ${fmtBytes(file.size_bytes)} · ${fmtClockTime(file.updated_at)}</small>
+          ${note ? `<small class="inbox-note" title="${esc(file.archived_to || "")}">${esc(note)}</small>` : ""}</div>
+        <div class="inbox-actions">
+          ${file.capture_id ? `<button type="button" class="button-mini" data-open-capture="${esc(file.capture_id)}">Episodio</button>` : ""}
+          ${retry ? `<button type="button" class="button-mini" data-retry-source="${esc(file.source_name)}" data-retry-group="${esc(file.group_key)}">Reintentar grupo</button>` : ""}
+        </div>
+      </div>`;
+    }).join("");
+    container.querySelectorAll("[data-open-capture]").forEach(button => button.addEventListener("click", async () => {
+      const capture = await api(`/api/captures/${encodeURIComponent(button.dataset.openCapture)}`);
+      if (capture.episode_id) openEpisode(capture.episode_id);
+      else alert("La captura aún se está procesando: su episodio aparecerá al terminar el trabajo.");
+    }));
+    container.querySelectorAll("[data-retry-group]").forEach(button => button.addEventListener("click", async () => {
+      const body = new FormData();
+      body.set("source", button.dataset.retrySource); body.set("group_key", button.dataset.retryGroup);
+      button.disabled = true;
+      try { await api("/api/watch/retry", {method: "POST", body}); await refreshWatch(false); }
+      catch (error) { alert(error.message); button.disabled = false; }
+    }));
+  }
+
+  async function loadActivity(full) {
+    const component = $("#log-component").value;
+    const levels = $("#log-level").value;
+    const filterKey = `${component}|${levels}`;
+    const log = $("#activity-log");
+    const reset = full || filterKey !== state.logFilterKey;
+    const params = new URLSearchParams({limit: reset ? "300" : "500"});
+    if (!reset) params.set("after_id", String(state.logLastId));
+    if (component) params.set("component", component);
+    levels.split(",").filter(Boolean).forEach(level => params.append("level", level));
+    const data = await api(`/api/activity?${params}`);
+    if (reset) { log.innerHTML = ""; state.logFilterKey = filterKey; }
+    state.logLastId = data.last_id;
+    if (!data.entries.length) {
+      if (!log.children.length) log.innerHTML = '<div class="log-empty">Sin actividad registrada todavía.</div>';
+      return;
+    }
+    log.querySelector(".log-empty")?.remove();
+    log.insertAdjacentHTML("beforeend", data.entries.map(entry => {
+      const component = entry.component === "watch" ? "VIGILANTE" : entry.component === "jobs" ? "TRABAJO" : entry.component.toUpperCase();
+      return `<div class="log-line ${esc(entry.level)}" title="${esc(fmtTime(entry.at))}"><time>${esc(fmtClockTime(entry.at))}</time><span class="log-comp">${esc(component)}</span><span class="log-msg">${esc(entry.message)}</span></div>`;
+    }).join(""));
+    while (log.children.length > 1000) log.firstElementChild.remove();
+    if ($("#log-follow").checked) log.scrollTop = log.scrollHeight;
+  }
+
+  $("#watch-scan-now").addEventListener("click", async event => {
+    const button = event.currentTarget;
+    button.disabled = true;
+    try { await api("/api/watch/scan", {method: "POST"}); setTimeout(() => refreshWatch(false), 600); }
+    catch (error) { alert(error.message); }
+  });
+  $("#watch-file-state").addEventListener("change", () => refreshWatch(false));
+  [$("#log-component"), $("#log-level")].forEach(select => select.addEventListener("change", () => loadActivity(true).catch(error => console.error(error))));
 
   async function loadSystem() {
     const [health, indexing, project] = await Promise.all([loadHealth(), api("/api/indexing/summary"), api("/api/project-status")]);

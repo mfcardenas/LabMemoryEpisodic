@@ -24,11 +24,13 @@ from episodic.adapters.models.fastembed import (
 from episodic.adapters.qdrant.index import QdrantVectorIndex
 from episodic.adapters.qdrant_edge.index import QdrantEdgeVectorIndex
 from episodic.adapters.sqlite.repository import SqliteEpisodicRepository
+from episodic.application.activity import ActivityLog
 from episodic.application.indexing import IndexingWorker
 from episodic.application.inspection import MemoryInspectionService
 from episodic.application.asset_ingestion import AssetIngestionService
 from episodic.application.captures import (
     CAPTURE_JOB_KIND,
+    CAPTURE_STAGES,
     CaptureProcessingService,
     CaptureService,
 )
@@ -41,6 +43,8 @@ from episodic.application.episode_composition import DeterministicEpisodeCompose
 from episodic.application.logical_graph import LogicalGraphService
 from episodic.application.hybrid_retrieval import HybridRetrievalService
 from episodic.application.retrieval import RetrievalService
+from episodic.application.watch import InboxWatcher
+from episodic.application.watch_config import WatchSettings, load_watch_settings
 from episodic.application.windowing import WindowingService
 from episodic.application.workflow import EpiGraphWorkflowService
 from episodic.tools.memory import MemoryToolbox
@@ -207,9 +211,14 @@ class AppContainer:
     inspection_service: MemoryInspectionService
     capture_service: CaptureService
     job_runner: JobRunner
+    activity_log: ActivityLog
+    watcher: Optional[InboxWatcher] = None
 
     def close(self) -> None:
         """Cierra conexiones persistentes de forma limpia."""
+        if self.watcher is not None:
+            self.watcher.stop()
+            self.watcher.repository.close()
         self.job_runner.stop()
         if hasattr(self.job_runner.repository, "close"):
             self.job_runner.repository.close()
@@ -397,6 +406,12 @@ def create_app_container(
     inspection_svc = MemoryInspectionService(repo)
     capture_svc = CaptureService(repo, asset_ingestion_svc)
     job_runner = _create_job_runner(config, store, vector_index, text_encoder, image_encoder)
+    watch_path = config.watch_config_path
+    watcher = (
+        create_inbox_watcher(config, store, job_runner, load_watch_settings(watch_path))
+        if watch_path is not None
+        else None
+    )
 
     return AppContainer(
         config=config,
@@ -421,6 +436,30 @@ def create_app_container(
         inspection_service=inspection_svc,
         capture_service=capture_svc,
         job_runner=job_runner,
+        activity_log=ActivityLog(repo, config.activity_log_max_rows),
+        watcher=watcher,
+    )
+
+
+def create_inbox_watcher(
+    config: EpisodicConfig,
+    store: EvidenceStore,
+    job_runner: JobRunner,
+    settings: WatchSettings,
+    **kwargs,
+) -> InboxWatcher:
+    """Vigilante sobre una conexión SQLite propia; encola en ``job_runner``."""
+    repo = SqliteEpisodicRepository(config.sqlite_path)
+    capture_service = CaptureService(
+        repo, AssetIngestionService(repo, LocalFileInspector(), managed_store=store)
+    )
+    return InboxWatcher(
+        repo,
+        capture_service,
+        settings,
+        submit=lambda capture_id: job_runner.submit(CAPTURE_JOB_KIND, capture_id, CAPTURE_STAGES),
+        activity=ActivityLog(repo, config.activity_log_max_rows),
+        **kwargs,
     )
 
 
@@ -463,4 +502,13 @@ def _create_job_runner(
     def process_capture(job, report):
         return processing.process(job.target_id, on_stage=report).to_dict()
 
-    return JobRunner(repo, {CAPTURE_JOB_KIND: process_capture})
+    def describe(job):
+        capture = repo.get_capture(job.target_id) if job.job_type == CAPTURE_JOB_KIND else None
+        return f"captura «{capture.title}»" if capture else f"{job.job_type} {job.target_id}"
+
+    return JobRunner(
+        repo,
+        {CAPTURE_JOB_KIND: process_capture},
+        activity=ActivityLog(repo, config.activity_log_max_rows),
+        describe=describe,
+    )

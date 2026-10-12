@@ -77,3 +77,46 @@ def test_transient_errors_retry_and_deterministic_errors_fail(tmp_path) -> None:
     assert failed.stages[0].state == StageState.FAILED
     assert attempts == {"transitorio": 2, "determinista": 1}
     repository.close()
+
+
+def test_activity_log_records_each_stage_and_the_outcome(tmp_path) -> None:
+    from episodic.application.activity import ActivityLog
+
+    def handler(job, report):
+        report("uno", StageState.RUNNING, "video.mp4 (1/2)")
+        report("uno", StageState.COMPLETED, "3 observación(es)")
+        if job.target_id == "roto":
+            raise ValueError("sin contenido")
+        return {}
+
+    repository = SqliteEpisodicRepository(tmp_path / "jobs.db")
+    runner = JobRunner(
+        repository,
+        {"demo": handler},
+        activity=ActivityLog(repository),
+        describe=lambda job: f"captura «{job.target_id}»",
+    )
+    ok = runner.submit("demo", "bien", STAGES)
+    runner.submit("demo", "roto", STAGES)
+    while runner.run_next():
+        pass
+
+    entries = repository.list_activity(limit=50, component="jobs")
+    messages = [entry.message for entry in entries]
+    assert messages[:6] == [
+        "Trabajo encolado: captura «bien»",
+        "Trabajo encolado: captura «roto»",
+        "Inicio: captura «bien»",
+        "Uno · en curso: video.mp4 (1/2)",
+        "Uno · hecho: 3 observación(es)",
+        "Completado: captura «bien»",
+    ]
+    assert messages[-1] == "Fallido: captura «roto»: sin contenido"
+    assert entries[-1].level.value == "error"
+    assert entries[3].job_id == ok.id
+    assert entries[3].data == {"job_type": "demo", "target_id": "bien", "stage": "uno"}
+
+    # Retención: se conservan las líneas más recientes.
+    assert repository.prune_activity(keep=2) == len(entries) - 2
+    assert [e.message for e in repository.list_activity()] == messages[-2:]
+    repository.close()

@@ -16,6 +16,7 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 from episodic.adapters.sqlite.migrations import apply_migrations, init_connection
 from episodic.adapters.sqlite.serialized import SerializedConnection
 from episodic.domain.captures import Capture, Job, JobState
+from episodic.domain.watch import ActivityEntry, ActivityLevel, InboxFile, InboxFileState
 from episodic.domain.entities import (
     Annotation,
     CaptureSession,
@@ -1602,6 +1603,182 @@ class SqliteEpisodicRepository:
             params,
         ).fetchall()
         return [Job.from_dict(_from_json(row["payload_json"])) for row in rows]
+
+    def list_recent_jobs(self, limit: int = 50) -> List[Job]:
+        rows = self._conn.execute(
+            "SELECT payload_json FROM jobs ORDER BY created_at DESC, id LIMIT ?",
+            (limit,),
+        ).fetchall()
+        return [Job.from_dict(_from_json(row["payload_json"])) for row in rows]
+
+    # -----------------------------------------------------------------------
+    # Entrada automática (carpetas vigiladas) y registro de ejecución
+    # -----------------------------------------------------------------------
+
+    def save_inbox_file(self, item: InboxFile) -> None:
+        self._conn.execute(
+            """
+            INSERT INTO inbox_files (
+                id, source_name, rel_path, group_key, state, capture_id,
+                archived, updated_at, payload_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                group_key=excluded.group_key,
+                state=excluded.state,
+                capture_id=excluded.capture_id,
+                archived=excluded.archived,
+                updated_at=excluded.updated_at,
+                payload_json=excluded.payload_json
+            """,
+            (
+                item.id,
+                item.source_name,
+                item.rel_path,
+                item.group_key,
+                item.state.value,
+                item.capture_id,
+                0 if item.present else 1,
+                item.updated_at.isoformat(),
+                _to_json(item.to_dict()),
+            ),
+        )
+
+    def list_live_inbox_files(self, source_name: str) -> List[InboxFile]:
+        """Ficheros que siguen en la carpeta (ni archivados ni desaparecidos)."""
+        rows = self._conn.execute(
+            """
+            SELECT payload_json FROM inbox_files
+            WHERE source_name = ? AND archived = 0 ORDER BY rel_path
+            """,
+            (source_name,),
+        ).fetchall()
+        return [InboxFile.from_dict(_from_json(row["payload_json"])) for row in rows]
+
+    def list_inbox_group_keys(self, source_name: str) -> List[str]:
+        """Grupos que ya produjeron una captura (también los archivados)."""
+        rows = self._conn.execute(
+            """
+            SELECT DISTINCT group_key FROM inbox_files
+            WHERE source_name = ? AND capture_id IS NOT NULL
+            """,
+            (source_name,),
+        ).fetchall()
+        return [row["group_key"] for row in rows]
+
+    def list_inbox_files(
+        self,
+        source_name: Optional[str] = None,
+        states: Optional[List[InboxFileState]] = None,
+        limit: int = 200,
+    ) -> List[InboxFile]:
+        conditions: List[str] = []
+        params: List[Any] = []
+        if source_name:
+            conditions.append("source_name = ?")
+            params.append(source_name)
+        if states:
+            conditions.append(f"state IN ({', '.join('?' for _ in states)})")
+            params.extend(state.value for state in states)
+        where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+        rows = self._conn.execute(
+            f"SELECT payload_json FROM inbox_files {where} ORDER BY updated_at DESC, id LIMIT ?",
+            [*params, limit],
+        ).fetchall()
+        return [InboxFile.from_dict(_from_json(row["payload_json"])) for row in rows]
+
+    def count_inbox_files(self, source_name: str) -> Dict[str, int]:
+        rows = self._conn.execute(
+            """
+            SELECT state, COUNT(*) AS n FROM inbox_files
+            WHERE source_name = ? GROUP BY state
+            """,
+            (source_name,),
+        ).fetchall()
+        return {row["state"]: row["n"] for row in rows}
+
+    def append_activity(self, entry: ActivityEntry) -> int:
+        cursor = self._conn.execute(
+            """
+            INSERT INTO activity_log (at, level, component, job_id, capture_id, payload_json)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (
+                entry.at.isoformat(),
+                entry.level.value,
+                entry.component,
+                entry.job_id,
+                entry.capture_id,
+                _to_json(entry.to_dict()),
+            ),
+        )
+        return int(cursor.lastrowid)
+
+    def list_activity(
+        self,
+        after_id: int = 0,
+        limit: int = 200,
+        component: Optional[str] = None,
+        levels: Optional[List[ActivityLevel]] = None,
+    ) -> List[ActivityEntry]:
+        """Líneas posteriores a ``after_id`` o, sin él, las ``limit`` más recientes.
+
+        Siempre en orden cronológico.
+        """
+        conditions = ["id > ?"]
+        params: List[Any] = [after_id]
+        if component:
+            conditions.append("component = ?")
+            params.append(component)
+        if levels:
+            conditions.append(f"level IN ({', '.join('?' for _ in levels)})")
+            params.extend(level.value for level in levels)
+        order = "ASC" if after_id else "DESC"
+        rows = self._conn.execute(
+            f"""
+            SELECT id, payload_json FROM activity_log
+            WHERE {' AND '.join(conditions)} ORDER BY id {order} LIMIT ?
+            """,
+            [*params, limit],
+        ).fetchall()
+        entries = [
+            ActivityEntry.from_dict({**_from_json(row["payload_json"]), "id": row["id"]})
+            for row in rows
+        ]
+        return entries if after_id else entries[::-1]
+
+    def prune_activity(self, keep: int) -> int:
+        cursor = self._conn.execute(
+            """
+            DELETE FROM activity_log
+            WHERE id <= (SELECT COALESCE(MAX(id), 0) FROM activity_log) - ?
+            """,
+            (keep,),
+        )
+        return cursor.rowcount
+
+    def acquire_lease(self, name: str, owner: str, ttl_seconds: float, now: float) -> bool:
+        """Toma o renueva una concesión; falla si otro dueño la tiene vigente."""
+        cursor = self._conn.execute(
+            """
+            INSERT INTO leases (name, owner, expires_at) VALUES (?, ?, ?)
+            ON CONFLICT(name) DO UPDATE SET
+                owner=excluded.owner, expires_at=excluded.expires_at
+            WHERE leases.owner = excluded.owner OR leases.expires_at < ?
+            """,
+            (name, owner, now + ttl_seconds, now),
+        )
+        return cursor.rowcount == 1
+
+    def get_lease(self, name: str) -> Optional[Tuple[str, float]]:
+        row = self._conn.execute(
+            "SELECT owner, expires_at FROM leases WHERE name = ?", (name,)
+        ).fetchone()
+        return (row["owner"], float(row["expires_at"])) if row else None
+
+    def release_lease(self, name: str, owner: str) -> None:
+        self._conn.execute(
+            "DELETE FROM leases WHERE name = ? AND owner = ?", (name, owner)
+        )
 
     # -----------------------------------------------------------------------
     # QueryRuns (Auditoría)

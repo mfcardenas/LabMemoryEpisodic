@@ -517,6 +517,8 @@ class DeterministicEpisodeComposer:
         return Episode(
             # Estable por captura: reprocesar no cambia el enlace del episodio.
             id=_stable_id("episode", "capture", capture.id),
+            # Nombre que la herramienta de captura dio a la captura, si lo hay.
+            external_id=capture.metadata.get("capture_key"),
             title=capture.title,
             source_ids=_ordered_unique(
                 source_id for micro in microepisodes for source_id in micro.source_ids

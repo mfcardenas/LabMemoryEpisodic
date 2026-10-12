@@ -33,6 +33,7 @@ class CaptureTimeOrigin(str, Enum):
 
     DECLARED = "declared"
     MEDIA_METADATA = "media_metadata"
+    FILE_TIME = "file_time"  # fecha de modificación del fichero en la carpeta vigilada
     UPLOAD_TIME = "upload_time"
 
 

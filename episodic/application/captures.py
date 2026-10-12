@@ -8,6 +8,7 @@ cola de trabajos por etapas.
 from __future__ import annotations
 
 import logging
+import uuid
 from dataclasses import dataclass, field, replace
 from datetime import datetime
 from pathlib import Path
@@ -28,7 +29,7 @@ from episodic.domain.captures import (
     StageState,
 )
 from episodic.domain.times import utc_now
-from episodic.domain.types import EvidenceMediaType
+from episodic.domain.types import EvidenceMediaType, SourceType
 from episodic.ports.repository import EpisodicRepository
 
 logger = logging.getLogger(__name__)
@@ -51,15 +52,33 @@ _DEFAULT_SOURCE_SUFFIX = {
 }
 
 
+_CAPTURE_KEY_NAMESPACE = uuid.UUID("5d0c7a8e-3f61-4c1b-9b8e-6a2f0d4e7c11")
+
+
 class CaptureConflictError(ValueError):
-    """Un archivo de la captura ya pertenece a otra captura."""
+    """Un archivo de la captura ya pertenece a otra captura, o la captura ya existe."""
+
+
+def capture_id_for_key(capture_key: str) -> str:
+    """Identificador estable de una captura declarada por su herramienta de origen."""
+    return str(uuid.uuid5(_CAPTURE_KEY_NAMESPACE, capture_key))
 
 
 @dataclass(frozen=True)
 class CaptureFile:
+    """Un fichero de la captura.
+
+    ``source_id``/``source_type`` identifican el dispositivo que lo produjo y
+    ``captured_at`` el instante en que ese dispositivo empezó a grabar; sin
+    ellos se usan la fuente por defecto del tipo de fichero y la hora de la
+    captura.
+    """
+
     path: Path
     original_filename: str
     source_id: str | None = None
+    source_type: SourceType | None = None
+    captured_at: datetime | None = None
 
 
 @dataclass(frozen=True)
@@ -113,17 +132,37 @@ class CaptureService:
         window_duration_seconds: float = 60.0,
         overlap_seconds: float = 5.0,
         audio_offset_seconds: float = 0.0,
+        origin: dict | None = None,
+        file_time: datetime | None = None,
+        capture_key: str | None = None,
+        extra_metadata: dict | None = None,
     ) -> Capture:
         """``audio_offset_seconds``: segundos que hay que sumar a los tiempos de
         un audio grabado aparte para alinearlo con el vídeo (negativo si el
-        audio empezó a grabarse antes)."""
+        audio empezó a grabarse antes).
+
+        ``origin`` describe de dónde llega la captura (subida, CLI, carpeta
+        vigilada) y queda en sus metadatos. ``file_time`` es la hora de los
+        ficheros en disco: se usa si no hay hora declarada ni del vídeo, antes
+        que la hora de registro.
+
+        ``capture_key`` es el nombre que la herramienta de origen da a la
+        captura (``<entorno>_<epoch>``): fija su identificador y el
+        ``external_id`` de su episodio, y una clave repetida es un conflicto.
+        """
         if not files:
             raise ValueError("Una captura requiere al menos un archivo")
         environment_id = environment_id.strip()
+        capture_id = capture_id_for_key(capture_key) if capture_key else None
+        if capture_id and self.repository.get_capture(capture_id) is not None:
+            raise CaptureConflictError(f"La captura {capture_key} ya existe")
+        for item in files:
+            if item.captured_at is not None and item.captured_at.tzinfo is None:
+                raise ValueError("La hora de cada fichero debe incluir zona horaria")
         inspections = [self.inspector.inspect(item.path) for item in files]
         self._reject_foreign_duplicates(files, inspections)
 
-        resolved_time, origin = _resolve_capture_time(captured_at, inspections)
+        resolved_time, time_origin = _resolve_capture_time(captured_at, inspections, file_time)
         asset_ids: list[str] = []
         for item, inspection in zip(files, inspections):
             source_id = (item.source_id or "").strip() or _default_source_id(
@@ -133,23 +172,29 @@ class CaptureService:
                 item.path,
                 environment_id=environment_id,
                 source_id=source_id,
-                captured_at=resolved_time,
+                source_type=item.source_type,
+                captured_at=item.captured_at or resolved_time,
                 original_filename=item.original_filename,
             )
             asset_ids.append(ingested.asset.id)
 
+        identity = {"id": capture_id} if capture_id else {}
         capture = Capture(
+            **identity,
             environment_id=environment_id,
             title=(title or "").strip() or _default_title(files),
             asset_ids=list(dict.fromkeys(asset_ids)),
             captured_at=resolved_time,
-            captured_at_origin=origin,
+            captured_at_origin=time_origin,
             metadata={
                 "processing": {
                     "window_duration_seconds": window_duration_seconds,
                     "overlap_seconds": overlap_seconds,
                     "audio_offset_seconds": audio_offset_seconds,
                 },
+                "origin": dict(origin or {"kind": "upload"}),
+                **({"capture_key": capture_key} if capture_key else {}),
+                **(extra_metadata or {}),
             },
         )
         self.repository.begin_transaction()
@@ -316,7 +361,9 @@ class CaptureProcessingService:
 
 
 def _resolve_capture_time(
-    declared: datetime | None, inspections: Sequence[FileInspection]
+    declared: datetime | None,
+    inspections: Sequence[FileInspection],
+    file_time: datetime | None = None,
 ) -> tuple[datetime, CaptureTimeOrigin]:
     if declared is not None:
         if declared.tzinfo is None:
@@ -326,6 +373,10 @@ def _resolve_capture_time(
         raw = inspection.metadata.get("creation_time")
         if raw:
             return datetime.fromisoformat(raw), CaptureTimeOrigin.MEDIA_METADATA
+    if file_time is not None:
+        if file_time.tzinfo is None:
+            raise ValueError("La hora de los ficheros debe incluir zona horaria")
+        return file_time, CaptureTimeOrigin.FILE_TIME
     # Sin hora conocida: todos los archivos comparten la hora de subida para
     # alinearse entre sí, y el origen queda registrado como tal.
     return utc_now(), CaptureTimeOrigin.UPLOAD_TIME

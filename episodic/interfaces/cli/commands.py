@@ -15,6 +15,7 @@ Implementa los subcomandos:
 - compose
 - capture
 - speech-check
+- watch
 """
 from __future__ import annotations
 
@@ -36,11 +37,12 @@ from episodic.domain.types import SourceType
 from episodic.logging_config import configure_logging
 
 # Asegurar UTF-8 en consola de Windows
-if sys.stdout.encoding.lower() != "utf-8":
-    try:
-        sys.stdout.reconfigure(encoding="utf-8")
-    except Exception:
-        pass
+for _stream in (sys.stdout, sys.stderr):
+    if _stream.encoding.lower() != "utf-8":
+        try:
+            _stream.reconfigure(encoding="utf-8")
+        except Exception:
+            pass
 
 logger = logging.getLogger("episodic.cli")
 
@@ -258,6 +260,7 @@ def cmd_capture(args: argparse.Namespace) -> None:
             window_duration_seconds=args.window,
             overlap_seconds=args.overlap,
             audio_offset_seconds=args.audio_offset,
+            origin={"kind": "cli"},
         )
         print(f"Captura: {capture.id} ({len(capture.asset_ids)} archivo(s))")
         print(f"Hora: {capture.captured_at.isoformat()} [{capture.captured_at_origin.value}]")
@@ -321,6 +324,69 @@ def cmd_speech_check(args: argparse.Namespace) -> None:
                 print(f"  {segment.start_seconds:7.2f}–{segment.end_seconds:7.2f}  {segment.text}")
     except SpeechTranscriberError as exc:
         raise SystemExit(f"Error: {exc}") from exc
+
+
+def cmd_watch(args: argparse.Namespace) -> None:
+    """Vigila las carpetas configuradas y procesa lo que llega, sin servidor web."""
+    import time
+
+    from episodic.application.watch_config import WatchConfigError
+
+    overrides = {"watch_config": args.config} if args.config else {}
+    config = _config_from_args(args, **overrides)
+    if config.watch_config_path is None:
+        raise SystemExit("Indique el fichero de vigilancia con --config o EPIGRAPH_WATCH_CONFIG")
+    try:
+        container = create_app_container(config, use_fake_encoders=args.fake_encoders)
+    except WatchConfigError as exc:
+        raise SystemExit(f"Configuración de vigilancia no válida: {exc}") from exc
+    watcher, runner = container.watcher, container.job_runner
+    print(f"Configuración: {config.watch_config_path}")
+    for source in watcher.settings.sources:
+        state = "" if source.enabled else " (desactivada)"
+        print(f"  {source.name}: {source.path} → {source.environment_id} [{source.grouping}]{state}")
+    runner.start()
+    try:
+        if not args.once:
+            watcher.start()
+            print(f"Vigilando cada {watcher.settings.interval_seconds:g} s. Ctrl+C para salir.")
+            while True:
+                time.sleep(1)
+        deadline = time.monotonic() + args.timeout
+        job_ids: list[str] = []
+        waiting = False
+        while True:
+            report = watcher.tick()
+            if not watcher.has_lease:
+                # Otro proceso vigila; si murió sin liberarla, su concesión caduca sola.
+                if time.monotonic() > deadline:
+                    raise SystemExit("Otro proceso sigue vigilando estas carpetas; inténtelo cuando termine")
+                if not waiting:
+                    print("Otro proceso vigila estas carpetas; se espera a que termine o caduque su concesión…")
+                    waiting = True
+                time.sleep(min(watcher.settings.interval_seconds, 2.0))
+                continue
+            if report is not None:
+                job_ids.extend(report.job_ids)
+                for capture_id in report.capture_ids:
+                    capture = container.repository.get_capture(capture_id)
+                    print(f"Captura: {capture.title} ({len(capture.asset_ids)} archivo(s))")
+            if not watcher.has_open_files():
+                break
+            if time.monotonic() > deadline:
+                print("Tiempo agotado: quedan ficheros sin completar o grupos sin cerrar.")
+                break
+            time.sleep(min(watcher.settings.interval_seconds, 1.0))
+        for job_id in job_ids:
+            job = runner.wait(job_id, timeout=max(1.0, deadline - time.monotonic()))
+            outcome = "episodio " + job.result.get("episode_id", "") if job.state.value == "completed" else f"falló: {job.error}"
+            print(f"  {job_id}: {outcome}")
+        if not job_ids:
+            print("No había capturas nuevas que procesar.")
+    except KeyboardInterrupt:
+        print("Deteniendo…")
+    finally:
+        container.close()
 
 
 def cmd_ingest_asset(args: argparse.Namespace) -> None:
@@ -464,9 +530,17 @@ def cmd_serve(args: argparse.Namespace) -> None:
         host=args.host,
         port=args.port,
     )
-    app = create_api_app(config, use_fake_encoders=args.fake_encoders)
+    app = create_api_app(
+        config, use_fake_encoders=args.fake_encoders, start_watcher=not args.no_watch
+    )
     print(f"\nIniciando servidor de Memoria Episódica en http://{args.host}:{args.port}")
-    print(f"Dashboard Web disponible en: http://{args.host}:{args.port}/\n")
+    print(f"Dashboard Web disponible en: http://{args.host}:{args.port}/")
+    if config.watch_config_path is None:
+        print("Vigilancia de carpetas: desactivada (EPIGRAPH_WATCH_CONFIG vacío)\n")
+    elif args.no_watch:
+        print("Vigilancia de carpetas: desactivada (--no-watch)\n")
+    else:
+        print(f"Vigilancia de carpetas: {config.watch_config_path}\n")
     uvicorn.run(
         app,
         host=config.host,
@@ -692,7 +766,35 @@ def main() -> None:
     p_serve = subparsers.add_parser("serve", parents=[subcommand_common], help="Inicia la API HTTP y la interfaz web")
     p_serve.add_argument("--host", default=environment_config.host, help="Host de escucha")
     p_serve.add_argument("--port", type=int, default=environment_config.port, help="Puerto de escucha")
+    p_serve.add_argument(
+        "--no-watch",
+        action="store_true",
+        help="No vigilar las carpetas de EPIGRAPH_WATCH_CONFIG en este proceso",
+    )
     p_serve.set_defaults(func=cmd_serve)
+
+    # watch (entrada automática)
+    p_watch = subparsers.add_parser(
+        "watch",
+        parents=[subcommand_common],
+        help="Vigila carpetas y convierte lo que llega en capturas (sin servidor web)",
+    )
+    p_watch.add_argument(
+        "--config",
+        help="Fichero TOML de vigilancia (por defecto EPIGRAPH_WATCH_CONFIG)",
+    )
+    p_watch.add_argument(
+        "--once",
+        action="store_true",
+        help="Procesa lo que haya en las carpetas, espera a sus trabajos y termina",
+    )
+    p_watch.add_argument(
+        "--timeout",
+        type=float,
+        default=3600.0,
+        help="Con --once: segundos máximos de espera (por defecto 3600)",
+    )
+    p_watch.set_defaults(func=cmd_watch)
 
     args = parser.parse_args()
     runtime_config = _config_from_args(args)
