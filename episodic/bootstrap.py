@@ -83,7 +83,54 @@ def build_observation_extraction(
     if video_events is not None:
         # Registrado después: sustituye al procesador técnico de vídeo.
         processors.append(video_events)
-    return ObservationExtractionService(repository, processors)
+    speech = _build_speech_processor(config, repository)
+    # El habla se suma al procesador principal del audio y del vídeo: si el
+    # servicio falla, el resto de la captura se procesa igual.
+    return ObservationExtractionService(
+        repository, processors, supplementary=[speech] if speech else []
+    )
+
+
+def build_speech_transcriber(config: EpisodicConfig):
+    """Transcriptor configurado o ``None`` si el habla está desactivada."""
+    if config.speech_backend == "none":
+        return None
+    if config.speech_backend == "fake":
+        from episodic.adapters.speech.fake import FakeSpeechTranscriber
+
+        return FakeSpeechTranscriber()
+    from episodic.adapters.speech.openai_http import OpenAICompatibleTranscriber
+
+    return OpenAICompatibleTranscriber(
+        base_url=config.speech_url,
+        model=config.speech_model,
+        timeout_seconds=config.speech_timeout_seconds,
+        api_key=config.speech_api_key,
+        prompt=config.speech_prompt,
+        temperature=config.speech_temperature,
+    )
+
+
+def _build_speech_processor(config, repository):
+    from episodic.adapters.video.decoder import video_decoding_available
+
+    transcriber = build_speech_transcriber(config)
+    if transcriber is None:
+        return None
+    if not video_decoding_available():
+        logger.warning(
+            "PyAV no está instalado: el audio no se transcribirá (instale el extra [video])"
+        )
+        return None
+    from episodic.adapters.audio.extract import PyAVAudioExtractor
+    from episodic.processors.speech import SpeechTranscriptionProcessor
+
+    return SpeechTranscriptionProcessor(
+        repository,
+        PyAVAudioExtractor(sample_rate_hz=config.speech_sample_rate_hz),
+        transcriber,
+        language=config.speech_language,
+    )
 
 
 def _build_video_event_processor(config, repository, store):
@@ -111,16 +158,23 @@ def _build_video_event_processor(config, repository, store):
             model=config.vision_model,
             base_url=config.ollama_url,
             timeout_seconds=config.vision_timeout_seconds,
+            temperature=config.vision_temperature,
+            think=config.vision_think,
         )
     return VideoEventProcessor(
         repository,
         store,
-        PyAVFrameSampler(sample_fps=config.video_sample_fps),
+        PyAVFrameSampler(
+            sample_fps=config.video_sample_fps,
+            max_side=config.video_frame_max_side,
+            jpeg_quality=config.video_jpeg_quality,
+        ),
         SceneSegmenter(
             SegmentationConfig(
                 min_segment_seconds=config.video_min_segment_seconds,
                 max_segment_seconds=config.video_max_segment_seconds,
                 scene_change_threshold=config.video_scene_threshold,
+                max_keyframes=config.video_max_keyframes,
             )
         ),
         describer,

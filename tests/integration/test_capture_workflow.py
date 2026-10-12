@@ -133,3 +133,85 @@ def test_unknown_job_and_capture_return_404(app) -> None:
     client, _container = app
     assert client.get("/api/jobs/no-existe").status_code == 404
     assert client.get("/api/captures/no-existe").status_code == 404
+
+
+def _observations(detail) -> list[dict]:
+    return list(
+        {
+            item["id"]: item
+            for item in [
+                *(obs for micro in detail["microepisodes"] for obs in micro["observations"]),
+                *detail["ungrouped_observations"],
+            ]
+        }.values()
+    )
+
+
+def test_speech_of_separate_audio_is_attached_to_video_events(app) -> None:
+    client, container = app
+    created = _upload(
+        client,
+        _capture_files(),
+        title="Con habla",
+        captured_at="2026-10-10T09:00:00+02:00",
+    ).json()
+    job = container.job_runner.wait(created["job"]["id"], timeout=60)
+    assert job.state.value == "completed", job.error
+    detail = client.get(
+        f"/api/memory/episodes/{client.get(f'/api/captures/{created['id']}').json()['episode_id']}"
+    ).json()
+
+    speech = [
+        item for item in _observations(detail) if item["observation_type"] == "speech_segment"
+    ]
+    # Transcriptor simulado: un segmento cada 4 s de los 15 s del MP3.
+    assert len(speech) == 4
+    assert {item["provenance_kind"] for item in speech} == {"audio_transcription"}
+    assert speech[0]["attributes"]["generation"]["speech_model"] == "fake-speech"
+    # El vídeo dura 5,4 s: solo el habla que se solapa con él se asigna a eventos.
+    attached = [line for event in detail["events"] for line in event["attributes"].get("speech", [])]
+    assert [line["start_offset_seconds"] for line in attached] == [0.0, 4.0]
+    assert all(line["text"].startswith("Habla simulada") for line in attached)
+
+
+def test_audio_offset_is_stored_and_applied(app) -> None:
+    client, container = app
+    created = _upload(
+        client,
+        _capture_files(),
+        captured_at="2026-10-10T09:00:00+02:00",
+        audio_offset_seconds="-4",
+    ).json()
+    container.job_runner.wait(created["job"]["id"], timeout=60)
+    capture = container.repository.get_capture(created["id"])
+    assert capture.metadata["processing"]["audio_offset_seconds"] == -4.0
+
+    detail = client.get(f"/api/memory/episodes/{capture.episode_id}").json()
+    attached = [line for event in detail["events"] for line in event["attributes"].get("speech", [])]
+    # Con -4 s, el segmento 4–8 s del audio cae en 0–4 s del vídeo y el 8–12 s en 4–8 s.
+    assert [line["start_offset_seconds"] for line in attached] == [0.0, 4.0]
+    assert attached[0]["text"] == "Habla simulada del segundo 4.0 al 8.0."
+
+
+def test_capture_survives_unreachable_speech_service(tmp_path) -> None:
+    config = EpisodicConfig(
+        project_root=tmp_path,
+        data_dir="runtime",
+        vision_backend="fake",
+        speech_backend="http",
+        speech_url="http://127.0.0.1:9",
+        speech_timeout_seconds=2,
+    )
+    container = create_app_container(config, use_fake_encoders=True, use_memory_qdrant=True)
+    try:
+        with TestClient(create_api_app(container=container)) as client:
+            created = _upload(client, _capture_files(), title="Sin servicio de habla").json()
+            job = container.job_runner.wait(created["job"]["id"], timeout=60)
+    finally:
+        container.close()
+
+    assert job.state.value == "completed", job.error
+    observations = next(stage for stage in job.stages if stage.name == "observations")
+    assert "1 fallo(s)" in observations.detail
+    assert job.result["processor_failures"]
+    assert "no responde" in job.result["processor_failures"][0]

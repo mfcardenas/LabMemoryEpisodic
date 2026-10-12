@@ -218,6 +218,15 @@ input:focus, select:focus { border-color: var(--signal); box-shadow: 0 0 0 2px r
 .event-chips b { margin-right: 4px; font: 700 9px var(--mono); text-transform: uppercase; color: var(--muted); }
 .event-chips span { padding: 3px 6px; background: #e8e6d6; font-size: 11px; }
 .event-meta { color: var(--muted); }
+.event-speech { margin: 12px 0 4px; padding: 10px 12px; border-left: 3px solid var(--cyan); background: #eef1e8; }
+.event-speech > b, .transcript-block h4 { display: block; margin: 0 0 6px; color: var(--muted); font: 700 9px var(--mono); text-transform: uppercase; }
+.event-speech p, .transcript-block p { display: grid; grid-template-columns: 52px minmax(0, 1fr); gap: 8px; margin: 4px 0; font-size: 13px; line-height: 1.45; }
+.speech-time { align-self: start; padding: 1px 4px; border: 1px solid var(--line); background: transparent; color: var(--cyan); font: 10px var(--mono); text-align: left; }
+button.speech-time { cursor: pointer; }
+button.speech-time:hover { outline: 2px solid var(--signal); }
+.transcript-section { margin-top: 28px; }
+.transcript-block { margin: 0 0 14px; padding: 12px 14px; border: 1px solid var(--line); background: #fffef7; }
+.transcript-block p.event-provenance { display: block; }
 .event-meta.uncertain { color: #765714; }
 .event-provenance { margin: 10px 0 0; color: var(--muted); font: 9px var(--mono); }.event-section .event-card { margin-bottom: 10px; }
 .episode-structure, .technical-details { border: 0; border-top: 1px solid var(--ink); }

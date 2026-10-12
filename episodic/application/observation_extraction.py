@@ -38,7 +38,10 @@ class ObservationExtractionService:
         self,
         repository: EpisodicRepository,
         processors: list[ObservationProcessor] | None = None,
+        supplementary: list[ObservationProcessor] | None = None,
     ) -> None:
+        """``supplementary`` se ejecutan además del procesador principal de su
+        modalidad (p. ej. la transcripción del habla de un vídeo)."""
         self.repository = repository
         configured = processors or [
             TextProcessor(repository),
@@ -48,7 +51,10 @@ class ObservationExtractionService:
             VideoProcessor(repository),
             MockProcessor(repository),
         ]
-        self.processors = {processor.name: processor for processor in configured}
+        self.supplementary = list(supplementary or [])
+        self.processors = {
+            processor.name: processor for processor in [*configured, *self.supplementary]
+        }
         self.default_by_modality = {
             modality: processor
             for processor in configured
@@ -65,29 +71,39 @@ class ObservationExtractionService:
         asset = self.repository.get_asset(asset_id)
         if asset is None:
             raise ValueError(f"Asset inexistente: {asset_id}")
-        processor = self._select(asset.media_type, processor_name)
-        targets: list[ProcessorTarget] = [asset]
+        selected = [self._select(asset.media_type, processor_name)]
+        if processor_name is None:
+            selected.extend(
+                item
+                for item in self.supplementary
+                if asset.media_type in item.supported_modalities
+            )
+        result = ExtractionResult()
+        for processor in selected:
+            for target in self._targets(asset, processor):
+                try:
+                    result.observations.extend(processor.process(target))
+                except ProcessorExecutionError as exc:
+                    result.failures.append(
+                        ProcessorFailure(
+                            processor=processor.name,
+                            target_id=target.id,
+                            error=str(exc),
+                        )
+                    )
+        return result
+
+    def _targets(
+        self, asset: Asset, processor: ObservationProcessor
+    ) -> list[ProcessorTarget]:
         if (
             asset.media_type in {EvidenceMediaType.AUDIO, EvidenceMediaType.VIDEO}
             and not getattr(processor, "processes_whole_asset", False)
         ):
             windows = self.repository.list_processing_windows_for_asset(asset.id)
             if windows:
-                targets = list(windows)
-
-        result = ExtractionResult()
-        for target in targets:
-            try:
-                result.observations.extend(processor.process(target))
-            except ProcessorExecutionError as exc:
-                result.failures.append(
-                    ProcessorFailure(
-                        processor=processor.name,
-                        target_id=target.id,
-                        error=str(exc),
-                    )
-                )
-        return result
+                return list(windows)
+        return [asset]
 
     def process_target(
         self,

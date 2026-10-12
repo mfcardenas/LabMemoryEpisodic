@@ -5,12 +5,13 @@ EpiGraph conserva lo que ocurre en un entorno a partir de capturas reales
 evidencia verificable: cada respuesta vuelve al archivo original y al
 instante exacto en que ocurrió.
 
-> **Estado (2026-10-10).** Cada captura (vídeo, audio y documentos subidos
+> **Estado (2026-10-11).** Cada captura (vídeo, audio y documentos subidos
 > juntos) forma un episodio. El vídeo se divide en **eventos con su Δt**,
 > fotogramas clave y una descripción detallada generada por un modelo de
-> visión local (Ollama). Pendiente: transcripción de audio (fase D), fusión
-> de vídeo + audio + documentos en la descripción (fase E) y búsqueda por
-> eventos (fase G). Hoja de ruta:
+> visión local (Ollama), y cada evento muestra **lo que se dijo** durante su
+> intervalo (transcripción con Whisper en un servicio aparte). Pendiente:
+> fusión de vídeo + audio + documentos en la descripción (fase E) y
+> búsqueda por eventos (fase G). Hoja de ruta:
 > [`docs/plan-mejora-uso-real.md`](docs/plan-mejora-uso-real.md).
 
 ## Cómo funciona
@@ -19,7 +20,7 @@ instante exacto en que ocurrió.
 Captura (vídeo + audio + documentos subidos juntos)
   └─ Episodio: lo que ocurrió en ese entorno durante ese intervalo
        ├─ Eventos con Δt y descripción detallada     (objetivo, fases C–E)
-       ├─ Transcripción alineada por tiempo          (objetivo, fase D)
+       ├─ Transcripción alineada por tiempo          (fase D)
        ├─ Citas documentales                         (PDF/TXT/MD hoy)
        └─ Evidencias: originales, fotogramas, intervalos
 ```
@@ -48,6 +49,20 @@ RTX 5080). Para comparar modelos con vídeos propios sin tocar la memoria:
 Sin Ollama o sin PyAV la captura sigue funcionando, pero el vídeo no tendrá
 eventos y la etapa lo indica.
 
+El habla se transcribe en un **servicio aparte** con la API de OpenAI
+(`/v1/audio/transcriptions`). El repositorio trae Speaches (faster-whisper)
+en Docker con GPU:
+
+```powershell
+docker compose up -d speech
+epigraph speech-check --download --file data_samples/phase4_input/conversacion_mecanico_15s_exact.mp3
+```
+
+Servicio, modelo, idioma y vocabulario se cambian con `EPIGRAPH_SPEECH_*`
+en `.env` (ver `.env.example`): cualquier servidor compatible sirve
+(whisper.cpp, vLLM, OpenAI…). `EPIGRAPH_SPEECH_BACKEND=none` la desactiva.
+Si el servicio no responde, la captura se procesa igual sin transcripción.
+
 Abra <http://127.0.0.1:8100/> y vaya a **Ingesta**: seleccione a la vez el
 vídeo, el audio y los documentos de una misma grabación. Se crea una
 **captura**, se procesa en segundo plano (el progreso se ve por etapas) y al
@@ -64,7 +79,8 @@ y un manual de taller que forman una misma captura.
 | Comando | Para qué |
 |---|---|
 | `epigraph serve` | API y front en `127.0.0.1:8100`. |
-| `epigraph capture FILES… --environment ENV [--title T] [--captured-at ISO]` | Sube los archivos tomados juntos como una captura y crea su episodio. |
+| `epigraph capture FILES… --environment ENV [--title T] [--captured-at ISO] [--audio-offset S]` | Sube los archivos tomados juntos como una captura y crea su episodio. |
+| `epigraph speech-check [--download] [--file F]` | Comprueba el servicio de transcripción y su modelo. |
 | `epigraph ingest FILE --environment ENV --source SRC` | Registra un original en custodia. |
 | `epigraph observe ASSET_ID` | Extrae observaciones del activo. |
 | `epigraph compose --environment ENV` | Agrupa observaciones en episodios. |

@@ -74,7 +74,7 @@ document.addEventListener("DOMContentLoaded", () => {
   })[value] || humanize(value || "modalidad no declarada");
   const observationLabel = value => ({
     text_fragment: "Fragmento de texto", document_fragment: "Fragmento documental",
-    audio_segment: "Segmento de audio", visual_observation: "Observación visual",
+    audio_segment: "Segmento de audio", speech_segment: "Habla transcrita", visual_observation: "Observación visual",
     image_observation: "Observación de imagen", video_observation: "Observación de vídeo",
     tool_presence: "Presencia de herramienta", tool_absence: "Ausencia de herramienta",
   })[value] || humanize(value || "observación");
@@ -633,9 +633,14 @@ document.addEventListener("DOMContentLoaded", () => {
         </article>`;
       };
       const hasVideoEvents = data.events.some(item => item.event_type === "video_segment");
-      const contentObservations = hasVideoEvents
-        ? allObservations.filter(item => item.observation_type !== "video_event")
-        : allObservations;
+      const speechObservations = allObservations.filter(item => item.observation_type === "speech_segment");
+      // Lo que ya se muestra como eventos o transcripción no se repite abajo;
+      // los segmentos de audio técnicos sobran cuando hay transcripción.
+      const hiddenTypes = new Set([
+        ...(hasVideoEvents ? ["video_event"] : []),
+        ...(speechObservations.length ? ["speech_segment", "audio_segment"] : []),
+      ]);
+      const contentObservations = allObservations.filter(item => !hiddenTypes.has(item.observation_type));
       const observationsHtml = contentObservations.map(renderObservation).join("");
       const originsHtml = data.assets.map(asset => {
         const source = sourcesById.get(asset.source_id);
@@ -657,23 +662,46 @@ document.addEventListener("DOMContentLoaded", () => {
         const span = hasOffsets ? `${fmtClock(item.start_offset_seconds)} – ${fmtClock(item.end_offset_seconds)}` : fmtInterval(item);
         const delta = hasOffsets ? fmtDeltaSeconds(item.end_offset_seconds - item.start_offset_seconds) : fmtDeltaSeconds(itemDurationSeconds(item));
         const frames = (item.keyframes || []).map((frame, index) => `<button type="button" class="keyframe" data-seek="${esc(frame.offset_seconds)}" title="Ver en el vídeo (${fmtClock(frame.offset_seconds)})"><img loading="lazy" alt="Fotograma ${fmtClock(frame.offset_seconds)}" src="/api/memory/events/${encodeURIComponent(item.id)}/keyframes/${index}"><span>${fmtClock(frame.offset_seconds)}</span></button>`).join("");
+        const speech = attributes.speech || [];
+        const speechHtml = speech.length ? `<div class="event-speech"><b>Lo que se dijo</b>${speech.map(line => `<p><button type="button" class="speech-time" data-seek="${esc(line.start_offset_seconds)}" title="Ver en el vídeo">${fmtClock(line.start_offset_seconds)}</button><span>${esc(line.text)}</span></p>`).join("")}</div>` : "";
         const chips = (label, values) => values?.length ? `<div class="event-chips"><b>${label}</b>${values.map(value => `<span>${esc(typeof value === "string" ? value : [value.label, ...(value.attributes || []), value.description].filter(Boolean).join(" · "))}</span>`).join("")}</div>` : "";
         return `<article class="event-card rich" data-event-start="${hasOffsets ? esc(item.start_offset_seconds) : ""}">
           <header><span class="event-seq">${String((item.sequence_number || 0) + 1).padStart(2, "0")}</span><div><strong>${esc(item.title || humanize(item.event_type))}</strong><small>${esc(span)} · Δt ${esc(delta)}</small></div>${hasOffsets && videoAsset ? `<button type="button" class="button-mini ghost" data-seek="${esc(item.start_offset_seconds)}">▶ ${fmtClock(item.start_offset_seconds)}</button>` : ""}</header>
           ${item.summary ? `<p class="event-summary">${esc(item.summary)}</p>` : ""}
           ${frames ? `<div class="keyframes">${frames}</div>` : ""}
+          ${speechHtml}
           <details class="event-detail"><summary>Descripción detallada</summary><div class="event-detail-body">${paragraphs(item.description)}
             ${chips("Acciones", attributes.actions)}${chips("Personas", attributes.actors)}${chips("Objetos", attributes.objects)}${chips("Texto visible", attributes.visible_text)}
             ${attributes.scene ? `<p class="event-meta"><b>Escena:</b> ${esc(attributes.scene)}</p>` : ""}
             ${attributes.changes_from_previous ? `<p class="event-meta"><b>Cambio respecto al anterior:</b> ${esc(attributes.changes_from_previous)}</p>` : ""}
             ${attributes.uncertainty ? `<p class="event-meta uncertain"><b>Incertidumbre:</b> ${esc(attributes.uncertainty)}</p>` : ""}
           </div></details>
-          ${generation.vision_model ? `<p class="event-provenance">Descripción generada por ${esc(generation.vision_model)} · no verificada</p>` : ""}
+          ${generation.vision_model ? `<p class="event-provenance">Descripción generada por ${esc(generation.vision_model)}${speech[0]?.speech_model ? ` · habla transcrita por ${esc(speech[0].speech_model)}` : ""} · no verificada</p>` : ""}
         </article>`;
       };
       const playerHtml = videoAsset && orderedEvents.length
         ? `<div class="episode-player"><video id="episode-video" controls preload="metadata" src="/api/memory/assets/${encodeURIComponent(videoAsset.id)}/file"></video></div>` : "";
-      const eventsHtml = orderedEvents.length ? `<section class="event-section"><div class="section-title"><p class="kicker">EVENTOS</p><h3>Qué ocurrió, tramo a tramo</h3><p>Cada evento es un tramo del vídeo descrito por el modelo de visión. Pulsa un fotograma para verlo en el vídeo.</p></div>${playerHtml}${orderedEvents.map(renderEvent).join("")}</section>` : "";
+      const transcriptHtml = speechObservations.length ? (() => {
+        const byAsset = new Map();
+        speechObservations.forEach(item => byAsset.set(item.asset_id, [...(byAsset.get(item.asset_id) || []), item]));
+        const blocks = [...byAsset.entries()].map(([assetId, lines]) => {
+          const asset = data.assets.find(item => item.id === assetId);
+          const seekable = videoAsset && asset?.id === videoAsset.id;
+          const model = lines[0].attributes?.generation?.speech_model;
+          const rows = lines
+            .sort((a, b) => (a.attributes?.start_offset_seconds || 0) - (b.attributes?.start_offset_seconds || 0))
+            .map(line => {
+              const offset = line.attributes?.start_offset_seconds || 0;
+              const time = seekable
+                ? `<button type="button" class="speech-time" data-seek="${esc(offset)}" title="Ver en el vídeo">${fmtClock(offset)}</button>`
+                : `<span class="speech-time">${fmtClock(offset)}</span>`;
+              return `<p>${time}<span>${esc(line.description)}</span></p>`;
+            }).join("");
+          return `<div class="transcript-block"><h4>${esc(asset ? assetLabel(asset, sourcesById.get(asset.source_id)) : "Audio")}</h4>${rows}${model ? `<p class="event-provenance">Transcrito por ${esc(model)} · no verificado</p>` : ""}</div>`;
+        }).join("");
+        return `<section class="transcript-section"><div class="section-title"><p class="kicker">HABLA</p><h3>Transcripción</h3><p>Lo que se dijo, con su tiempo dentro de cada archivo.</p></div>${blocks}</section>`;
+      })() : "";
+      const eventsHtml = orderedEvents.length ? `<section class="event-section"><div class="section-title"><p class="kicker">EVENTOS</p><h3>Qué ocurrió, tramo a tramo</h3><p>Cada evento es un tramo del vídeo descrito por el modelo de visión, con lo que se dijo durante ese tramo. Pulsa un fotograma o un tiempo para verlo en el vídeo.</p></div>${playerHtml}${orderedEvents.map(renderEvent).join("")}</section>` : "";
       const microHtml = data.microepisodes.map(({microepisode, observations, events}, index) => {
         const rules = (microepisode.metadata?.grouping_decisions || []).flatMap(item => item.rules || []);
         return `<article class="micro-summary"><span>Microepisodio ${index + 1}</span><b>${observations.length} observación(es) · ${events.length} evento(s)</b><small>${fmtInterval(microepisode)}</small><p>${[...new Set(rules)].map(groupingRuleLabel).join(" · ") || "Sin reglas declaradas"}</p></article>`;
@@ -685,7 +713,7 @@ document.addEventListener("DOMContentLoaded", () => {
       const environment = environmentIds.map(environmentLabel).join(", ") || "Ambiente no declarado";
       root.innerHTML = `<header class="episode-hero"><div><p class="kicker">EPISODIO EN LA MEMORIA</p><h2>${esc(episodeTitle(episode))}</h2><p>${esc(fmtInterval(episode))}${episode.metadata?.captured_at_origin ? ` · ${esc(timeOriginLabel(episode.metadata.captured_at_origin))}` : ""}</p></div><span class="episode-place">${esc(environment)}</span></header>${compatibilityNotice}
         <div class="memory-facts"><div><span>CONTENIDO EXTRAÍDO</span><b>${allObservations.length} observación(es)</b></div><div><span>PROCEDENCIA</span><b>${data.assets.length} activo(s)</b></div><div><span>EVENTOS</span><b>${data.events.length || "Sin eventos"}</b></div><div><span>ESTRUCTURA</span><b>${data.microepisodes.length} microepisodio(s)</b></div></div>
-        <div class="episode-readable"><main>${eventsHtml}<section class="content-section"><div class="section-title"><p class="kicker">QUÉ CONTIENE</p><h3>${hasVideoEvents ? "Otro contenido extraído" : "Contenido extraído"}</h3><p>Texto o descripción producido por los procesadores. No sustituye al original.</p></div>${observationsHtml || '<div class="empty">No hay más contenido extraído en este episodio.</div>'}</section></main>
+        <div class="episode-readable"><main>${eventsHtml}${transcriptHtml}<section class="content-section"><div class="section-title"><p class="kicker">QUÉ CONTIENE</p><h3>${hasVideoEvents ? "Otro contenido extraído" : "Contenido extraído"}</h3><p>Texto o descripción producido por los procesadores. No sustituye al original.</p></div>${observationsHtml || '<div class="empty">No hay más contenido extraído en este episodio.</div>'}</section></main>
           <aside class="origin-section"><div class="section-title"><p class="kicker">DE DÓNDE PROCEDE</p><h3>Archivos y fuentes</h3><p>Cada observación debe poder volver a su evidencia original.</p></div>${originsHtml || '<div class="empty">No hay activos originales enlazados.</div>'}</aside></div>
         ${hypothesesHtml}
         <details class="episode-structure"><summary><span>Cómo se construyó este episodio</span><small>Reglas deterministas y microepisodios</small></summary><div class="structure-content">${structureHtml}</div></details>
@@ -707,7 +735,7 @@ document.addEventListener("DOMContentLoaded", () => {
   function evidenceLocator(reference) {
     if (reference.frame_number !== null && reference.frame_number !== undefined) return `fotograma ${reference.frame_number}`;
     if (reference.page_number) return `página ${reference.page_number}`;
-    if (reference.start_offset_seconds !== null && reference.start_offset_seconds !== undefined) return `${reference.start_offset_seconds}s–${reference.end_offset_seconds}s`;
+    if (reference.start_offset_seconds !== null && reference.start_offset_seconds !== undefined) return `${fmtClock(reference.start_offset_seconds)}–${fmtClock(reference.end_offset_seconds)}`;
     if (reference.text_start !== null && reference.text_start !== undefined) return `caracteres ${reference.text_start}–${reference.text_end}`;
     return reference.text_quote || "archivo completo";
   }

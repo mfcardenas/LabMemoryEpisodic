@@ -216,7 +216,36 @@ resultados bajo peticiones paralelas; ahora se serializa.
 Salida: el vídeo del mecánico produce una lista de eventos con Δt,
 miniaturas y descripción visual detallada en BD.
 
-### Fase D — Audio y documentos (2–4 días)
+### Fase D — Audio y documentos (2–4 días) · ✅ audio hecho (2026-10-11)
+
+Implementado: la transcripción es un **servicio aparte llamado por HTTP**
+con el contrato de OpenAI (`POST /v1/audio/transcriptions`,
+`verbose_json` con segmentos y tiempos). Por defecto, Speaches
+(faster-whisper) en Docker (`docker compose up -d speech`), con el modelo
+`deepdml/faster-whisper-large-v3-turbo-ct2`. Servicio, modelo, idioma,
+prompt de vocabulario, clave y tiempos se eligen con `EPIGRAPH_SPEECH_*`
+(ver `.env.example`); la CLI carga las `EPIGRAPH_*` de `.env`.
+Puerto `SpeechTranscriber` con `OpenAICompatibleTranscriber` y
+`FakeSpeechTranscriber`; `PyAVAudioExtractor` (pista de vídeo o audio
+suelto → WAV mono 16 kHz); `SpeechTranscriptionProcessor` (observaciones
+`speech_segment` con intervalo exacto) que se ejecuta **además** del
+procesador principal del audio y del vídeo, de modo que si el servicio
+falla la captura se procesa igual y el fallo queda en la etapa.
+`attach_speech` asigna cada segmento al evento con el que más se solapa;
+un audio grabado aparte se desplaza con `audio_offset_seconds` (formulario,
+API y `--audio-offset`). `epigraph speech-check [--download] [--file F]`
+comprueba el servicio y el modelo.
+Pasados a configuración, además, los valores que seguían fijos en la fase C:
+temperatura y `think` de Ollama, fotogramas clave por tramo, tamaño y
+calidad JPEG de los fotogramas.
+Banco de prueba (RTX 5080 en Docker/WSL2, audio de 15 s): `large-v3-turbo`
+1,3 s en caliente, 5 s tras reiniciar el contenedor; la primera inferencia
+tras crear el volumen compila los kernels para Blackwell (~45 s, CUDA 12.6
+de la imagen) y queda en caché (`CUDA_CACHE_PATH` en el volumen de
+modelos). `faster-whisper-small` es igual de rápido aquí pero comete más
+errores ("agarrotado" → "rotado"). Pendiente: procesador DOCX.
+
+Plan original:
 
 - Extra `[audio]` con `faster-whisper`; modelo `large-v3-turbo` en CUDA,
   idioma `es` configurable.

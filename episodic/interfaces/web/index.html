@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="description" content="EpiGraph: memoria episódica multimodal trazable">
   <title>EpiGraph · Consola de memoria</title>
-  <link rel="stylesheet" href="/static/index.css?v=fase-c-1">
+  <link rel="stylesheet" href="/static/index.css?v=fase-d-1">
 </head>
 <body>
   <div class="shell">
@@ -188,6 +188,7 @@
                 <label>Capturado en<input name="captured_at" type="datetime-local" step="1" title="Si se deja vacío se usa la hora del vídeo o, en su defecto, la de subida"></label>
                 <label>Delta de tiempo / Ventana (s)<input name="window_duration_seconds" type="number" value="60" min="0.1" step="0.1"></label>
                 <label>Solapamiento temporal (s)<input name="overlap_seconds" type="number" value="5" min="0" step="0.1"></label>
+                <label>Desfase del audio aparte (s)<input name="audio_offset_seconds" type="number" value="0" step="0.1" title="Segundos que se suman a un audio grabado por separado para alinearlo con el vídeo. Negativo si el audio empezó antes."></label>
               </div>
               <div class="process-note">
                 <span>FLUJO</span>
@@ -299,6 +300,6 @@
   </div>
 
   <dialog id="asset-dialog" class="detail-dialog"><button class="dialog-close" data-close-dialog aria-label="Cerrar">×</button><div id="asset-dialog-content"></div></dialog>
-  <script src="/static/app.js?v=fase-c-1"></script>
+  <script src="/static/app.js?v=fase-d-1"></script>
 </body>
 </html>

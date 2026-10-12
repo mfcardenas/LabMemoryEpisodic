@@ -13,6 +13,8 @@ Implementa los subcomandos:
 - window
 - observe
 - compose
+- capture
+- speech-check
 """
 from __future__ import annotations
 
@@ -27,7 +29,7 @@ from episodic.application.episode_composition import (
     DeterministicEpisodeComposer,
     EpisodeRuleConfig,
 )
-from episodic.config import EpisodicConfig
+from episodic.config import EpisodicConfig, load_env_file
 from episodic.domain.times import Interval, TimeSpec
 from episodic.domain.types import SearchIntent
 from episodic.domain.types import SourceType
@@ -255,6 +257,7 @@ def cmd_capture(args: argparse.Namespace) -> None:
             captured_at=args.captured_at,
             window_duration_seconds=args.window,
             overlap_seconds=args.overlap,
+            audio_offset_seconds=args.audio_offset,
         )
         print(f"Captura: {capture.id} ({len(capture.asset_ids)} archivo(s))")
         print(f"Hora: {capture.captured_at.isoformat()} [{capture.captured_at_origin.value}]")
@@ -269,6 +272,55 @@ def cmd_capture(args: argparse.Namespace) -> None:
         print(f"Episodio: {job.result['episode_id']}")
     finally:
         container.close()
+
+
+def cmd_speech_check(args: argparse.Namespace) -> None:
+    """Comprueba el servicio de transcripción configurado y, opcionalmente, lo prueba."""
+    import time
+
+    from episodic.bootstrap import build_speech_transcriber
+    from episodic.ports.speech import SpeechTranscriberError
+
+    config = _config_from_args(args)
+    print(f"Backend: {config.speech_backend}")
+    transcriber = build_speech_transcriber(config)
+    if transcriber is None:
+        print("La transcripción está desactivada (EPIGRAPH_SPEECH_BACKEND=none).")
+        return
+    print(f"Modelo:  {transcriber.model_id}")
+    print(f"Idioma:  {config.speech_language or 'autodetección'}")
+    try:
+        if config.speech_backend == "http":
+            print(f"URL:     {config.speech_url}")
+            models = transcriber.list_models()
+            if transcriber.model_id not in models:
+                if not args.download:
+                    raise SystemExit(
+                        f"El modelo no está en el servicio (disponibles: {models or 'ninguno'}). "
+                        "Use --download para descargarlo."
+                    )
+                print("Descargando el modelo…")
+                print(transcriber.download_model())
+            print("Servicio: disponible, modelo instalado")
+        if args.file:
+            from episodic.adapters.audio.extract import PyAVAudioExtractor
+
+            audio = PyAVAudioExtractor(config.speech_sample_rate_hz).extract(args.file)
+            if audio is None:
+                raise SystemExit(f"{args.file} no tiene pista de audio")
+            started = time.perf_counter()
+            transcript = transcriber.transcribe(
+                audio.wav, f"{Path(args.file).stem}.wav", config.speech_language or None
+            )
+            elapsed = time.perf_counter() - started
+            print(
+                f"Transcripción de {audio.duration_seconds:.1f} s en {elapsed:.2f} s "
+                f"(idioma {transcript.language or '?'}):"
+            )
+            for segment in transcript.segments:
+                print(f"  {segment.start_seconds:7.2f}–{segment.end_seconds:7.2f}  {segment.text}")
+    except SpeechTranscriberError as exc:
+        raise SystemExit(f"Error: {exc}") from exc
 
 
 def cmd_ingest_asset(args: argparse.Namespace) -> None:
@@ -466,6 +518,7 @@ def _add_common_arguments(
 
 
 def main() -> None:
+    load_env_file()
     environment_config = EpisodicConfig.from_env()
     common_parser = argparse.ArgumentParser(add_help=False)
     _add_common_arguments(common_parser, environment_config)
@@ -613,7 +666,27 @@ def main() -> None:
     )
     p_capture.add_argument("--window", type=float, default=60.0, help="Duración de ventana (s)")
     p_capture.add_argument("--overlap", type=float, default=5.0, help="Solapamiento (s)")
+    p_capture.add_argument(
+        "--audio-offset",
+        type=float,
+        default=0.0,
+        help="Segundos que se suman a un audio grabado aparte para alinearlo con el vídeo",
+    )
     p_capture.set_defaults(func=cmd_capture)
+
+    # speech-check (Fase D)
+    p_speech = subparsers.add_parser(
+        "speech-check",
+        parents=[subcommand_common],
+        help="Comprueba el servicio de transcripción configurado (EPIGRAPH_SPEECH_*)",
+    )
+    p_speech.add_argument("--file", help="Audio o vídeo con el que probar la transcripción")
+    p_speech.add_argument(
+        "--download",
+        action="store_true",
+        help="Descarga el modelo en el servicio si no está (Speaches)",
+    )
+    p_speech.set_defaults(func=cmd_speech_check)
 
     # serve
     p_serve = subparsers.add_parser("serve", parents=[subcommand_common], help="Inicia la API HTTP y la interfaz web")

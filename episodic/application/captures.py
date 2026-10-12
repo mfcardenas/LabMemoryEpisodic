@@ -112,7 +112,11 @@ class CaptureService:
         captured_at: datetime | None = None,
         window_duration_seconds: float = 60.0,
         overlap_seconds: float = 5.0,
+        audio_offset_seconds: float = 0.0,
     ) -> Capture:
+        """``audio_offset_seconds``: segundos que hay que sumar a los tiempos de
+        un audio grabado aparte para alinearlo con el vídeo (negativo si el
+        audio empezó a grabarse antes)."""
         if not files:
             raise ValueError("Una captura requiere al menos un archivo")
         environment_id = environment_id.strip()
@@ -144,6 +148,7 @@ class CaptureService:
                 "processing": {
                     "window_duration_seconds": window_duration_seconds,
                     "overlap_seconds": overlap_seconds,
+                    "audio_offset_seconds": audio_offset_seconds,
                 },
             },
         )
@@ -265,7 +270,10 @@ class CaptureProcessingService:
         )
 
         report("events", StageState.RUNNING, "")
-        events = self.events.derive_for_assets(capture.asset_ids)
+        events = self.events.derive_for_assets(
+            capture.asset_ids,
+            audio_offset_seconds=float(processing.get("audio_offset_seconds", 0.0)),
+        )
         report(
             "events",
             StageState.COMPLETED,

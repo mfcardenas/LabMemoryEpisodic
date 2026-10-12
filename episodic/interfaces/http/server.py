@@ -377,6 +377,7 @@ def create_api_app(
         captured_at: Optional[datetime] = Form(None),
         window_duration_seconds: float = Form(60.0, gt=0),
         overlap_seconds: float = Form(5.0, ge=0),
+        audio_offset_seconds: float = Form(0.0),
     ):
         if job_runner is None:
             raise HTTPException(status_code=503, detail="Cola de trabajos no disponible")
@@ -402,6 +403,7 @@ def create_api_app(
                 captured_at=captured_at,
                 window_duration_seconds=window_duration_seconds,
                 overlap_seconds=overlap_seconds,
+                audio_offset_seconds=audio_offset_seconds,
             )
         except CaptureConflictError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc

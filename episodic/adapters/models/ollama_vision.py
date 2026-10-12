@@ -91,12 +91,14 @@ class OllamaVisionDescriber:
         base_url: str = "http://127.0.0.1:11434",
         timeout_seconds: float = 300.0,
         temperature: float = 0.2,
+        think: bool = False,
         session: requests.Session | None = None,
     ) -> None:
         self._model = model
         self.base_url = base_url.rstrip("/")
         self.timeout_seconds = timeout_seconds
         self.temperature = temperature
+        self.think = think
         self.session = session or requests.Session()
 
     @property
@@ -130,7 +132,7 @@ class OllamaVisionDescriber:
         payload = {
             "model": self._model,
             "stream": False,
-            "think": False,
+            "think": self.think,
             "format": _RESPONSE_SCHEMA,
             "options": {"temperature": self.temperature},
             "messages": [
