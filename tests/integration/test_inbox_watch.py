@@ -543,6 +543,25 @@ def test_manifest_declares_environment_devices_and_epoch_time(env) -> None:
     assert min(item.start_time for item in speech) == _epoch(T0 - 2)
     assert timeline[0].start_time == _epoch(T0 - 2)
 
+    # La línea temporal del front traza cada episodio a su captura de origen.
+    view = env.container.inspection_service.timeline(environment_id="env_context_01")
+    episode_items = sorted(
+        (item for item in view["items"] if item["kind"] == "episode"),
+        key=lambda item: item["start_time"],
+    )
+    assert [item["external_id"] for item in episode_items] == [
+        "env_context_01_1791786600",
+        "env_context_01_1791790200",
+    ]
+    # Un carril por dispositivo declarado.
+    lanes = {lane["id"] for lane in view["lanes"]}
+    assert {
+        "env_context_01.cam_norte",
+        "env_context_01.cam_sur",
+        "env_context_01.micro_1",
+        "env_context_01.operario",
+    } <= lanes
+
 
 def test_manifest_written_before_its_files_waits_and_times_out(env) -> None:
     folder = env.inbox / "copia_lenta"

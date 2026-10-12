@@ -703,3 +703,8 @@ button.speech-time:hover { outline: 2px solid var(--signal); }
   .watch-grid { margin: 18px 0; }
   .view > .watch-grid { width: calc(100vw - 28px); }
 }
+
+/* Nombre de la captura en su herramienta de origen (<entorno>_<epoch>). */
+.item-key { display: block; margin-top: 3px; color: var(--muted); font: 10px var(--mono); overflow-wrap: anywhere; }
+.episode-key { margin: 6px 0 0; font: 11px var(--mono); }
+.episode-key code { padding: 2px 5px; background: var(--acid); color: var(--ink); }

@@ -358,14 +358,18 @@ class MemoryInspectionService:
         )
 
     def _timeline_episode(self, item: Episode) -> dict[str, Any]:
-        return self._base_timeline(
-            item_id=item.id,
-            kind="episode",
-            title=item.title,
-            start_time=item.start_time,
-            end_time=item.end_time,
-            source_id=None,
-            environment_id=item.environment_ids[0] if len(item.environment_ids) == 1 else None,
-            confidence=item.confidence,
-            evidence_reference_ids=list(item.metadata.get("evidence_reference_ids", [])),
-        )
+        return {
+            **self._base_timeline(
+                item_id=item.id,
+                kind="episode",
+                title=item.title,
+                start_time=item.start_time,
+                end_time=item.end_time,
+                source_id=None,
+                environment_id=item.environment_ids[0] if len(item.environment_ids) == 1 else None,
+                confidence=item.confidence,
+                evidence_reference_ids=list(item.metadata.get("evidence_reference_ids", [])),
+            ),
+            # Nombre de la captura en su herramienta de origen (<entorno>_<epoch>).
+            "external_id": item.external_id,
+        }

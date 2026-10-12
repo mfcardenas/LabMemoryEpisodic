@@ -121,9 +121,12 @@ document.addEventListener("DOMContentLoaded", () => {
     action_compatibility: "Acción compatible",
     state_compatibility: "Estado compatible",
   })[value] || humanize(value);
-  const timelineTitle = item => item.kind === "episode" && item.title?.startsWith("Episodio compuesto")
-    ? `Episodio · ${item.environment_id || "ambiente sin declarar"}`
-    : item.title;
+  const timelineTitle = item => {
+    const title = item.kind === "episode" && item.title?.startsWith("Episodio compuesto")
+      ? `Episodio · ${item.environment_id || "ambiente sin declarar"}`
+      : item.title;
+    return item.external_id && item.external_id !== title ? `${title} · ${item.external_id}` : title;
+  };
 
   const views = {
     episodes: ["MEMORIA CANÓNICA", "Explorador de episodios", "Dossier auditable: observaciones extraídas, eventos, microepisodios y evidencias originales."],
@@ -553,6 +556,7 @@ document.addEventListener("DOMContentLoaded", () => {
     }
     return `<button class="episode-item ${episode.id === targetId ? "active" : ""}" data-episode-id="${esc(episode.id)}">
       <b>${esc(episodeTitle(episode))}</b>
+      ${episode.external_id && episode.external_id !== episode.title ? `<code class="item-key">${esc(episode.external_id)}</code>` : ""}
       <div class="item-meta">
         <span>${esc(envText)}</span>
         <time>${esc(fmtShortInterval(episode))}</time>
@@ -719,7 +723,7 @@ document.addEventListener("DOMContentLoaded", () => {
       const compatibilityNotice = data.compatibility_mode ? '<div class="compatibility-notice"><b>Vista de compatibilidad</b><span>Reinicia EpiGraph para recuperar la trazabilidad completa del servidor actualizado.</span></div>' : "";
       const environmentIds = episode.environment_ids?.length ? episode.environment_ids : [episode.location].filter(Boolean);
       const environment = environmentIds.map(environmentLabel).join(", ") || "Ambiente no declarado";
-      root.innerHTML = `<header class="episode-hero"><div><p class="kicker">EPISODIO EN LA MEMORIA</p><h2>${esc(episodeTitle(episode))}</h2><p>${esc(fmtInterval(episode))}${episode.metadata?.captured_at_origin ? ` · ${esc(timeOriginLabel(episode.metadata.captured_at_origin))}` : ""}</p></div><span class="episode-place">${esc(environment)}</span></header>${compatibilityNotice}
+      root.innerHTML = `<header class="episode-hero"><div><p class="kicker">EPISODIO EN LA MEMORIA</p><h2>${esc(episodeTitle(episode))}</h2>${episode.external_id ? `<p class="episode-key">Captura <code>${esc(episode.external_id)}</code></p>` : ""}<p>${esc(fmtInterval(episode))}${episode.metadata?.captured_at_origin ? ` · ${esc(timeOriginLabel(episode.metadata.captured_at_origin))}` : ""}</p></div><span class="episode-place">${esc(environment)}</span></header>${compatibilityNotice}
         <div class="memory-facts"><div><span>CONTENIDO EXTRAÍDO</span><b>${allObservations.length} observación(es)</b></div><div><span>PROCEDENCIA</span><b>${data.assets.length} activo(s)</b></div><div><span>EVENTOS</span><b>${data.events.length || "Sin eventos"}</b></div><div><span>ESTRUCTURA</span><b>${data.microepisodes.length} microepisodio(s)</b></div></div>
         <div class="episode-readable"><main>${eventsHtml}${transcriptHtml}<section class="content-section"><div class="section-title"><p class="kicker">QUÉ CONTIENE</p><h3>${hasVideoEvents ? "Otro contenido extraído" : "Contenido extraído"}</h3><p>Texto o descripción producido por los procesadores. No sustituye al original.</p></div>${observationsHtml || '<div class="empty">No hay más contenido extraído en este episodio.</div>'}</section></main>
           <aside class="origin-section"><div class="section-title"><p class="kicker">DE DÓNDE PROCEDE</p><h3>Archivos y fuentes</h3><p>Cada observación debe poder volver a su evidencia original.</p></div>${originsHtml || '<div class="empty">No hay activos originales enlazados.</div>'}</aside></div>
