@@ -120,6 +120,37 @@ def test_budget_forces_a_final_answer_and_tool_errors_are_reported() -> None:
     assert model.calls[-1]["tools"] == []  # la última vuelta va sin herramientas
 
 
+def test_loose_citation_formats_and_leaked_reasoning_are_normalised() -> None:
+    model = FakeReasoningModel(script=[
+        scripted_turn(calls=[("search_moments", {"query": "chispas"})]),
+        scripted_turn("We have moments m1, m2. Need answer: cite. Use citations.Saltan chispas al cortar (m1). Ver 00:00 m2."),
+    ])
+    run = _agent(model).ask("¿Cuándo saltan chispas?")
+    assert run.answer == "Saltan chispas al cortar [m1]. Ver 00:00 [m2]."
+    assert [c["handle"] for c in run.citations] == ["m1", "m2"] and run.confidence == "alta"
+
+
+def test_malformed_tool_calls_are_retried_then_answered_without_tools() -> None:
+    class Flaky:
+        model_id = "flaky"
+
+        def __init__(self) -> None:
+            self.calls = 0
+            self.seen_tools: list[bool] = []
+
+        def chat(self, messages, tools=None):
+            self.calls += 1
+            self.seen_tools.append(tools is not None)
+            if self.calls <= 2:
+                raise ReasoningError("Ollama devolvió 500: error parsing tool call: raw='...'")
+            assert "no se pudieron interpretar" in messages[-1]["content"]
+            return scripted_turn("No consta en la memoria: no pude consultar las herramientas.")
+
+    model = Flaky()
+    run = _agent(model).ask("¿Qué pasó?")
+    assert run.abstained and run.metadata["tool_call_retries"] == 2 and model.seen_tools == [True, True, False]
+
+
 def test_model_failure_is_recorded_not_raised() -> None:
     class Broken:
         model_id = "broken"

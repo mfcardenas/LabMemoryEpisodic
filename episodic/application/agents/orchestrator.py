@@ -45,17 +45,22 @@ capturados en distintos ambientes. Respondes SOLO con lo que devuelven las herra
 horas, nombres ni intenciones.
 
 Cómo trabajar:
-1. Empieza casi siempre por search_moments con la pregunta tal cual (entiende fechas e intención). Si la pregunta es \
-amplia («¿qué pasó ayer?», «¿qué suele hacerse en el taller?») usa browse_memory (environments → days → episodes → events) \
-y get_episode_summary, y después search_moments o get_event para citar momentos concretos.
-2. Para «antes/después» usa get_event_neighbors. Para manuales o documentos usa get_document_passages.
-3. Cada momento devuelto lleva una marca «m1», «m2»… Cita con esas marcas, entre corchetes, justo después de cada \
-afirmación: «Se usó una tarjeta azul frente a una tablet [m2].». Solo puedes citar marcas que hayas recibido. \
-Los resúmenes (get_episode_summary) son texto generado: no son prueba; cita momentos.
-4. Si tras buscar no hay momentos que respondan, contesta exactamente empezando por «No consta en la memoria» y di \
-en una frase qué buscaste. No rellenes con suposiciones.
-5. Responde en español, breve y concreto: primero la respuesta, luego el detalle con las horas (usa la hora local que \
-dan las herramientas y la posición mm:ss en el vídeo). Sin preámbulos."""
+1. Empieza SIEMPRE por search_moments con la pregunta completa tal cual la escribió el usuario (la herramienta \
+entiende fechas, horas e intención). No la conviertas en una frase entrecomillada ni en palabras sueltas.
+2. Los momentos llegan ordenados por relevancia con su puntuación; léelos: pueden responder aunque la puntuación \
+sea baja. Si ninguno responde, busca una segunda vez con 2–4 palabras clave distintas (sinónimos, el objeto, la \
+acción) antes de concluir nada. Si la pregunta es amplia («¿qué pasó ayer?», «¿qué suele hacerse en el taller?») \
+usa browse_memory (environments → days → episodes → events) y get_episode_summary, y luego get_event para citar.
+3. Para «antes/después» usa get_event_neighbors sobre el evento encontrado. Para manuales o documentos, \
+get_document_passages del episodio.
+4. Cada momento lleva una marca «m1», «m2»… Cita SIEMPRE con la marca entre corchetes al final de la frase, \
+exactamente así: «Se usó una tarjeta azul frente a una tablet [m2].» Nunca escribas la marca de otra forma \
+(ni «(m2)», ni «m2:», ni solo la hora). Solo puedes citar marcas que hayas recibido. Los resúmenes \
+(get_episode_summary) son texto generado: no son prueba; cita momentos.
+5. Solo si tras al menos dos búsquedas distintas no hay ningún momento que responda, contesta empezando \
+exactamente por «No consta en la memoria» y di en una frase qué buscaste. No rellenes con suposiciones.
+6. La respuesta final es solo la respuesta: en español, breve y concreta, sin razonamientos ni notas en inglés. \
+Primero la respuesta, luego el detalle con la hora local que dan las herramientas y la posición mm:ss en el vídeo."""
 
 
 class AnswerOrchestrator:
@@ -125,7 +130,7 @@ class AnswerOrchestrator:
                 if time.perf_counter() - started > self.max_seconds:
                     run.metadata["budget"] = "tiempo agotado"
                     break
-                turn = self.model.chat(messages, tools if tool_calls_made < self.max_tool_calls else None)
+                turn = self._chat_with_retry(messages, tools if tool_calls_made < self.max_tool_calls else None, run)
                 usage["turns"] += 1
                 usage["prompt_tokens"] += int(turn.usage.get("prompt_eval_count") or 0)
                 usage["completion_tokens"] += int(turn.usage.get("eval_count") or 0)
@@ -146,7 +151,7 @@ class AnswerOrchestrator:
             if final is None:
                 # Presupuesto agotado: una última vuelta sin herramientas para que responda con lo que tiene.
                 messages.append({"role": "user", "content": "Se acabó el presupuesto de búsqueda. Responde ahora con lo que ya tienes, citando solo marcas recibidas, o di que no consta."})
-                final = self.model.chat(messages, None)
+                final = self._chat_with_retry(messages, None, run)
                 usage["turns"] += 1
                 usage["prompt_tokens"] += int(final.usage.get("prompt_eval_count") or 0)
                 usage["completion_tokens"] += int(final.usage.get("eval_count") or 0)
@@ -166,6 +171,27 @@ class AnswerOrchestrator:
         self.repository.save_answer_run(run)
         self._log(run, f"Respuesta ({run.confidence}, {len(run.citations)} cita(s), {run.took_ms / 1000:.1f} s)")
         return run
+
+    def _chat_with_retry(self, messages: list[dict[str, Any]], tools, run: AnswerRun) -> Turn:
+        """gpt-oss a veces emite una llamada a herramienta mal formada y Ollama
+        responde 500 («error parsing tool call»); se reintenta con un aviso y,
+        si persiste, se pide la respuesta sin herramientas."""
+        attempts = 0
+        while True:
+            try:
+                return self.model.chat(messages, tools)
+            except ReasoningError as exc:
+                if "parsing tool call" not in str(exc) or attempts >= 2:
+                    raise
+                attempts += 1
+                run.metadata.setdefault("tool_call_retries", 0)
+                run.metadata["tool_call_retries"] += 1
+                self._log(run, f"llamada a herramienta mal formada (reintento {attempts})")
+                if attempts == 2:
+                    tools = None
+                    messages = messages + [{"role": "user", "content": "Tus llamadas a herramientas no se pudieron interpretar. Responde ahora con lo que ya tienes, citando marcas recibidas, o di que no consta."}]
+                else:
+                    messages = messages + [{"role": "user", "content": "La última llamada a herramienta no se pudo interpretar: repítela con argumentos JSON válidos (claves y valores entre comillas dobles)."}]
 
     # -- Herramientas ------------------------------------------------------------------
 
@@ -263,7 +289,11 @@ class AnswerOrchestrator:
     # -- Verificación ----------------------------------------------------------------------
 
     def _finish(self, run: AnswerRun, content: str, handles: dict[str, Citation]) -> None:
-        text = (content or "").strip()
+        text = _strip_leaked_reasoning((content or "").strip())
+        if not _CITE.search(text):
+            # Marcas escritas de otra forma («(m2)», «m2:», «m2»): se normalizan a [m2].
+            text = re.sub(r"\(\s*(m\d+(?:\s*,\s*m\d+)*)\s*\)", r"[\1]", text)
+            text = re.sub(r"(?<![\w\[])(m\d+)(?![\w\]])", r"[\1]", text)
         cited: list[str] = []
         dropped: list[str] = []
 
@@ -308,6 +338,27 @@ class AnswerOrchestrator:
             self.activity.info("agente", message)
         except Exception:  # pragma: no cover
             logger.debug("No se pudo registrar la actividad del agente", exc_info=True)
+
+
+_LEAK_START = re.compile(
+    r"^(?:We |I |I'll |The user |Need |Needs |Let's |Let me |Now |Provide |Use |Then |So |Answer |Must |Should |Check )"
+)
+
+
+def _strip_leaked_reasoning(text: str) -> str:
+    """gpt-oss a veces vuelca su razonamiento en inglés antes de la respuesta
+    («We have moments m1… Need answer: … Use citations.Alguien…»). Se quitan
+    las frases iniciales que parecen ese razonamiento."""
+    if not _LEAK_START.match(text):
+        return text
+    # Corte por frase: tras . ! ? con espacio, o pegado a una mayúscula («citations.Alguien»).
+    sentences = re.split(r"(?<=[.!?])(?:\s+|(?=[A-ZÁÉÍÓÚÑ¿¡]))", text)
+    kept = list(sentences)
+    # Se descartan las frases de razonamiento y sus continuaciones en minúscula.
+    while kept and (_LEAK_START.match(kept[0]) or kept[0][:1].islower()):
+        kept.pop(0)
+    remaining = " ".join(part.strip() for part in kept if part.strip()).strip()
+    return remaining if len(remaining) >= 20 else text
 
 
 def _clock(seconds: Optional[float]) -> str:

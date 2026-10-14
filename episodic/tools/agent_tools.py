@@ -12,7 +12,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone, tzinfo
 from typing import Any, Optional
 
-from episodic.application.passage_search import PassageSearchService
+from episodic.application.passage_search import DEFAULT, PassageSearchService
 from episodic.domain.passages import Passage, passage_from_event
 from episodic.domain.processing import Event
 from episodic.domain.retrieval import HybridSearchFilters
@@ -88,6 +88,9 @@ class AgentMemoryTools:
             per_episode=request.per_episode,
             neighbors=request.neighbors,
             include_summaries=request.include_summaries,
+            # Sin umbral para el agente: él lee los textos y decide; el umbral
+            # absoluto descartaba respuestas correctas (docs/evaluacion.md).
+            min_score=DEFAULT if request.strict else None,
         )
         moments: list[MomentRecord] = []
         for group in run.groups:

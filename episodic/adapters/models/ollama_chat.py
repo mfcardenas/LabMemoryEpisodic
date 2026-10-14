@@ -38,18 +38,19 @@ class OllamaReasoningModel:
 
     def chat(self, messages: list[dict[str, Any]], tools: Optional[list[dict[str, Any]]] = None) -> Turn:
         prepared = list(messages)
-        if self.reasoning:
-            # gpt-oss lee el esfuerzo de razonamiento del mensaje de sistema.
-            if prepared and prepared[0].get("role") == "system":
-                prepared[0] = {**prepared[0], "content": f"Reasoning: {self.reasoning}\n{prepared[0].get('content', '')}"}
-            else:
-                prepared.insert(0, {"role": "system", "content": f"Reasoning: {self.reasoning}"})
         payload: dict[str, Any] = {
             "model": self._model,
             "stream": False,
             "messages": prepared,
             "options": {"temperature": self.temperature, "num_ctx": self.num_ctx},
         }
+        if self.reasoning:
+            if self._model.startswith("gpt-oss"):
+                # ``think`` fija el esfuerzo y mantiene el razonamiento fuera
+                # de la respuesta (en ``message.thinking``).
+                payload["think"] = self.reasoning
+            elif prepared and prepared[0].get("role") == "system":
+                prepared[0] = {**prepared[0], "content": f"Reasoning: {self.reasoning}\n{prepared[0].get('content', '')}"}
         if tools:
             payload["tools"] = tools
         try:
