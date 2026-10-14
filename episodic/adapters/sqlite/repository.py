@@ -1767,6 +1767,77 @@ class SqliteEpisodicRepository:
         )
         return cursor.rowcount
 
+    # -----------------------------------------------------------------------
+    # Pasajes (índice de texto completo)
+    # -----------------------------------------------------------------------
+
+    def replace_episode_passages(
+        self, episode_id: str, passages: List[Tuple[str, str, str, str]]
+    ) -> List[str]:
+        """Sustituye los pasajes del episodio (observation_id, tipo, título,
+        texto) y devuelve los observation_id que dejaron de serlo."""
+        new_ids = {row[0] for row in passages}
+        self.begin_transaction()
+        try:
+            previous = [
+                row[0]
+                for row in self._conn.execute(
+                    "SELECT observation_id FROM passage_index WHERE episode_id = ?",
+                    (episode_id,),
+                )
+            ]
+            self._conn.execute("DELETE FROM passage_index WHERE episode_id = ?", (episode_id,))
+            self._conn.executemany(
+                "INSERT INTO passage_index (text, title, observation_id, episode_id, observation_type) "
+                "VALUES (?, ?, ?, ?, ?)",
+                [(text, title, obs_id, episode_id, obs_type) for obs_id, obs_type, title, text in passages],
+            )
+            self.commit_transaction()
+        except Exception:
+            self.rollback_transaction()
+            raise
+        return [obs_id for obs_id in previous if obs_id not in new_ids]
+
+    def delete_episode_passages(self, episode_id: str) -> List[str]:
+        rows = self._conn.execute(
+            "SELECT observation_id FROM passage_index WHERE episode_id = ?", (episode_id,)
+        ).fetchall()
+        self._conn.execute("DELETE FROM passage_index WHERE episode_id = ?", (episode_id,))
+        return [row[0] for row in rows]
+
+    def get_system_state(self, name: str) -> Optional[Any]:
+        row = self._conn.execute("SELECT value_json FROM system_state WHERE name = ?", (name,)).fetchone()
+        return _from_json(row["value_json"]) if row else None
+
+    def set_system_state(self, name: str, value: Any) -> None:
+        self._conn.execute(
+            """
+            INSERT INTO system_state (name, value_json, updated_at) VALUES (?, ?, ?)
+            ON CONFLICT(name) DO UPDATE SET value_json = excluded.value_json, updated_at = excluded.updated_at
+            """,
+            (name, _to_json(value), utc_now().isoformat()),
+        )
+
+    def count_passages(self) -> int:
+        return int(self._conn.execute("SELECT count(*) FROM passage_index").fetchone()[0])
+
+    def search_passages(self, match: str, limit: int) -> List[Tuple[str, str, float, str]]:
+        """Pasajes que casan con una expresión FTS5: (observation_id,
+        episode_id, puntuación BM25 —mayor es mejor—, fragmento resaltado
+        entre los caracteres de control 2 y 3)."""
+        if not match.strip():
+            return []
+        rows = self._conn.execute(
+            """
+            SELECT observation_id, episode_id, -bm25(passage_index, 1.0, 2.0) AS score,
+                   snippet(passage_index, 0, char(2), char(3), '…', 24) AS fragment
+            FROM passage_index WHERE passage_index MATCH ?
+            ORDER BY score DESC LIMIT ?
+            """,
+            (match, limit),
+        ).fetchall()
+        return [(row[0], row[1], float(row[2]), row[3]) for row in rows]
+
     def acquire_lease(self, name: str, owner: str, ttl_seconds: float, now: float) -> bool:
         """Toma o renueva una concesión; falla si otro dueño la tiene vigente."""
         cursor = self._conn.execute(

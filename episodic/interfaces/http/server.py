@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import logging
 import mimetypes
+import threading
 from contextlib import asynccontextmanager
 import shutil
 import tempfile
@@ -23,6 +24,8 @@ from episodic.application.captures import (
     CaptureConflictError,
     CaptureFile,
 )
+from episodic.application.index_maintenance import REINDEX_JOB_KIND, TRIGGER_MANUAL
+from episodic.application.passage_search import DEFAULT
 from episodic.application.watch import (
     ACTIVITY_COMPONENT as WATCH_COMPONENT,
     LEASE_NAME,
@@ -30,7 +33,7 @@ from episodic.application.watch import (
     retry_failed_group,
     write_manifest,
 )
-from episodic.bootstrap import AppContainer, create_app_container
+from episodic.bootstrap import AppContainer, create_app_container, submit_reindex
 from episodic.config import EpisodicConfig
 from episodic.domain.captures import JobState
 from episodic.domain.watch import ActivityLevel, InboxFileState
@@ -49,6 +52,7 @@ from episodic.interfaces.http.schemas import (
     HealthResponse,
     HybridQueryRunResponse,
     IndexingSummaryResponse,
+    PassageSearchRequest,
     ProjectComponentStatus,
     ProjectStatusResponse,
     QueryRunResponse,
@@ -79,11 +83,31 @@ def create_api_app(
     job_runner = getattr(container, "job_runner", None)
     watcher = getattr(container, "watcher", None)
 
+    def warm_up_search() -> None:
+        try:
+            container.passage_search.warm_up()
+            logger.info("Modelos de búsqueda cargados")
+        except Exception as exc:  # la búsqueda lo intentará de nuevo y lo dirá
+            logger.warning("No se pudieron precargar los modelos de búsqueda: %s", exc)
+
+    def ensure_index_current() -> None:
+        """Si el índice no refleja la configuración vigente, se reindexa solo."""
+        maintenance = getattr(container, "index_maintenance", None)
+        if maintenance is None:
+            return
+        try:
+            maintenance.ensure_current(lambda trigger: submit_reindex(container, trigger))
+        except Exception as exc:  # comprobarlo nunca debe impedir arrancar
+            logger.warning("No se pudo comprobar si el índice está al día: %s", exc)
+
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
+        if getattr(container, "passage_search", None) is not None:
+            threading.Thread(target=warm_up_search, name="epigraph-warmup", daemon=True).start()
         # La cola reanuda al arrancar los trabajos que quedaron pendientes.
         if job_runner is not None:
             job_runner.start()
+            ensure_index_current()
         if watcher is not None and start_watcher:
             watcher.start()
         try:
@@ -467,6 +491,11 @@ def create_api_app(
             jobs.append(
                 {
                     **job_response(job),
+                    "title": capture.title
+                    if capture
+                    else "Reindexado de la memoria"
+                    if job.job_type == REINDEX_JOB_KIND
+                    else job.target_id,
                     "capture": {
                         "id": capture.id,
                         "title": capture.title,
@@ -693,12 +722,30 @@ def create_api_app(
             total += processed
         return {"status": "success", "indexed_count": total, "total_points": container.vector_index.count()}
 
+    @app.get("/api/index/status")
+    def index_status():
+        """Si el índice está al día, por qué no, y el reindexado en curso."""
+        maintenance = container.index_maintenance
+        job = maintenance.active_job()
+        return {**maintenance.status().to_dict(), "job": job_response(job) if job else None}
+
+    @app.post("/api/index/reindex", status_code=202)
+    def reindex():
+        """Encola una reconstrucción completa; si ya hay una, devuelve esa."""
+        job = container.index_maintenance.active_job() or submit_reindex(container, TRIGGER_MANUAL)
+        return job_response(job)
+
     @app.post("/api/rebuild-index", response_model=RebuildIndexResponse)
     def rebuild_index():
         try:
             previous_generation = active_vector_generation()
             previous_points = container.vector_index.count()
-            total = container.lifecycle_service.rebuild_index(container.indexing_worker)
+            maintenance = getattr(container, "index_maintenance", None)
+            total = (
+                maintenance.rebuild()
+                if maintenance is not None
+                else container.lifecycle_service.rebuild_index(container.indexing_worker)
+            )
             active_points = container.vector_index.count()
             return RebuildIndexResponse(
                 vector_backend=container.config.vector_backend,
@@ -829,6 +876,45 @@ def create_api_app(
                 for result in run.results
             ],
         )
+
+    @app.get("/api/passage-search/settings")
+    def passage_search_settings():
+        service = getattr(container, "passage_search", None)
+        if service is None:
+            raise HTTPException(status_code=503, detail="La búsqueda por pasajes no está configurada")
+        return service.settings()
+
+    @app.post("/api/passage-search")
+    def passage_search(req: PassageSearchRequest):
+        service = getattr(container, "passage_search", None)
+        if service is None:
+            raise HTTPException(status_code=503, detail="La búsqueda por pasajes no está configurada")
+        interval = None
+        if req.start_time and req.end_time:
+            interval = Interval(
+                start=TimeSpec.from_utc(req.start_time, clock_source="api_query"),
+                end=TimeSpec.from_utc(req.end_time, clock_source="api_query"),
+            )
+        try:
+            run = service.search(
+                req.text_query,
+                HybridSearchFilters(
+                    environment_ids=tuple(req.environment_filter or []),
+                    source_ids=tuple(req.source_filter or []),
+                    modalities=tuple(req.modality_filter or []),
+                    observation_types=tuple(req.observation_type_filter or []),
+                    interval=interval,
+                ),
+                max_episodes=req.max_episodes,
+                per_episode=req.per_episode,
+                rerank=req.rerank,
+                # Un null explícito quita el umbral; omitirlo usa el configurado.
+                min_score=req.rerank_min_score if "rerank_min_score" in req.model_fields_set else DEFAULT,
+                agreement_rank=req.agreement_rank,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        return run.to_dict()
 
     # -----------------------------------------------------------------------
     # Herramientas deterministas de memoria (Fase 8)

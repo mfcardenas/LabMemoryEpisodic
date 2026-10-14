@@ -12,6 +12,8 @@ import json
 import time
 from typing import Optional
 
+from episodic.domain.passages import passage_point_id, passage_span, passage_text, passage_title
+from episodic.domain.times import Interval, TimeSpec
 from episodic.domain.types import EvidenceState, IndexingState, RepresentationSpace
 from episodic.application.progress import note
 from episodic.application.temporal_index import timeline_payload
@@ -60,6 +62,8 @@ class IndexingWorker:
         self.vector_index = vector_index
         self.text_encoder = text_encoder
         self.image_encoder = image_encoder
+        # Puntos escritos: la reconstrucción comprueba que todos llegaron.
+        self.points_written = 0
 
     def process_pending_outbox(self, batch_size: int = 50, raise_on_error: bool = False) -> int:
         """Procesa un lote de representaciones pendientes en el outbox."""
@@ -146,10 +150,27 @@ class IndexingWorker:
                         vectors={"text": vector},
                         payload=payload,
                     )
+                    self.points_written += 1
                     self.repository.update_representation_state(
                         rep.id, IndexingState.INDEXED, qdrant_point_id=point_id
                     )
                     note(f"episodio codificado e indexado en {time.monotonic() - started:.1f} s")
+                    processed_count += 1
+
+                # 1b. Pasajes del episodio (Nomic + texto completo)
+                elif rep.space == RepresentationSpace.NOMIC_TEXT and rep.target_type == PASSAGES_TARGET:
+                    episode = self.repository.get_episode(rep.target_id)
+                    if not episode or not episode.is_visible:
+                        self.vector_index.delete_points(
+                            [passage_point_id(item) for item in self.repository.delete_episode_passages(rep.target_id)]
+                        )
+                        self.repository.update_representation_state(rep.id, IndexingState.STALE)
+                        processed_count += 1
+                        continue
+                    count = self._index_passages(episode)
+                    self.repository.update_representation_state(
+                        rep.id, IndexingState.INDEXED, qdrant_point_id=f"passages:{count}"
+                    )
                     processed_count += 1
 
                 # 2. Representación visual de evidencia (CLIP vision)
@@ -228,6 +249,7 @@ class IndexingWorker:
                         vectors={"image": vector},
                         payload=payload,
                     )
+                    self.points_written += 1
                     self.repository.update_representation_state(
                         rep.id, IndexingState.INDEXED, qdrant_point_id=point_id
                     )
@@ -245,6 +267,62 @@ class IndexingWorker:
                     raise RuntimeError(f"Falló la representación {rep.id}") from e
 
         return processed_count
+
+
+    def _index_passages(self, episode) -> int:
+        """Un punto y una fila de texto completo por pasaje del episodio."""
+        passages = []
+        for observation in self.repository.list_observations_for_episode(episode.id):
+            text = passage_text(observation)
+            if text:
+                passages.append((observation, text))
+        rows = [
+            (observation.id, observation.observation_type, passage_title(observation), text)
+            for observation, text in passages
+        ]
+        removed = self.repository.replace_episode_passages(episode.id, rows)
+        if removed:
+            self.vector_index.delete_points([passage_point_id(item) for item in removed])
+        if not passages:
+            return 0
+
+        note(f"codificando {len(passages)} pasaje(s) con {_model_name(self.text_encoder)}")
+        started = time.monotonic()
+        vectors = self.text_encoder.embed_documents([text for _, text in passages])
+        if len(vectors) != len(passages):
+            raise ValueError("El encoder de texto no devolvió un vector por pasaje")
+        for (observation, _), vector in zip(passages, vectors):
+            interval = None
+            start, end = passage_span(observation, episode)
+            if start is not None:
+                interval = Interval(start=TimeSpec.from_utc(start), end=TimeSpec.from_utc(end or start))
+            payload = {
+                "target_type": "passage",
+                "episode_id": episode.id,
+                "observation_id": observation.id,
+                "observation_types": [observation.observation_type],
+                "modalities": [observation.modality],
+                "source_ids": [observation.source_id] if observation.source_id else [],
+                "environment_ids": (
+                    [observation.environment_id] if observation.environment_id else list(episode.environment_ids)
+                ),
+                "validation_states": [observation.validation_state.value],
+                "is_visible": True,
+            }
+            payload.update(timeline_payload(interval=interval))
+            self.vector_index.upsert(
+                point_id=passage_point_id(observation.id),
+                target_id=observation.id,
+                vectors={"text": vector},
+                payload=payload,
+            )
+            self.points_written += 1
+        note(f"{len(passages)} pasaje(s) indexados en {time.monotonic() - started:.1f} s")
+        return len(passages)
+
+
+# Representación que agrupa los pasajes de un episodio (target_id = episodio).
+PASSAGES_TARGET = "episode_passages"
 
 
 def _model_name(encoder: object) -> str:

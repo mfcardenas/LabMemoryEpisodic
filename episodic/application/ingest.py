@@ -13,6 +13,7 @@ import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 
+from episodic.application.indexing import PASSAGES_TARGET
 from episodic.domain.entities import (
     Annotation,
     CaptureSession,
@@ -332,6 +333,19 @@ class IngestService:
                     )
                     self.repository.save_representation(rep_txt)
                     stats["representations_queued"] += 1
+
+                # Y sus pasajes (una representación por episodio).
+                self.repository.save_representation(
+                    Representation(
+                        target_type=PASSAGES_TARGET,
+                        target_id=episode.id,
+                        space=RepresentationSpace.NOMIC_TEXT,
+                        model_id=self.nomic_model_id,
+                        model_revision="v1.5",
+                        dimension=768,
+                        indexing_state=IndexingState.PENDING,
+                    )
+                )
 
             self.repository.commit_transaction()
             logger.info("Ingesta completada con éxito: %s", stats)

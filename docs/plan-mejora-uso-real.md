@@ -3,6 +3,11 @@
 Fecha: 2026-10-10. Sustituye a PC‑EG1 como guía de trabajo. La integración de
 `sc-on-device-ai-memory` queda fuera de alcance hasta nuevo aviso.
 
+> **2026-10-14.** Las fases E y G se siguen desde
+> [`plan-agentes-consulta.md`](plan-agentes-consulta.md), que las sustituye y
+> añade la memoria jerárquica, la red de agentes de consulta y la escala a
+> millones de eventos. Aquí quedan como referencia del diseño original.
+
 ## 1. Qué se espera de la aplicación
 
 1. El usuario sube **una captura**: uno o varios archivos tomados juntos
@@ -302,7 +307,7 @@ Plan original:
 
 Salida: cada evento muestra lo que se dijo durante su intervalo.
 
-### Fase E — Fusión y descripción rica (2–3 días)
+### Fase E — Fusión y descripción rica (2–3 días) · ⇒ Fase H de `plan-agentes-consulta.md`
 
 - Puerto `TextComposer` + adaptador `OllamaTextComposer` (`gpt-oss:20b`).
 - Por evento: descripción visual + habla + citas documentales relevantes
@@ -334,7 +339,7 @@ Salida: un episodio legible por una persona sin abrir el vídeo.
 
 Salida: recorrido completo en el navegador sin jerga técnica.
 
-### Fase G — Consultar la memoria (3–4 días)
+### Fase G — Consultar la memoria (3–4 días) · ⇒ Fases R1–A3 de `plan-agentes-consulta.md`
 
 - Indexar eventos (texto) y fotogramas clave (CLIP) como representaciones
   de primer nivel; resultados agrupados por evento y episodio.

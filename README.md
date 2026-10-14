@@ -11,9 +11,10 @@ instante exacto en que ocurrió.
 > fotogramas clave y una descripción detallada generada por un modelo de
 > visión local (Ollama), y cada evento muestra **lo que se dijo** durante su
 > intervalo (transcripción con Whisper en un servicio aparte). Pendiente:
-> fusión de vídeo + audio + documentos en la descripción (fase E) y
-> búsqueda por eventos (fase G). Hoja de ruta:
-> [`docs/plan-mejora-uso-real.md`](docs/plan-mejora-uso-real.md).
+> resúmenes jerárquicos, agentes de consulta con citas y escala a millones de
+> eventos. Hoja de ruta vigente:
+> [`docs/plan-agentes-consulta.md`](docs/plan-agentes-consulta.md) (diseño
+> original en [`docs/plan-mejora-uso-real.md`](docs/plan-mejora-uso-real.md)).
 
 ## Cómo funciona
 
@@ -131,6 +132,37 @@ pendiente y termina. Solo un proceso vigila a la vez. La sección
 **Vigilancia** del front muestra las carpetas, los ficheros leídos, los
 trabajos con sus etapas y el registro de ejecución en vivo.
 
+### Consultas: búsqueda por momentos
+
+Cada tramo de vídeo descrito, frase transcrita y fragmento de documento se
+indexa como **pasaje** con su hora absoluta. Una consulta los busca por dos
+vías y las fusiona con RRF:
+
+- **significado** (Nomic en Qdrant): paráfrasis y sinónimos;
+- **palabras** (BM25 en SQLite FTS5): códigos, nombres y frases exactas
+  entre comillas; plural y género se casan por prefijo.
+
+Un cross-encoder multilingüe (`EPIGRAPH_RERANK_MODEL`) reordena los mejores y
+descarta los que no llegan a `EPIGRAPH_RERANK_MIN_SCORE`, salvo que ambas vías
+los pongan entre sus `EPIGRAPH_PASSAGE_AGREEMENT_RANK` primeros: una pregunta
+(«¿cuándo se usó una tarjeta?») puntúa bajo en el reordenador aunque el pasaje
+la responda. El resultado son momentos agrupados por episodio, con el motivo
+por el que aparecen y un enlace que abre el episodio en ese instante
+(`POST /api/passage-search`); los descartados se muestran aparte, plegados.
+
+Todo se ajusta en `.env` (ver `.env.example`). El formulario muestra los
+umbrales vigentes y permite cambiarlos en cada consulta
+(`GET /api/passage-search/settings`).
+
+**El índice se mantiene al día solo.** Cada captura se indexa al procesarse.
+SQLite guarda además la huella con la que se indexó (modelos, prefijo de
+documento, versión del formato); al arrancar (`serve` o `watch`), si no
+coincide con `.env`, faltan pasajes o Qdrant está vacío, se encola un trabajo
+**Reindexado** que se ve en Vigilancia con su motivo y su progreso. Se
+reconstruye en una generación aparte: la búsqueda sigue funcionando hasta que
+se activa la nueva. «Reindexar» en Vigilancia (`POST /api/index/reindex`) lo
+fuerza; `GET /api/index/status` dice si el índice está al día y por qué no.
+
 ## Comandos principales
 
 | Comando | Para qué |
@@ -144,7 +176,7 @@ trabajos con sus etapas y el registro de ejecución en vivo.
 | `epigraph compose --environment ENV` | Agrupa observaciones en episodios. |
 | `epigraph search --text "…"` | Búsqueda; admite `--source`, `--start`, `--end`, `--intent`. |
 | `epigraph last-observation --entity ID` | Última observación confirmada de una entidad. |
-| `epigraph rebuild-index` | Reconstruye Qdrant desde SQLite sin perder el índice activo si falla. |
+| `epigraph rebuild-index` | Reconstruye Qdrant desde SQLite sin perder el índice activo si falla (el servidor ya lo hace solo cuando hace falta). |
 | `epigraph reset-data [--yes]` | Borra SQLite, medios y la colección de EpiGraph en Qdrant para repetir cargas; no toca la carpeta vigilada. |
 
 `epigraph --help` muestra el resto. La configuración usa variables

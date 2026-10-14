@@ -10,7 +10,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, TypeVar
+from typing import Any, Callable, Optional, TypeVar
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -94,6 +94,13 @@ class EpisodicConfig:
         default_factory=lambda: _env("NOMIC_MODEL", "nomic-ai/nomic-embed-text-v1.5")
     )
     nomic_dim: int = field(default_factory=lambda: _env("NOMIC_DIM", 768, int))
+    # Prefijos de tarea con los que se entrenó Nomic v1.5 (vacíos para otros modelos).
+    nomic_document_prefix: str = field(
+        default_factory=lambda: _env("NOMIC_DOCUMENT_PREFIX", "search_document: ")
+    )
+    nomic_query_prefix: str = field(
+        default_factory=lambda: _env("NOMIC_QUERY_PREFIX", "search_query: ")
+    )
     clip_vision_model: str = field(
         default_factory=lambda: _env("CLIP_VISION_MODEL", "Qdrant/clip-ViT-B-32-vision")
     )
@@ -102,6 +109,7 @@ class EpisodicConfig:
     )
     clip_dim: int = field(default_factory=lambda: _env("CLIP_DIM", 512, int))
     encoder_threads: int = field(default_factory=lambda: _env("ENCODER_THREADS", 2, int))
+    encoder_batch_size: int = field(default_factory=lambda: _env("ENCODER_BATCH_SIZE", 1, int))
 
     # Servidor HTTP local.
     host: str = field(default_factory=lambda: _env("HOST", "127.0.0.1"))
@@ -119,6 +127,28 @@ class EpisodicConfig:
         default_factory=lambda: _env("IMAGE_THRESHOLD", 0.22, float)
     )
     rrf_k: int = field(default_factory=lambda: _env("RRF_K", 60, int))
+
+    # Búsqueda por pasajes: candidatos de cada vía (significado y texto
+    # completo), cuántos pasa al reordenador y cuánto se devuelve.
+    passage_candidates: int = field(default_factory=lambda: _env("PASSAGE_CANDIDATES", 60, int))
+    passage_max_episodes: int = field(default_factory=lambda: _env("PASSAGE_MAX_EPISODES", 10, int))
+    passage_per_episode: int = field(default_factory=lambda: _env("PASSAGE_PER_EPISODE", 5, int))
+    # Cross-encoder multilingüe de FastEmbed; vacío desactiva el reordenado.
+    rerank_model: str = field(
+        default_factory=lambda: _env("RERANK_MODEL", "jinaai/jina-reranker-v2-base-multilingual")
+    )
+    rerank_candidates: int = field(default_factory=lambda: _env("RERANK_CANDIDATES", 20, int))
+    # Hilos de CPU del reordenador (0: todos) y caracteres de cada pasaje que
+    # ve: el coste crece con ambos; el título y el resumen van primero.
+    rerank_threads: int = field(default_factory=lambda: _env("RERANK_THREADS", 0, int))
+    rerank_max_chars: int = field(default_factory=lambda: _env("RERANK_MAX_CHARS", 800, int))
+    # Pasajes reordenados por debajo de esta puntuación se descartan (vacío: ninguno)…
+    rerank_min_score: Optional[float] = field(
+        default_factory=lambda: _env("RERANK_MIN_SCORE", -1.5, lambda value: float(value) if value.strip() else None)
+    )
+    # …salvo que significado y palabras lo pongan ambos entre sus N primeros
+    # (0: sin esta excepción). Las preguntas puntúan bajo aunque haya respuesta.
+    passage_agreement_rank: int = field(default_factory=lambda: _env("PASSAGE_AGREEMENT_RANK", 3, int))
 
     # Indexación outbox existente.
     outbox_batch_size: int = field(default_factory=lambda: _env("OUTBOX_BATCH_SIZE", 50, int))

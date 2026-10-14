@@ -530,8 +530,10 @@ document.addEventListener("DOMContentLoaded", () => {
     }
   }
 
-  function openEpisode(episodeId) {
+  function openEpisode(episodeId, focus = null) {
     state.activeEpisode = episodeId;
+    state.episodeFocus = focus ? { episodeId, ...focus } : null;
+    if (focus && state.inspectedEpisode === episodeId) state.inspectedEpisode = null;
     if (location.hash !== "#episodes") {
       // hashchange -> switchView -> loadEpisodes(state.activeEpisode): una sola carga.
       location.hash = "episodes";
@@ -635,7 +637,7 @@ document.addEventListener("DOMContentLoaded", () => {
         const evidenceHtml = linkedEvidence.length
           ? linkedEvidence.map(reference => `<span>${esc(evidenceLocator(reference))}</span>`).join("")
           : '<span class="missing">Sin localización de evidencia</span>';
-        return `<article class="extraction-card">
+        return `<article class="extraction-card" data-observation-id="${esc(observation.id)}">
           <div class="extraction-number">${String(index + 1).padStart(2, "0")}</div>
           <div class="extraction-body"><div class="extraction-head"><span class="modality-tag ${esc(observation.modality)}">${esc(modalityLabel(observation.modality))}</span><b>${esc(observationLabel(observation.observation_type))}</b><em>${esc(confidenceLabel(observation.confidence))}</em></div>
           <div class="extracted-content">${extracted ? `<p>${esc(extracted)}</p>` : '<p class="no-content">El procesador no produjo contenido textual; se conserva la observación estructurada.</p>'}</div>
@@ -707,7 +709,7 @@ document.addEventListener("DOMContentLoaded", () => {
               const time = seekable
                 ? `<button type="button" class="speech-time" data-seek="${esc(offset)}" title="Ver en el vídeo">${fmtClock(offset)}</button>`
                 : `<span class="speech-time">${fmtClock(offset)}</span>`;
-              return `<p>${time}<span>${esc(line.description)}</span></p>`;
+              return `<p data-observation-id="${esc(line.id)}">${time}<span>${esc(line.description)}</span></p>`;
             }).join("");
           return `<div class="transcript-block"><h4>${esc(asset ? assetLabel(asset, sourcesById.get(asset.source_id)) : "Audio")}</h4>${rows}${model ? `<p class="event-provenance">Transcrito por ${esc(model)} · no verificado</p>` : ""}</div>`;
         }).join("");
@@ -737,6 +739,7 @@ document.addEventListener("DOMContentLoaded", () => {
         video.scrollIntoView({ behavior: "smooth", block: "center" });
         video.play().catch(() => {});
       }));
+      applyEpisodeFocus(root, episodeId);
     } catch (error) {
       if (requestToken !== state.inspectRequest) return;
       state.inspectedEpisode = null;
@@ -1184,24 +1187,130 @@ document.addEventListener("DOMContentLoaded", () => {
       </div>`;
   }
 
+  // Foco al abrir un episodio desde un resultado: el momento exacto.
+  function applyEpisodeFocus(root, episodeId) {
+    const focus = state.episodeFocus;
+    if (!focus || focus.episodeId !== episodeId) return;
+    state.episodeFocus = null;
+    let target = focus.observationId ? root.querySelector(`[data-observation-id="${CSS.escape(focus.observationId)}"]`) : null;
+    if (!target && focus.seek != null) {
+      const cards = [...root.querySelectorAll("[data-event-start]")].filter(card => card.dataset.eventStart !== "");
+      target = cards.filter(card => Number(card.dataset.eventStart) <= focus.seek + 0.01).pop() || null;
+    }
+    const video = root.querySelector("#episode-video");
+    if (video && focus.seek != null) video.currentTime = focus.seek;
+    const element = target || (focus.seek != null ? video : null);
+    if (!element) return;
+    element.classList.add("focus-flash");
+    setTimeout(() => element.scrollIntoView({ behavior: "smooth", block: "center" }), 60);
+    setTimeout(() => element.classList.remove("focus-flash"), 2600);
+  }
+
+  // Umbrales de la búsqueda por pasajes: los de .env, visibles y ajustables por consulta.
+  let passageSettings = null;
+  const fillThresholds = () => {
+    if (!passageSettings) return;
+    $("#input-min-score").value = passageSettings.rerank_min_score ?? "";
+    $("#input-agreement").value = passageSettings.agreement_rank ?? 0;
+  };
+  async function loadPassageSettings() {
+    try { passageSettings = await api("/api/passage-search/settings"); } catch { return; }
+    state.indexStatus = await api("/api/index/status").catch(() => null);
+    fillThresholds();
+    const s = passageSettings;
+    $("#passage-settings").textContent = `.env: umbral ${s.rerank_min_score ?? "ninguno"} · acuerdo top ${s.agreement_rank} · ${s.candidates} candidatos por vía · ${s.rerank_candidates} al reordenador (${s.rerank_model || "sin modelo"}) · ${s.indexed_passages} pasajes indexados`;
+  }
+  $("#reset-thresholds")?.addEventListener("click", fillThresholds);
+  loadPassageSettings();
+  const thresholdOverrides = () => {
+    const minScore = $("#input-min-score").value.trim();
+    const agreement = $("#input-agreement").value.trim();
+    return { rerank_min_score: minScore === "" ? null : Number(minScore), agreement_rank: agreement === "" ? 0 : Number(agreement) };
+  };
+
+  const searchFilters = () => ({
+    environment_filter: $("#search-environment").value ? [$("#search-environment").value] : null,
+    source_filter: $("#search-source").value ? [$("#search-source").value] : null,
+    modality_filter: $("#search-modality").value ? [$("#search-modality").value] : null,
+  });
   $("#search-form")?.addEventListener("submit", async event => {
-    event.preventDefault(); const root = $("#search-results"); root.innerHTML = '<div class="empty roomy">Consultando Qdrant y rehidratando desde SQLite…</div>';
-    const payload = {
-      text_query: $("#search-query").value.trim(), intent: "semantic_search",
-      environment_filter: $("#search-environment").value ? [$("#search-environment").value] : null,
-      source_filter: $("#search-source").value ? [$("#search-source").value] : null,
-      modality_filter: $("#search-modality").value ? [$("#search-modality").value] : null,
-      require_unique_resolution: $("#input-require-unique").checked, expand_relations: true, limit: 10,
-    };
-    try { renderSearch(await api("/api/hybrid-search", { method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(payload) })); }
+    event.preventDefault(); const root = $("#search-results"); root.innerHTML = '<div class="empty roomy">Buscando por significado y por palabras en cada pasaje…</div>';
+    const text = $("#search-query").value.trim();
+    const json = body => ({ method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(body) });
+    const indexStatus = api("/api/index/status").catch(() => null);
+    const passages = api("/api/passage-search", json({ text_query: text, ...searchFilters(), rerank: $("#input-rerank").checked, ...thresholdOverrides() }));
+    const legacy = api("/api/hybrid-search", json({ text_query: text, intent: "semantic_search", ...searchFilters(), expand_relations: true, limit: 10 })).catch(() => null);
+    try { const data = await passages; state.indexStatus = await indexStatus; renderPassageSearch(data, await legacy); }
     catch (error) { root.innerHTML = `<div class="empty roomy"><b>Error de recuperación</b><span>${esc(error.message)}</span></div>`; }
   });
-  function renderSearch(data) {
+
+  const passageTypeLabel = hit => ({ video_event: "Vídeo · tramo", speech_segment: "Habla", document_text_fragment: "Documento" })[hit.observation_type] || observationLabel(hit.observation_type);
+  // El índice marca los términos encontrados con los caracteres de control 2 y 3.
+  const marked = text => esc(text).replace(/\u0002/g, "<mark>").replace(/\u0003/g, "</mark>");
+  const clip = (text, size = 320) => text.length > size ? `${text.slice(0, size).trimEnd()}…` : text;
+
+  function renderPassageSearch(data, legacy) {
     const root = $("#search-results");
+    const rerank = data.rerank || {};
+    const rules = `umbral ${rerank.min_score ?? "ninguno"} · acuerdo top ${rerank.agreement_rank || "no"}`;
+    const discarded = rerank.discarded_low_relevance ? ` · ${rerank.discarded_low_relevance} descartado(s)` : "";
+    const rerankText = rerank.applied ? `reordenado con ${rerank.model} (${rules})${discarded}` : rerank.error ? `sin reordenar: ${rerank.error}` : "sin reordenar";
+    const summary = `<div class="passage-summary"><b>${data.passage_count} momento(s) en ${data.groups.length} episodio(s)</b>
+      <span>significado: ${data.dense_candidates} candidatos</span><span>palabras: ${data.lexical_candidates}${data.lexical_query ? ` (${esc(data.lexical_query)})` : ""}</span>
+      <span class="${rerank.error ? "warn" : ""}">${esc(rerankText)}</span><span>${Math.round(data.took_ms)} ms</span></div>`;
+    const renderGroups = list => list.map((group, index) => {
+      const episode = group.episode;
+      const hits = group.passages.map(hit => {
+        const seekable = hit.start_offset_seconds != null && (hit.observation_type === "video_event" || hit.modality === "video");
+        const where = [hit.start_time ? fmtTime(hit.start_time) : "", hit.start_offset_seconds != null ? `${fmtClock(hit.start_offset_seconds)} en el archivo` : "", hit.page_number ? `pág. ${hit.page_number}` : ""].filter(Boolean).join(" · ");
+        const why = [
+          hit.scores.dense_rank ? `<span class="dense" title="Similitud ${Number(hit.scores.dense).toFixed(3)}">Significado #${hit.scores.dense_rank}</span>` : "",
+          hit.scores.lexical_rank ? `<span class="lexical" title="BM25 ${Number(hit.scores.lexical).toFixed(2)}">Palabras #${hit.scores.lexical_rank}</span>` : "",
+          hit.scores.rerank != null ? `<span class="rerank">Reordenado ${Number(hit.scores.rerank).toFixed(2)}</span>` : "",
+          hit.kept_by === "agreement" ? `<span class="agreement" title="Bajo el umbral, pero significado y palabras coinciden entre sus ${rerank.agreement_rank} primeros">Ambas vías coinciden</span>` : "",
+          hit.model ? `<span title="Contenido generado por un modelo; no verificado">${esc(hit.model)}</span>` : "",
+        ].join("");
+        return `<article class="passage-hit">
+          <header><span class="modality-tag ${esc(hit.modality)}">${esc(passageTypeLabel(hit))}</span>${hit.title ? `<b>${esc(hit.title)}</b>` : ""}<time>${esc(where)}</time></header>
+          <p class="passage-text">${hit.snippet ? marked(hit.snippet) : esc(clip(hit.text))}</p>
+          <footer><span class="passage-why">${why}</span><button type="button" class="button-mini" data-passage-episode="${esc(hit.episode_id)}" data-passage-observation="${esc(hit.observation_id)}" ${seekable ? `data-passage-seek="${esc(hit.start_offset_seconds)}"` : ""}>Ver en el episodio${seekable ? ` ▶ ${fmtClock(hit.start_offset_seconds)}` : ""}</button></footer>
+          ${hit.text.length > 320 || hit.snippet ? `<details><summary>Texto completo</summary>${paragraphs(hit.text)}</details>` : ""}
+        </article>`;
+      }).join("");
+      const env = (episode.environment_ids || []).map(environmentLabel).join(", ");
+      return `<section class="passage-group"><header><span class="result-rank">${index + 1}</span><div><h3>${esc(episode.title || episode.external_id || episode.id)}</h3><small>${esc([env, fmtInterval(episode)].filter(Boolean).join(" · "))}</small></div><button type="button" class="button ghost" data-passage-episode="${esc(episode.id)}">Abrir episodio</button></header>${hits}</section>`;
+    }).join("");
+    const groups = renderGroups(data.groups);
+    const discardedCount = (data.discarded_groups || []).reduce((total, group) => total + group.passages.length, 0);
+    const discardedHtml = discardedCount
+      ? `<details class="discarded-results"><summary>Descartados por relevancia baja (${discardedCount}) · ${esc(rules)}</summary><div class="search-results">${renderGroups(data.discarded_groups)}</div></details>`
+      : "";
+    const index = state.indexStatus;
+    const indexWarning = index?.job
+      ? `<div class="empty roomy index-warning"><b>Reindexando la memoria</b><span>${esc(index.reasons.join("; ") || "pedido a mano")}. Los resultados pueden estar incompletos hasta que termine; el progreso se ve en Vigilancia.</span></div>`
+      : data.indexed_passages === 0
+      ? `<div class="empty roomy index-warning"><b>No hay pasajes indexados</b><span>${index && !index.up_to_date ? esc(index.reasons.join("; ")) + ". " : ""}Se reindexa solo al arrancar el servidor; también puede lanzarlo con «Reindexar» en Vigilancia.</span></div>`
+      : "";
+    const legacyCount = legacy?.results?.length || 0;
+    const legacyHtml = legacyCount ? `<details class="legacy-results"><summary>Episodios completos con todas sus evidencias (${legacyCount})</summary><div class="search-results" id="legacy-search-results"></div></details>` : "";
+    const emptyText = data.indexed_passages === 0 ? ""
+      : rerank.discarded_low_relevance ? '<div class="empty roomy">Hay candidatos, pero ninguno llega al umbral. Revísalos abajo, baja el umbral o desactiva «Reordenar».</div>'
+      : '<div class="empty roomy">Ningún pasaje coincide. Prueba otras palabras o quita filtros; si acabas de cargar capturas, espera a que terminen de indexarse.</div>';
+    root.innerHTML = `${indexWarning}${summary}${data.groups.length ? groups : emptyText}${discardedHtml}${legacyHtml}`;
+    if (legacyCount) renderSearch(legacy, $("#legacy-search-results"));
+    root.querySelectorAll("[data-passage-episode]").forEach(button => button.addEventListener("click", () => {
+      const seek = button.dataset.passageSeek;
+      openEpisode(button.dataset.passageEpisode, button.dataset.passageObservation
+        ? { observationId: button.dataset.passageObservation, seek: seek === undefined ? null : Number(seek) }
+        : null);
+    }));
+  }
+
+  function renderSearch(data, root = $("#search-results")) {
     if (!data.results.length) { root.innerHTML = '<div class="empty roomy">Sin candidatos. Comprueba que los episodios estén indexados.</div>'; return; }
     root.innerHTML = data.results.map(item => `<article class="result-card"><div class="result-head"><span class="result-rank">${item.rank}</span><div><h3>${esc(item.episode.title)}</h3><small>${esc(item.match_kinds.join(" · "))}</small></div><div class="score-stack">${score("Semántica", item.scores.semantic, "semantic")}${score("Estructura", item.scores.structured)}${score("Tiempo", item.scores.temporal)}${score("Relación", item.scores.relational)}</div></div>
       <div class="result-body"><div><b>Observaciones canónicas</b><ul>${item.observations.map(obs => `<li>${esc(obs.observation_type)} · ${esc(obs.description || obs.content)}</li>`).join("") || "<li>Sin observaciones</li>"}</ul></div><div class="evidence-list"><b>EVIDENCIAS</b><br>${item.evidence_references.map(ref => `${esc(ref.reference_kind)} · ${esc(shortId(ref.id))}`).join("<br>") || "Sin evidencia"}<br><br><button class="button ghost result-open" data-episode-id="${esc(item.episode.id)}">Inspeccionar episodio</button></div></div></article>`).join("");
-    $$(".result-open").forEach(button => button.addEventListener("click", () => openEpisode(button.dataset.episodeId)));
+    root.querySelectorAll(".result-open").forEach(button => button.addEventListener("click", () => openEpisode(button.dataset.episodeId)));
   }
   function score(label, value, cls = "") { return value === null || value === undefined ? "" : `<span class="score ${cls}">${label} ${Number(value).toFixed(3)}</span>`; }
 
@@ -1260,7 +1369,8 @@ document.addEventListener("DOMContentLoaded", () => {
     try {
       const fileState = $("#watch-file-state").value;
       const filesUrl = `/api/watch/files?limit=300${fileState ? `&state=${encodeURIComponent(fileState)}` : ""}`;
-      const [status, jobs, files] = await Promise.all([api("/api/watch"), api("/api/jobs?limit=30"), api(filesUrl)]);
+      const [status, jobs, files, index] = await Promise.all([api("/api/watch"), api("/api/jobs?limit=30"), api(filesUrl), api("/api/index/status").catch(() => null)]);
+      renderIndexStatus(index);
       renderWatchStatus(status);
       renderWatchJobs(jobs);
       renderWatchFiles(files.files);
@@ -1392,6 +1502,26 @@ document.addEventListener("DOMContentLoaded", () => {
     await refreshWatch(false);
   }
 
+  // Estado del índice: al día, reindexándose (trabajo en la cola) o desfasado.
+  function renderIndexStatus(index) {
+    const box = $("#index-status");
+    if (!box || !index) return;
+    const running = index.job;
+    const counts = `${index.episodes} episodio(s) · ${index.points} puntos en Qdrant · ${index.indexed_passages} pasajes`;
+    const text = running
+      ? `Índice: reindexando (${jobStateLabel(running.state).toLowerCase()}): ${index.reasons.join("; ") || "pedido a mano"}`
+      : index.up_to_date ? `Índice al día · ${counts}` : `Índice desfasado: ${index.reasons.join("; ")}`;
+    box.className = `index-status${index.up_to_date && !running ? "" : " stale"}`;
+    $("#index-status-text").textContent = text;
+    $("#index-reindex").disabled = Boolean(running);
+  }
+  $("#index-reindex")?.addEventListener("click", async event => {
+    if (!confirm("Se reconstruirán los vectores y los pasajes de toda la memoria en segundo plano. La búsqueda sigue funcionando mientras tanto. ¿Continuar?")) return;
+    event.currentTarget.disabled = true;
+    try { await api("/api/index/reindex", {method: "POST"}); setTimeout(() => refreshWatch(false), 400); }
+    catch (error) { alert(error.message); }
+  });
+
   function renderWatchJobs(data) {
     $("#watch-jobs-active").textContent = data.active_count ? `${data.active_count} activo(s)` : "En reposo";
     const container = $("#watch-jobs");
@@ -1405,8 +1535,8 @@ document.addEventListener("DOMContentLoaded", () => {
         ? `<button type="button" class="button-mini" data-open-episode="${esc(capture.episode_id)}">Abrir episodio</button>` : "";
       return `<div class="job-card ${esc(job.state)}">
         <header>
-          <div><strong>${esc(capture?.title || job.target_id)}</strong>
-            <small>${esc(originLabel(capture?.origin))} · ${capture ? `${capture.asset_count} fichero(s) · ` : ""}${fmtClockTime(job.created_at)}${job.attempts > 1 ? ` · intento ${job.attempts}` : ""}</small></div>
+          <div><strong>${esc(capture?.title || job.title || job.target_id)}</strong>
+            <small>${esc(job.job_type === "reindex" ? `pedido ${job.target_id === "manual" ? "a mano" : "al arrancar"}` : originLabel(capture?.origin))} · ${capture ? `${capture.asset_count} fichero(s) · ` : ""}${fmtClockTime(job.created_at)}${job.attempts > 1 ? ` · intento ${job.attempts}` : ""}</small></div>
           <span class="capture-status ${job.state === "completed" ? "ready" : job.state === "failed" ? "failed" : "processing"}">${esc(jobStateLabel(job.state))}${job.state === "running" ? ` ${percent}%` : ""}</span>
         </header>
         <div class="job-bar"><i style="width:${percent}%"></i></div>

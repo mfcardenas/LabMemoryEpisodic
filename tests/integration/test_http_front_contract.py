@@ -210,7 +210,8 @@ def test_dashboard_exposes_canonical_epigraph_workflow() -> None:
     javascript = Path("episodic/interfaces/web/app.js").read_text(encoding="utf-8")
 
     assert 'type="datetime-local"' in html
-    assert 'id="input-require-unique"' in html
+    assert 'id="input-rerank"' in html
+    assert 'id="input-min-score"' in html and 'id="input-agreement"' in html
     assert 'id="ingest-form"' in html
     assert 'id="episode-inspector"' in html
     assert 'id="memory-map"' in html
@@ -221,7 +222,7 @@ def test_dashboard_exposes_canonical_epigraph_workflow() -> None:
     assert 'api("/api/captures", { method: "POST"' in javascript
     assert "/api/jobs/" in javascript
     assert 'name="files" type="file" required multiple' in html
-    assert "require_unique_resolution:" in javascript
+    assert 'api("/api/passage-search"' in javascript
     assert "/api/memory/episodes/" in javascript
     assert "/api/memory/timeline" in javascript
     assert "/api/memory/assets/" in javascript

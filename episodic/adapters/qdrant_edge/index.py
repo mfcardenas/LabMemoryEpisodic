@@ -143,6 +143,7 @@ class QdrantEdgeVectorIndex:
             "validation_states": PayloadSchemaType.Keyword,
             "max_confidence": PayloadSchemaType.Float,
             "episode_id": PayloadSchemaType.Keyword,
+            "target_type": PayloadSchemaType.Keyword,
             "timeline_start_ms": PayloadSchemaType.Float,
             "timeline_filter_end_ms": PayloadSchemaType.Float,
             "edge_timeline_unknown": PayloadSchemaType.Keyword,
@@ -261,7 +262,12 @@ class QdrantEdgeVectorIndex:
                         ),
                     ]
                 )
-        return Filter(must=must)
+        # Los pasajes comparten el vector "text" con los episodios: solo
+        # aparecen cuando se piden expresamente (target_type="passage").
+        must_not = []
+        if not (filters and filters.get("target_type")):
+            must_not.append(FieldCondition(key="target_type", match=MatchValue("passage")))
+        return Filter(must=must, must_not=must_not or None)
 
     def search(
         self,

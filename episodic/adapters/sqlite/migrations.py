@@ -492,6 +492,30 @@ CREATE TABLE leases (
 );
 """
 
+MIGRATION_V9 = """
+-- Estado del sistema que no es dominio: p. ej. la huella con la que se
+-- indexó (modelos, prefijos, formato), para reindexar solo si cambia.
+CREATE TABLE system_state (
+    name TEXT PRIMARY KEY,
+    value_json TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+"""
+
+MIGRATION_V8 = """
+-- Búsqueda por pasajes: índice de texto completo (BM25) de cada observación
+-- con contenido propio. Es una proyección, como Qdrant: la escribe la
+-- indexación y se puede reconstruir desde las observaciones.
+CREATE VIRTUAL TABLE passage_index USING fts5(
+    text,
+    title,
+    observation_id UNINDEXED,
+    episode_id UNINDEXED,
+    observation_type UNINDEXED,
+    tokenize = 'unicode61 remove_diacritics 2'
+);
+"""
+
 MIGRATIONS: List[Tuple[int, str]] = [
     (1, MIGRATION_V1),
     (2, MIGRATION_V2),
@@ -500,6 +524,8 @@ MIGRATIONS: List[Tuple[int, str]] = [
     (5, MIGRATION_V5),
     (6, MIGRATION_V6),
     (7, MIGRATION_V7),
+    (8, MIGRATION_V8),
+    (9, MIGRATION_V9),
 ]
 
 

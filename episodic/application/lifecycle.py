@@ -9,7 +9,9 @@ from __future__ import annotations
 import logging
 from typing import List, Optional, Sequence
 
-from episodic.application.indexing import IndexingWorker
+from episodic.application.indexing import PASSAGES_TARGET, IndexingWorker
+from episodic.application.progress import note
+from episodic.domain.passages import passage_point_id
 from episodic.domain.entities import Annotation, Representation
 from episodic.domain.types import (
     EvidenceState,
@@ -109,8 +111,9 @@ class LifecycleService:
         # 1. Cambiar visibilidad canónica en SQLite
         self.repository.set_episode_visibility(episode_id, False)
 
-        # 2. Eliminar punto de Qdrant para que no aparezca en búsquedas
+        # 2. Eliminar puntos de Qdrant (episodio y pasajes) para que no aparezcan en búsquedas
         try:
+            self._drop_passages(episode_id)
             self.vector_index.delete_points([f"ep_{episode_id}"])
         except Exception as e:
             logger.warning("Error eliminando punto de Qdrant para episodio %s: %s", episode_id, e)
@@ -151,15 +154,34 @@ class LifecycleService:
         if removed_episode_ids:
             self.vector_index.delete_points([f"ep_{item}" for item in removed_episode_ids])
             for episode_id in removed_episode_ids:
+                self._drop_passages(episode_id)
                 for rep in self.repository.list_representations_for_target(episode_id):
                     self.repository.update_representation_state(rep.id, IndexingState.STALE)
         for episode_id in episode_ids:
             self._queue_representation(self._episode_text_representation(episode_id))
+            self._queue_representation(self._passages_representation(episode_id))
 
         total = 0
         while processed := worker.process_pending_outbox(batch_size=50):
             total += processed
         return total
+
+    def _drop_passages(self, episode_id: str) -> None:
+        removed = self.repository.delete_episode_passages(episode_id)
+        if removed:
+            self.vector_index.delete_points([passage_point_id(item) for item in removed])
+
+    def _passages_representation(self, episode_id: str) -> Representation:
+        """Los pasajes de un episodio se indexan juntos (una codificación por lotes)."""
+        return Representation(
+            target_type=PASSAGES_TARGET,
+            target_id=episode_id,
+            space=RepresentationSpace.NOMIC_TEXT,
+            model_id=self.nomic_model_id,
+            model_revision="v1.5",
+            dimension=768,
+            indexing_state=IndexingState.PENDING,
+        )
 
     def _episode_text_representation(self, episode_id: str) -> Representation:
         return Representation(
@@ -222,6 +244,7 @@ class LifecycleService:
 
         for ep in episodes:
             queue_representation(self._episode_text_representation(ep.id))
+            queue_representation(self._passages_representation(ep.id))
 
             # Encolar evidencias de imagen
             for ev_id in ep.evidence_ids:
@@ -237,6 +260,11 @@ class LifecycleService:
                         indexing_state=IndexingState.PENDING,
                     )
                     queue_representation(rep_img)
+
+        note(
+            f"{len(episodes)} episodio(s): construyendo una generación nueva; "
+            "la búsqueda sigue usando la actual hasta activarla"
+        )
 
         # 3. Construir una generación aislada. El worker original conserva sus
         # encoders, pero ningún upsert alcanza la colección activa.
@@ -259,8 +287,10 @@ class LifecycleService:
                 if processed == 0:
                     break
                 total_indexed += processed
+                note(f"{total_indexed} representación(es) indexadas en la generación nueva")
 
-            expected_points = len(queued_keys)
+            # Un episodio aporta un punto más uno por pasaje: se cuenta lo escrito.
+            expected_points = staging_worker.points_written
             actual_points = staging_index.count()
             if actual_points != expected_points:
                 raise RuntimeError(
@@ -269,6 +299,7 @@ class LifecycleService:
 
             self.vector_index.activate_staging_index(staging_index)
             activated = True
+            note(f"generación nueva activada: {actual_points} puntos")
         finally:
             if not activated:
                 self.vector_index.discard_staging_index(staging_index)

@@ -25,7 +25,7 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
-from episodic.bootstrap import create_app_container, create_ingestion_container
+from episodic.bootstrap import create_app_container, create_ingestion_container, submit_reindex
 from episodic.application.episode_composition import (
     DeterministicEpisodeComposer,
     EpisodeRuleConfig,
@@ -271,7 +271,7 @@ def cmd_rebuild(args: argparse.Namespace) -> None:
     container = create_app_container(config, use_fake_encoders=args.fake_encoders)
     try:
         print("Reconstruyendo proyección vectorial desde SQLite...")
-        total = container.lifecycle_service.rebuild_index(container.indexing_worker)
+        total = container.index_maintenance.rebuild()
         print(f"Reconstrucción completada. Total de representaciones indexadas: {total}")
         print(f"Puntos en Qdrant: {container.vector_index.count()}")
     finally:
@@ -379,6 +379,9 @@ def cmd_watch(args: argparse.Namespace) -> None:
         state = "" if source.enabled else " (desactivada)"
         print(f"  {source.name}: {source.path} → {source.environment_id} [{source.grouping}]{state}")
     runner.start()
+    job = container.index_maintenance.ensure_current(lambda trigger: submit_reindex(container, trigger))
+    if job is not None:
+        print("El índice no refleja la configuración vigente: se reindexa en la cola de trabajos.")
     try:
         if not args.once:
             watcher.start()

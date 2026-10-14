@@ -119,6 +119,7 @@ class QdrantVectorIndex:
             "validation_states": models.PayloadSchemaType.KEYWORD,
             "max_confidence": models.PayloadSchemaType.FLOAT,
             "episode_id": models.PayloadSchemaType.KEYWORD,
+            "target_type": models.PayloadSchemaType.KEYWORD,
             "timeline_start_ms": models.PayloadSchemaType.INTEGER,
             "timeline_filter_end_ms": models.PayloadSchemaType.INTEGER,
             "timeline_unknown": models.PayloadSchemaType.BOOL,
@@ -263,7 +264,14 @@ class QdrantVectorIndex:
                     ]
                 )
 
-        return models.Filter(must=must_conditions)
+        # Los pasajes comparten el vector "text" con los episodios: solo
+        # aparecen cuando se piden expresamente (target_type="passage").
+        must_not: List[models.Condition] = []
+        if not (filters and filters.get("target_type")):
+            must_not.append(
+                models.FieldCondition(key="target_type", match=models.MatchValue(value="passage"))
+            )
+        return models.Filter(must=must_conditions, must_not=must_not or None)
 
     def search(
         self,

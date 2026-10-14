@@ -15,11 +15,13 @@ from episodic.adapters.models.fake import (
     FakeAlignedTextEncoder,
     FakeEpisodeTextEncoder,
     FakeImageEncoder,
+    FakePassageReranker,
 )
 from episodic.adapters.models.fastembed import (
     FastEmbedAlignedTextEncoder,
     FastEmbedEpisodeTextEncoder,
     FastEmbedImageEncoder,
+    FastEmbedPassageReranker,
 )
 from episodic.adapters.qdrant.index import QdrantVectorIndex
 from episodic.adapters.qdrant_edge.index import QdrantEdgeVectorIndex
@@ -39,6 +41,13 @@ from episodic.application.jobs import JobRunner
 from episodic.application.ingest import IngestService
 from episodic.application.lifecycle import LifecycleService
 from episodic.application.observation_extraction import ObservationExtractionService
+from episodic.application.index_maintenance import (
+    REINDEX_JOB_KIND,
+    REINDEX_STAGES,
+    IndexMaintenanceService,
+    index_profile,
+)
+from episodic.application.passage_search import PassageSearchService
 from episodic.application.episode_composition import DeterministicEpisodeComposer
 from episodic.application.logical_graph import LogicalGraphService
 from episodic.application.hybrid_retrieval import HybridRetrievalService
@@ -53,6 +62,7 @@ from episodic.ports.encoders import (
     AlignedTextEncoder,
     EpisodeTextEncoder,
     ImageEncoder,
+    PassageReranker,
 )
 from episodic.ports.repository import EpisodicRepository, EvidenceStore
 from episodic.ports.vector_index import VectorIndex
@@ -212,6 +222,8 @@ class AppContainer:
     capture_service: CaptureService
     job_runner: JobRunner
     activity_log: ActivityLog
+    passage_search: Optional[PassageSearchService] = None
+    index_maintenance: Optional[IndexMaintenanceService] = None
     watcher: Optional[InboxWatcher] = None
 
     def close(self) -> None:
@@ -336,6 +348,9 @@ def create_app_container(
             dimension=config.nomic_dim,
             cache_dir=str(config.model_cache_path),
             threads=config.encoder_threads,
+            document_prefix=config.nomic_document_prefix,
+            query_prefix=config.nomic_query_prefix,
+            batch_size=config.encoder_batch_size,
         )
         image_encoder = FastEmbedImageEncoder(
             model_id=config.clip_vision_model,
@@ -374,6 +389,32 @@ def create_app_container(
         image_encoder=image_encoder,
         default_text_threshold=config.default_text_threshold,
         default_image_threshold=config.default_image_threshold,
+        rrf_k=config.rrf_k,
+    )
+
+    reranker: Optional[PassageReranker] = None
+    if config.rerank_model:
+        reranker = (
+            FakePassageReranker()
+            if use_fake_encoders
+            else FastEmbedPassageReranker(
+                model_id=config.rerank_model,
+                cache_dir=str(config.model_cache_path),
+                threads=config.rerank_threads or None,
+            )
+        )
+    passage_search_svc = PassageSearchService(
+        repository=repo,
+        vector_index=vector_index,
+        text_encoder=text_encoder,
+        reranker=reranker,
+        candidates=config.passage_candidates,
+        rerank_candidates=config.rerank_candidates,
+        rerank_max_chars=config.rerank_max_chars,
+        rerank_min_score=config.rerank_min_score,
+        agreement_rank=config.passage_agreement_rank,
+        max_episodes=config.passage_max_episodes,
+        per_episode=config.passage_per_episode,
         rrf_k=config.rrf_k,
     )
 
@@ -445,8 +486,25 @@ def create_app_container(
         capture_service=capture_svc,
         job_runner=job_runner,
         activity_log=ActivityLog(repo, config.activity_log_max_rows, config.activity_log_max_passes),
+        passage_search=passage_search_svc,
+        index_maintenance=IndexMaintenanceService(
+            repo, vector_index, lifecycle_svc, indexing_worker, _index_profile(config)
+        ),
         watcher=watcher,
     )
+
+
+def _index_profile(config: EpisodicConfig) -> dict:
+    return index_profile(
+        text_model=config.nomic_model,
+        document_prefix=config.nomic_document_prefix,
+        image_model=config.clip_vision_model,
+    )
+
+
+def submit_reindex(container: "AppContainer", trigger: str):
+    """Encola el reindexado en la cola de trabajos (la misma que las capturas)."""
+    return container.job_runner.submit(REINDEX_JOB_KIND, trigger, REINDEX_STAGES)
 
 
 def create_inbox_watcher(
@@ -491,19 +549,21 @@ def _create_job_runner(
         text_encoder=text_encoder,
         image_encoder=image_encoder,
     )
+    lifecycle = LifecycleService(
+        repository=repo,
+        evidence_store=store,
+        vector_index=vector_index,
+        nomic_model_id=config.nomic_model,
+        clip_vision_model_id=config.clip_vision_model,
+    )
+    maintenance = IndexMaintenanceService(repo, vector_index, lifecycle, worker, _index_profile(config))
     processing = CaptureProcessingService(
         repository=repo,
         windowing=WindowingService(repo),
         extraction=build_observation_extraction(config, repo, store),
         events=EventDerivationService(repo),
         composition=DeterministicEpisodeComposer(repo),
-        lifecycle=LifecycleService(
-            repository=repo,
-            evidence_store=store,
-            vector_index=vector_index,
-            nomic_model_id=config.nomic_model,
-            clip_vision_model_id=config.clip_vision_model,
-        ),
+        lifecycle=lifecycle,
         indexing_worker=worker,
     )
 
@@ -511,12 +571,14 @@ def _create_job_runner(
         return processing.process(job.target_id, on_stage=report).to_dict()
 
     def describe(job):
+        if job.job_type == REINDEX_JOB_KIND:
+            return f"reindexado de la memoria ({job.target_id})"
         capture = repo.get_capture(job.target_id) if job.job_type == CAPTURE_JOB_KIND else None
         return f"captura «{capture.title}»" if capture else f"{job.job_type} {job.target_id}"
 
     return JobRunner(
         repo,
-        {CAPTURE_JOB_KIND: process_capture},
+        {CAPTURE_JOB_KIND: process_capture, REINDEX_JOB_KIND: maintenance.run},
         activity=ActivityLog(repo, config.activity_log_max_rows, config.activity_log_max_passes),
         describe=describe,
     )

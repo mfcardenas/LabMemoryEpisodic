@@ -44,6 +44,41 @@ class SearchRequest(BaseModel):
         return self
 
 
+class PassageSearchRequest(BaseModel):
+    """Búsqueda por pasajes: los momentos que responden, agrupados por episodio."""
+
+    text_query: str = Field(..., min_length=1, description="Pregunta o términos a buscar")
+    environment_filter: Optional[List[str]] = None
+    source_filter: Optional[List[str]] = None
+    modality_filter: Optional[List[str]] = None
+    observation_type_filter: Optional[List[str]] = None
+    start_time: Optional[datetime] = Field(None, description="Inicio de intervalo ISO UTC")
+    end_time: Optional[datetime] = Field(None, description="Fin de intervalo ISO UTC")
+    max_episodes: Optional[int] = Field(None, ge=1, le=100)
+    per_episode: Optional[int] = Field(None, ge=1, le=50)
+    rerank: bool = Field(True, description="Reordenar con el cross-encoder configurado")
+    rerank_min_score: Optional[float] = Field(
+        None,
+        description="Umbral del reordenador solo para esta consulta; null explícito: sin umbral; "
+        "omitido: el de EPIGRAPH_RERANK_MIN_SCORE",
+    )
+    agreement_rank: Optional[int] = Field(
+        None,
+        ge=0,
+        le=1000,
+        description="Se conserva bajo el umbral si ambas vías lo ponen entre sus N primeros; 0: nunca; "
+        "omitido: EPIGRAPH_PASSAGE_AGREEMENT_RANK",
+    )
+
+    @model_validator(mode="after")
+    def validate_interval(self) -> "PassageSearchRequest":
+        if (self.start_time is None) != (self.end_time is None):
+            raise ValueError("start_time y end_time deben enviarse juntos")
+        if self.start_time is not None and self.start_time >= self.end_time:
+            raise ValueError("start_time debe ser anterior a end_time")
+        return self
+
+
 class AnnotationCreateRequest(BaseModel):
     content: str = Field(..., description="Contenido de la anotación")
     author: str = Field("user", description="Autor del enriquecimiento")
