@@ -516,6 +516,85 @@ CREATE VIRTUAL TABLE passage_index USING fts5(
 );
 """
 
+MIGRATION_V10 = """
+-- El evento como unidad de consulta: columnas propias (episodio, activo,
+-- orden, posición, título, revisión) rellenadas desde el payload existente.
+-- El episodio se deduce de la observación de la que nació el evento.
+ALTER TABLE events ADD COLUMN episode_id TEXT REFERENCES episodes(id) ON DELETE SET NULL;
+ALTER TABLE events ADD COLUMN asset_id TEXT;
+ALTER TABLE events ADD COLUMN sequence_number INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE events ADD COLUMN start_offset_seconds REAL;
+ALTER TABLE events ADD COLUMN end_offset_seconds REAL;
+ALTER TABLE events ADD COLUMN title TEXT NOT NULL DEFAULT '';
+ALTER TABLE events ADD COLUMN revision INTEGER NOT NULL DEFAULT 1;
+UPDATE events SET
+    asset_id = json_extract(payload_json, '$.asset_id'),
+    sequence_number = coalesce(json_extract(payload_json, '$.sequence_number'), 0),
+    start_offset_seconds = json_extract(payload_json, '$.start_offset_seconds'),
+    end_offset_seconds = json_extract(payload_json, '$.end_offset_seconds'),
+    title = coalesce(json_extract(payload_json, '$.title'), ''),
+    revision = coalesce(json_extract(payload_json, '$.revision'), 1),
+    episode_id = (
+        SELECT o.episode_id FROM observations o
+        WHERE o.id = json_extract(events.payload_json, '$.metadata.observation_ids[0]')
+    );
+UPDATE events SET payload_json = json_set(payload_json, '$.episode_id', episode_id)
+WHERE episode_id IS NOT NULL;
+CREATE INDEX idx_events_episode ON events(episode_id, sequence_number);
+CREATE INDEX idx_events_asset ON events(asset_id, start_offset_seconds);
+
+-- Pasajes como tabla propia: lo que se indexa y lo que se muestra, con sus
+-- filtros en columnas; el índice de texto completo es de contenido externo
+-- sobre ella y se mantiene con disparadores. Sigue siendo una proyección:
+-- la escribe la indexación y se reconstruye desde eventos y observaciones.
+DROP TABLE passage_index;
+CREATE TABLE passages (
+    pid INTEGER PRIMARY KEY,
+    id TEXT NOT NULL UNIQUE,
+    kind TEXT NOT NULL,
+    episode_id TEXT NOT NULL,
+    environment_id TEXT,
+    source_id TEXT,
+    modality TEXT,
+    asset_id TEXT,
+    start_time TEXT,
+    end_time TEXT,
+    start_ms INTEGER,
+    end_ms INTEGER,
+    start_offset_seconds REAL,
+    end_offset_seconds REAL,
+    page_number INTEGER,
+    sequence_number INTEGER,
+    event_id TEXT,
+    observation_id TEXT,
+    title TEXT NOT NULL DEFAULT '',
+    text TEXT NOT NULL,
+    model TEXT,
+    keyframes INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX idx_passages_episode ON passages(episode_id);
+CREATE INDEX idx_passages_env_time ON passages(environment_id, start_ms);
+CREATE VIRTUAL TABLE passage_index USING fts5(
+    text,
+    title,
+    content = 'passages',
+    content_rowid = 'pid',
+    tokenize = 'unicode61 remove_diacritics 2'
+);
+CREATE TRIGGER passages_ai AFTER INSERT ON passages BEGIN
+    INSERT INTO passage_index(rowid, text, title) VALUES (new.pid, new.text, new.title);
+END;
+CREATE TRIGGER passages_ad AFTER DELETE ON passages BEGIN
+    INSERT INTO passage_index(passage_index, rowid, text, title)
+    VALUES ('delete', old.pid, old.text, old.title);
+END;
+CREATE TRIGGER passages_au AFTER UPDATE ON passages BEGIN
+    INSERT INTO passage_index(passage_index, rowid, text, title)
+    VALUES ('delete', old.pid, old.text, old.title);
+    INSERT INTO passage_index(rowid, text, title) VALUES (new.pid, new.text, new.title);
+END;
+"""
+
 MIGRATIONS: List[Tuple[int, str]] = [
     (1, MIGRATION_V1),
     (2, MIGRATION_V2),
@@ -526,6 +605,7 @@ MIGRATIONS: List[Tuple[int, str]] = [
     (7, MIGRATION_V7),
     (8, MIGRATION_V8),
     (9, MIGRATION_V9),
+    (10, MIGRATION_V10),
 ]
 
 

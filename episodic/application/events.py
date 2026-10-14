@@ -60,6 +60,9 @@ class EventDerivationService:
             asset_events = attach_speech(asset_events, speech, audio_offset_seconds)
             for event in asset_events:
                 self.repository.save_event(event)
+            # Un reprocesado con otro modelo deja eventos de la versión anterior:
+            # el activo solo conserva los vigentes.
+            self.repository.delete_events_for_asset(asset_id, [event.id for event in asset_events])
             events.extend(asset_events)
         return events
 

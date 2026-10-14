@@ -7,7 +7,7 @@ from fastapi.testclient import TestClient
 
 from episodic.bootstrap import create_app_container
 from episodic.config import EpisodicConfig
-from episodic.domain.passages import passage_point_id
+from episodic.domain.passages import passage_from_observation, passage_point_id
 from episodic.domain.retrieval import HybridSearchFilters
 from episodic.domain.times import Interval
 from episodic.domain.types import RepresentationSpace
@@ -79,13 +79,12 @@ def test_episode_search_never_returns_passage_points(atlas) -> None:
 def test_reindex_drops_passages_that_no_longer_exist(atlas) -> None:
     episode = next(item for item in atlas.repository.list_episodes(limit=100)[0] if item.external_id == "ATLAS-EP-010")
     observations = atlas.repository.list_observations_for_episode(episode.id)
-    keep = observations[0]
-    removed = atlas.repository.replace_episode_passages(
-        episode.id, [(keep.id, keep.observation_type, "", keep.content)]
-    )
+    keep = passage_from_observation(observations[0], episode)
+    removed = atlas.repository.replace_episode_passages(episode.id, [keep])
     assert sorted(removed) == sorted(item.id for item in observations[1:])
+    assert atlas.repository.get_passages([keep.id])[keep.id].text == keep.text
     assert atlas.repository.delete_episode_passages(episode.id) == [keep.id]
-    assert passage_point_id(keep.id) == f"ps_{keep.id}"
+    assert keep.point_id == passage_point_id(keep.id) == f"ps_{keep.id}"
 
 
 def test_passage_search_api(atlas) -> None:

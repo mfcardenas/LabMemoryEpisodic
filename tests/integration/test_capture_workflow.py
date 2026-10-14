@@ -89,6 +89,15 @@ def test_joint_upload_becomes_one_episode_with_all_assets(app) -> None:
     assert keyframe.status_code == 200
     assert keyframe.headers["content-type"] == "image/jpeg"
     assert client.get(f"/api/memory/events/{first['id']}/keyframes/99").status_code == 404
+    # Los eventos pertenecen al episodio y son la unidad de búsqueda: la
+    # consulta devuelve el evento, con su fotograma y su posición en el vídeo.
+    assert all(event["episode_id"] == episode_id for event in events)
+    found = client.post("/api/passage-search", json={"text_query": first["title"], "rerank": False}).json()
+    assert found["groups"][0]["episode"]["id"] == episode_id
+    hits = {hit["event_id"]: hit for hit in found["groups"][0]["passages"]}
+    assert first["id"] in hits and hits[first["id"]]["kind"] == "video_event"
+    assert hits[first["id"]]["keyframes"] >= 1 and hits[first["id"]]["start_offset_seconds"] == 0.0
+    assert hits[first["id"]]["observation_id"] == first["metadata"]["observation_ids"][0]
     # Vídeo y audio comparten la hora declarada: quedan alineados.
     assert datetime.fromisoformat(detail["episode"]["start_time"]) == datetime(
         2026, 10, 10, 7, 0, tzinfo=timezone.utc

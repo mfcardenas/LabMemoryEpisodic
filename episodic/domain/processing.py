@@ -139,6 +139,10 @@ class Event(SerializableDomainModel):
     summary: str = ""
     attributes: dict[str, Any] = field(default_factory=dict)
     keyframes: list[dict[str, Any]] = field(default_factory=list)
+    # Episodio al que pertenece (se fija al componer la captura) y revisión
+    # del texto generado: regenerar la descripción crea revision + 1.
+    episode_id: str | None = None
+    revision: int = 1
 
     def __post_init__(self) -> None:
         validate_identifier(self.id)

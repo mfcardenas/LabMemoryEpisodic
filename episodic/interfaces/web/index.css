@@ -644,6 +644,11 @@ button.speech-time:hover { outline: 2px solid var(--signal); }
 .passage-group > header small { color: var(--muted); font-size: 11px; }
 .passage-hit { display: grid; gap: 6px; padding: 12px 16px; border-top: 1px dashed var(--line); }
 .passage-hit:first-of-type { border-top: 0; }
+.passage-hit.has-thumb { grid-template-columns: 96px minmax(0, 1fr); gap: 12px; align-items: start; }
+.passage-body { display: grid; gap: 6px; min-width: 0; }
+.passage-thumb { padding: 0; border: 1px solid var(--ink); background: var(--paper); cursor: pointer; line-height: 0; }
+.passage-thumb img { width: 96px; height: 96px; object-fit: cover; display: block; }
+.passage-thumb:hover { box-shadow: 3px 3px 0 rgba(21,24,19,.25); }
 .passage-hit > header { display: flex; flex-wrap: wrap; gap: 6px 10px; align-items: center; }
 .passage-hit > header b { font-size: 13px; }
 .passage-hit time { font: 10px var(--mono); color: var(--muted); }

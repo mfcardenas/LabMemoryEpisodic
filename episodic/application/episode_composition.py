@@ -598,6 +598,9 @@ class DeterministicEpisodeComposer:
                     self.repository.save_observation(
                         replace(observation, episode_id=expected_episode_id)
                     )
+            # Los eventos nacidos de esas observaciones pertenecen al mismo episodio.
+            for episode in episodes:
+                self.repository.link_events_to_episode(episode.id, list(episode.observation_ids))
             self.repository.commit_transaction()
         except Exception:
             self.repository.rollback_transaction()

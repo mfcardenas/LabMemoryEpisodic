@@ -154,7 +154,19 @@ Objetivo: confirmar el trabajo pendiente y poder **medir** cada mejora.
 
 Aceptación: línea base publicada; evaluación reproducible en un comando.
 
-### Fase R1 — El evento como unidad de recuperación (3–4 días)
+### Fase R1 — El evento como unidad de recuperación (3–4 días) · ✅ hecha (2026-10-14)
+
+Hecho: migración v10 (`events` con `episode_id`, `asset_id`, orden, offsets,
+título, `revision`; tabla `passages` + FTS5 de contenido externo con
+disparadores); `domain/passages.py` con `Passage`, `event_passage_text`,
+`episode_passages` (evento = pasaje; habla adherida y observación de origen
+no se duplican); `search_passages` con filtros antes del límite; hidratación
+en lote desde `passages`; `list_events`, `get_events`, `get_event_neighbors`,
+`link_events_to_episode`, `delete_events_for_asset`; indexación por lotes;
+`INDEX_FORMAT_VERSION=2`; front muestra el evento con miniatura y ya no llama
+a `hybrid-search` ni a `index/status` por consulta. Banco: 88 % → 92 %
+(`docs/evaluacion.md`). No hecho (pasa a S): colección separada, índices de
+payload nuevos.
 
 Objetivo: que lo buscable sea lo que el usuario ve (eventos con título, resumen,
 descripción, actores, objetos, texto visible y habla), con filtros reales en

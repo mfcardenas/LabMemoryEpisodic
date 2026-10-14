@@ -1,23 +1,113 @@
 """Pasajes: la unidad mínima de búsqueda dentro de un episodio.
 
-Un pasaje es una observación con contenido propio (un tramo de vídeo
-descrito, una frase transcrita, un fragmento de documento) y su hora
-absoluta. Se indexa por separado para que una pregunta fina no compita con
-todo el episodio, y cada resultado apunta al momento exacto que lo respalda.
+Un pasaje es un **evento** (tramo de vídeo descrito, con su título, resumen,
+actores, objetos, texto visible y lo que se dijo mientras tanto) o una
+observación con contenido propio que no pertenece a ningún evento (una frase
+transcrita fuera del vídeo, un fragmento de documento), siempre con su hora
+absoluta y su posición en el archivo. Se indexa por separado para que una
+pregunta fina no compita con todo el episodio, y cada resultado apunta al
+momento exacto que lo respalda.
+
+La tabla `passages` de SQLite guarda estos objetos tal cual (proyección,
+como Qdrant): la búsqueda hidrata desde ella sin volver a las observaciones.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any, Optional
+from typing import Any, Iterable, Optional
 
 from episodic.domain.entities import Observation
+from episodic.domain.processing import Event
 
-# Observaciones sin contenido que buscar (solo datos técnicos del fichero).
-NON_PASSAGE_TYPES = frozenset({"audio_segment"})
+# Observaciones sin contenido que buscar (solo datos técnicos del fichero o
+# estados de proceso).
+NON_PASSAGE_TYPES = frozenset(
+    {"audio_segment", "video_interval", "image_frame_metadata", "document_page_status", "mock_observation"}
+)
+# Tipo de observación que da lugar a un evento; cuando el evento existe, es el
+# evento (más rico) el que se indexa, no la observación.
+VIDEO_EVENT_TYPE = "video_event"
+SPEECH_TYPE = "speech_segment"
 
 # Etiquetas de la descripción visual que aportan términos buscables.
-_VISUAL_LIST_KEYS = ("objects", "actions", "people", "tools", "entities")
+_VISUAL_LIST_KEYS = ("objects", "actions", "actors", "people", "tools", "entities", "visible_text")
+
+
+@dataclass
+class Passage:
+    """Lo que se indexa y lo que se devuelve: autosuficiente para mostrarse."""
+
+    id: str                      # id del evento o de la observación
+    kind: str                    # video_event | speech_segment | document_text_fragment | …
+    episode_id: str
+    text: str
+    title: str = ""
+    environment_id: Optional[str] = None
+    source_id: Optional[str] = None
+    modality: Optional[str] = None
+    asset_id: Optional[str] = None
+    start_time: Optional[datetime] = None
+    end_time: Optional[datetime] = None
+    start_offset_seconds: Optional[float] = None
+    end_offset_seconds: Optional[float] = None
+    page_number: Optional[int] = None
+    sequence_number: Optional[int] = None
+    event_id: Optional[str] = None
+    observation_id: Optional[str] = None
+    model: Optional[str] = None
+    keyframes: int = 0
+
+    @property
+    def point_id(self) -> str:
+        return passage_point_id(self.id)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "passage_id": self.id,
+            "kind": self.kind,
+            # Compatibilidad con el front: el tipo de pasaje.
+            "observation_type": self.kind,
+            "event_id": self.event_id,
+            "observation_id": self.observation_id,
+            "episode_id": self.episode_id,
+            "modality": self.modality,
+            "title": self.title,
+            "text": self.text,
+            "start_time": _iso(self.start_time),
+            "end_time": _iso(self.end_time),
+            "start_offset_seconds": self.start_offset_seconds,
+            "end_offset_seconds": self.end_offset_seconds,
+            "page_number": self.page_number,
+            "sequence_number": self.sequence_number,
+            "source_id": self.source_id,
+            "environment_id": self.environment_id,
+            "asset_id": self.asset_id,
+            "keyframes": self.keyframes,
+            "model": self.model,
+        }
+
+
+def passage_point_id(passage_id: str) -> str:
+    return f"ps_{passage_id}"
+
+
+# -- Construcción -------------------------------------------------------------
+
+
+def event_passage_text(event: Event) -> str:
+    """Todo lo legible del evento. Lo más discriminante va primero (título,
+    resumen, lo que se dijo, texto visible, objetos, acciones, actores) y la
+    descripción larga después: el reordenador solo lee el principio."""
+    attributes = event.attributes or {}
+    parts: list[str] = [event.title, event.summary]
+    for entry in attributes.get("speech") or ():
+        parts.append(str(entry.get("text") if isinstance(entry, dict) else entry))
+    for key in _VISUAL_LIST_KEYS:
+        for item in attributes.get(key) or ():
+            parts.append(_flatten(item))
+    parts += [event.description, str(attributes.get("scene") or ""), str(attributes.get("changes_from_previous") or "")]
+    return _join(parts)
 
 
 def passage_text(observation: Observation) -> str:
@@ -34,20 +124,88 @@ def passage_text(observation: Observation) -> str:
             for item in visual.get(key) or ():
                 parts.append(_flatten(item))
         parts += [str(visual.get(key) or "") for key in ("scene", "changes_from_previous")]
-    seen: set[str] = set()
-    unique = []
-    for part in (part.strip() for part in parts):
-        if part and part not in seen:
-            seen.add(part)
-            unique.append(part)
-    return "\n".join(unique)
+    return _join(parts)
 
 
-def _flatten(item: Any) -> str:
-    if isinstance(item, dict):
-        values = [item.get("label"), *(item.get("attributes") or []), item.get("description")]
-        return " · ".join(str(value) for value in values if value)
-    return str(item)
+def passage_from_event(event: Event, episode: Any) -> Optional[Passage]:
+    text = event_passage_text(event)
+    if not text:
+        return None
+    generation = (event.metadata or {}).get("generation") or {}
+    speech = (event.attributes or {}).get("speech") or []
+    return Passage(
+        id=event.id,
+        kind=VIDEO_EVENT_TYPE,
+        episode_id=episode.id,
+        text=text,
+        title=event.title,
+        environment_id=event.environment_id or (episode.environment_ids[0] if episode.environment_ids else None),
+        source_id=event.source_id,
+        modality="video",
+        asset_id=event.asset_id,
+        start_time=event.start_time,
+        end_time=event.end_time,
+        start_offset_seconds=_number(event.start_offset_seconds),
+        end_offset_seconds=_number(event.end_offset_seconds),
+        sequence_number=event.sequence_number,
+        event_id=event.id,
+        observation_id=next(iter((event.metadata or {}).get("observation_ids") or []), None),
+        model=generation.get("vision_model") or (f"+{generation.get('speech_model')}" if speech else None),
+        keyframes=len(event.keyframes or []),
+    )
+
+
+def passage_from_observation(observation: Observation, episode: Any) -> Optional[Passage]:
+    text = passage_text(observation)
+    if not text:
+        return None
+    attributes = observation.attributes or {}
+    generation = attributes.get("generation") or {}
+    start, end = passage_span(observation, episode)
+    page = attributes.get("page_number")
+    return Passage(
+        id=observation.id,
+        kind=observation.observation_type,
+        episode_id=episode.id,
+        text=text,
+        title=passage_title(observation),
+        environment_id=observation.environment_id or (episode.environment_ids[0] if episode.environment_ids else None),
+        source_id=observation.source_id,
+        modality=observation.modality,
+        asset_id=observation.asset_id,
+        start_time=start,
+        end_time=end,
+        start_offset_seconds=_number(attributes.get("start_offset_seconds")),
+        end_offset_seconds=_number(attributes.get("end_offset_seconds")),
+        page_number=int(page) if isinstance(page, (int, float)) else None,
+        sequence_number=_int(attributes.get("segment_index")),
+        observation_id=observation.id,
+        model=generation.get("vision_model") or generation.get("speech_model"),
+        keyframes=len(attributes.get("keyframes") or []),
+    )
+
+
+def episode_passages(episode: Any, events: Iterable[Event], observations: Iterable[Observation]) -> list[Passage]:
+    """Los pasajes de un episodio: sus eventos y las observaciones con
+    contenido que ningún evento ya recoge (habla adherida, tramo descrito)."""
+    passages: list[Passage] = []
+    covered: set[str] = set()
+    for event in sorted(events, key=lambda item: (item.sequence_number, item.start_time or datetime.min)):
+        passage = passage_from_event(event, episode)
+        if passage is None:
+            continue
+        passages.append(passage)
+        covered.update((event.metadata or {}).get("observation_ids") or [])
+        for entry in (event.attributes or {}).get("speech") or ():
+            if isinstance(entry, dict) and entry.get("observation_id"):
+                covered.add(entry["observation_id"])
+    for observation in observations:
+        if observation.id in covered:
+            continue
+        passage = passage_from_observation(observation, episode)
+        if passage is not None:
+            passages.append(passage)
+    return passages
 
 
 def passage_title(observation: Observation) -> str:
@@ -73,8 +231,32 @@ def passage_span(observation: Observation, episode: Any = None) -> tuple[Optiona
     return None, None
 
 
-def passage_point_id(observation_id: str) -> str:
-    return f"ps_{observation_id}"
+def _flatten(item: Any) -> str:
+    if isinstance(item, dict):
+        values = [item.get("label"), *(item.get("attributes") or []), item.get("description")]
+        return " · ".join(str(value) for value in values if value)
+    return str(item)
+
+
+def _join(parts: Iterable[str]) -> str:
+    seen: set[str] = set()
+    unique = []
+    for part in (str(part).strip() for part in parts):
+        if part and part not in seen:
+            seen.add(part)
+            unique.append(part)
+    return "\n".join(unique)
+
+
+def _number(value: Any) -> Optional[float]:
+    return float(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else None
+
+
+def _int(value: Any) -> Optional[int]:
+    return int(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else None
+
+
+# -- Resultados de búsqueda -----------------------------------------------------
 
 
 @dataclass
@@ -101,43 +283,33 @@ class PassageScores:
 
 @dataclass
 class PassageHit:
-    observation: Observation
-    text: str
+    passage: Passage
     scores: PassageScores
     snippet: str = ""
-    start_time: Optional[datetime] = None
-    end_time: Optional[datetime] = None
     # Tras reordenar: "threshold" (llega al umbral), "agreement" (ambas vías
     # coinciden) o None (descartado, o sin reordenar).
     kept_by: Optional[str] = None
 
     @property
+    def text(self) -> str:
+        return self.passage.text
+
+    @property
+    def episode_id(self) -> str:
+        return self.passage.episode_id
+
+    @property
     def offset_seconds(self) -> Optional[float]:
-        value = self.observation.attributes.get("start_offset_seconds")
-        return float(value) if isinstance(value, (int, float)) else None
+        return self.passage.start_offset_seconds
+
+    @property
+    def start_time(self) -> Optional[datetime]:
+        return self.passage.start_time
 
     def to_dict(self) -> dict[str, Any]:
-        obs = self.observation
-        attributes = obs.attributes
         return {
-            "observation_id": obs.id,
-            "episode_id": obs.episode_id,
-            "observation_type": obs.observation_type,
-            "modality": obs.modality,
-            "title": passage_title(obs),
-            "text": self.text,
+            **self.passage.to_dict(),
             "snippet": self.snippet,
-            "start_time": _iso(self.start_time),
-            "end_time": _iso(self.end_time),
-            "start_offset_seconds": self.offset_seconds,
-            "end_offset_seconds": attributes.get("end_offset_seconds"),
-            "page_number": attributes.get("page_number"),
-            "source_id": obs.source_id,
-            "environment_id": obs.environment_id,
-            "asset_id": obs.asset_id,
-            "keyframes": len(attributes.get("keyframes") or []),
-            "model": (attributes.get("generation") or {}).get("vision_model")
-            or (attributes.get("generation") or {}).get("speech_model"),
             "scores": self.scores.to_dict(),
             "kept_by": self.kept_by,
         }

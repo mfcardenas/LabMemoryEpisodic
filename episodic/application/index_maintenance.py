@@ -36,7 +36,7 @@ TRIGGER_MANUAL = "manual"
 PROFILE_KEY = "index_profile"
 # Súbase al cambiar el texto que se indexa (episode_index_text o
 # passage_text): obliga a reindexar lo existente al arrancar.
-INDEX_FORMAT_VERSION = 1
+INDEX_FORMAT_VERSION = 2  # v2: el evento es el pasaje (actores, texto visible, habla)
 
 _PROFILE_LABELS = {
     "text_model": "modelo de texto",

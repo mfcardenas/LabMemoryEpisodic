@@ -1237,19 +1237,18 @@ document.addEventListener("DOMContentLoaded", () => {
     event.preventDefault(); const root = $("#search-results"); root.innerHTML = '<div class="empty roomy">Buscando por significado y por palabras en cada pasaje…</div>';
     const text = $("#search-query").value.trim();
     const json = body => ({ method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(body) });
-    const indexStatus = api("/api/index/status").catch(() => null);
-    const passages = api("/api/passage-search", json({ text_query: text, ...searchFilters(), rerank: $("#input-rerank").checked, ...thresholdOverrides() }));
-    const legacy = api("/api/hybrid-search", json({ text_query: text, intent: "semantic_search", ...searchFilters(), expand_relations: true, limit: 10 })).catch(() => null);
-    try { const data = await passages; state.indexStatus = await indexStatus; renderPassageSearch(data, await legacy); }
+    // El estado del índice se carga con la vista y tras reindexar, no en cada consulta.
+    if (!state.indexStatus) state.indexStatus = await api("/api/index/status").catch(() => null);
+    try { renderPassageSearch(await api("/api/passage-search", json({ text_query: text, ...searchFilters(), rerank: $("#input-rerank").checked, ...thresholdOverrides() }))); }
     catch (error) { root.innerHTML = `<div class="empty roomy"><b>Error de recuperación</b><span>${esc(error.message)}</span></div>`; }
   });
 
-  const passageTypeLabel = hit => ({ video_event: "Vídeo · tramo", speech_segment: "Habla", document_text_fragment: "Documento" })[hit.observation_type] || observationLabel(hit.observation_type);
+  const passageTypeLabel = hit => ({ video_event: "Evento", speech_segment: "Habla", document_text_fragment: "Documento", text_fragment: "Texto" })[hit.kind] || observationLabel(hit.kind);
   // El índice marca los términos encontrados con los caracteres de control 2 y 3.
   const marked = text => esc(text).replace(/\u0002/g, "<mark>").replace(/\u0003/g, "</mark>");
   const clip = (text, size = 320) => text.length > size ? `${text.slice(0, size).trimEnd()}…` : text;
 
-  function renderPassageSearch(data, legacy) {
+  function renderPassageSearch(data) {
     const root = $("#search-results");
     const rerank = data.rerank || {};
     const rules = `umbral ${rerank.min_score ?? "ninguno"} · acuerdo top ${rerank.agreement_rank || "no"}`;
@@ -1261,8 +1260,12 @@ document.addEventListener("DOMContentLoaded", () => {
     const renderGroups = list => list.map((group, index) => {
       const episode = group.episode;
       const hits = group.passages.map(hit => {
-        const seekable = hit.start_offset_seconds != null && (hit.observation_type === "video_event" || hit.modality === "video");
-        const where = [hit.start_time ? fmtTime(hit.start_time) : "", hit.start_offset_seconds != null ? `${fmtClock(hit.start_offset_seconds)} en el archivo` : "", hit.page_number ? `pág. ${hit.page_number}` : ""].filter(Boolean).join(" · ");
+        const seekable = hit.start_offset_seconds != null && (hit.kind === "video_event" || hit.modality === "video");
+        const where = [hit.start_time ? fmtTime(hit.start_time) : "", hit.start_offset_seconds != null ? `${fmtClock(hit.start_offset_seconds)}${hit.end_offset_seconds != null ? `–${fmtClock(hit.end_offset_seconds)}` : ""} en el ${hit.kind === "video_event" ? "vídeo" : "archivo"}` : "", hit.page_number ? `pág. ${hit.page_number}` : ""].filter(Boolean).join(" · ");
+        const seekAttrs = `data-passage-episode="${esc(hit.episode_id)}" data-passage-observation="${esc(hit.observation_id || "")}" ${seekable ? `data-passage-seek="${esc(hit.start_offset_seconds)}"` : ""}`;
+        const thumb = hit.kind === "video_event" && hit.event_id && hit.keyframes > 0
+          ? `<button type="button" class="passage-thumb" ${seekAttrs} title="Ver en el vídeo"><img loading="lazy" alt="" src="/api/memory/events/${encodeURIComponent(hit.event_id)}/keyframes/0"></button>`
+          : "";
         const why = [
           hit.scores.dense_rank ? `<span class="dense" title="Similitud ${Number(hit.scores.dense).toFixed(3)}">Significado #${hit.scores.dense_rank}</span>` : "",
           hit.scores.lexical_rank ? `<span class="lexical" title="BM25 ${Number(hit.scores.lexical).toFixed(2)}">Palabras #${hit.scores.lexical_rank}</span>` : "",
@@ -1270,12 +1273,12 @@ document.addEventListener("DOMContentLoaded", () => {
           hit.kept_by === "agreement" ? `<span class="agreement" title="Bajo el umbral, pero significado y palabras coinciden entre sus ${rerank.agreement_rank} primeros">Ambas vías coinciden</span>` : "",
           hit.model ? `<span title="Contenido generado por un modelo; no verificado">${esc(hit.model)}</span>` : "",
         ].join("");
-        return `<article class="passage-hit">
-          <header><span class="modality-tag ${esc(hit.modality)}">${esc(passageTypeLabel(hit))}</span>${hit.title ? `<b>${esc(hit.title)}</b>` : ""}<time>${esc(where)}</time></header>
+        return `<article class="passage-hit${thumb ? " has-thumb" : ""}">${thumb}<div class="passage-body">
+          <header><span class="modality-tag ${esc(hit.modality || "")}">${esc(passageTypeLabel(hit))}</span>${hit.title ? `<b>${esc(hit.title)}</b>` : ""}<time>${esc(where)}</time></header>
           <p class="passage-text">${hit.snippet ? marked(hit.snippet) : esc(clip(hit.text))}</p>
-          <footer><span class="passage-why">${why}</span><button type="button" class="button-mini" data-passage-episode="${esc(hit.episode_id)}" data-passage-observation="${esc(hit.observation_id)}" ${seekable ? `data-passage-seek="${esc(hit.start_offset_seconds)}"` : ""}>Ver en el episodio${seekable ? ` ▶ ${fmtClock(hit.start_offset_seconds)}` : ""}</button></footer>
+          <footer><span class="passage-why">${why}</span><button type="button" class="button-mini" ${seekAttrs}>Ver en el episodio${seekable ? ` ▶ ${fmtClock(hit.start_offset_seconds)}` : ""}</button></footer>
           ${hit.text.length > 320 || hit.snippet ? `<details><summary>Texto completo</summary>${paragraphs(hit.text)}</details>` : ""}
-        </article>`;
+        </div></article>`;
       }).join("");
       const env = (episode.environment_ids || []).map(environmentLabel).join(", ");
       return `<section class="passage-group"><header><span class="result-rank">${index + 1}</span><div><h3>${esc(episode.title || episode.external_id || episode.id)}</h3><small>${esc([env, fmtInterval(episode)].filter(Boolean).join(" · "))}</small></div><button type="button" class="button ghost" data-passage-episode="${esc(episode.id)}">Abrir episodio</button></header>${hits}</section>`;
@@ -1291,13 +1294,10 @@ document.addEventListener("DOMContentLoaded", () => {
       : data.indexed_passages === 0
       ? `<div class="empty roomy index-warning"><b>No hay pasajes indexados</b><span>${index && !index.up_to_date ? esc(index.reasons.join("; ")) + ". " : ""}Se reindexa solo al arrancar el servidor; también puede lanzarlo con «Reindexar» en Vigilancia.</span></div>`
       : "";
-    const legacyCount = legacy?.results?.length || 0;
-    const legacyHtml = legacyCount ? `<details class="legacy-results"><summary>Episodios completos con todas sus evidencias (${legacyCount})</summary><div class="search-results" id="legacy-search-results"></div></details>` : "";
     const emptyText = data.indexed_passages === 0 ? ""
       : rerank.discarded_low_relevance ? '<div class="empty roomy">Hay candidatos, pero ninguno llega al umbral. Revísalos abajo, baja el umbral o desactiva «Reordenar».</div>'
       : '<div class="empty roomy">Ningún pasaje coincide. Prueba otras palabras o quita filtros; si acabas de cargar capturas, espera a que terminen de indexarse.</div>';
-    root.innerHTML = `${indexWarning}${summary}${data.groups.length ? groups : emptyText}${discardedHtml}${legacyHtml}`;
-    if (legacyCount) renderSearch(legacy, $("#legacy-search-results"));
+    root.innerHTML = `${indexWarning}${summary}${data.groups.length ? groups : emptyText}${discardedHtml}`;
     root.querySelectorAll("[data-passage-episode]").forEach(button => button.addEventListener("click", () => {
       const seek = button.dataset.passageSeek;
       openEpisode(button.dataset.passageEpisode, button.dataset.passageObservation
@@ -1305,14 +1305,6 @@ document.addEventListener("DOMContentLoaded", () => {
         : null);
     }));
   }
-
-  function renderSearch(data, root = $("#search-results")) {
-    if (!data.results.length) { root.innerHTML = '<div class="empty roomy">Sin candidatos. Comprueba que los episodios estén indexados.</div>'; return; }
-    root.innerHTML = data.results.map(item => `<article class="result-card"><div class="result-head"><span class="result-rank">${item.rank}</span><div><h3>${esc(item.episode.title)}</h3><small>${esc(item.match_kinds.join(" · "))}</small></div><div class="score-stack">${score("Semántica", item.scores.semantic, "semantic")}${score("Estructura", item.scores.structured)}${score("Tiempo", item.scores.temporal)}${score("Relación", item.scores.relational)}</div></div>
-      <div class="result-body"><div><b>Observaciones canónicas</b><ul>${item.observations.map(obs => `<li>${esc(obs.observation_type)} · ${esc(obs.description || obs.content)}</li>`).join("") || "<li>Sin observaciones</li>"}</ul></div><div class="evidence-list"><b>EVIDENCIAS</b><br>${item.evidence_references.map(ref => `${esc(ref.reference_kind)} · ${esc(shortId(ref.id))}`).join("<br>") || "Sin evidencia"}<br><br><button class="button ghost result-open" data-episode-id="${esc(item.episode.id)}">Inspeccionar episodio</button></div></div></article>`).join("");
-    root.querySelectorAll(".result-open").forEach(button => button.addEventListener("click", () => openEpisode(button.dataset.episodeId)));
-  }
-  function score(label, value, cls = "") { return value === null || value === undefined ? "" : `<span class="score ${cls}">${label} ${Number(value).toFixed(3)}</span>`; }
 
   // -- Vigilancia: carpetas, ficheros leídos, trabajos y registro ----------
 
@@ -1518,7 +1510,7 @@ document.addEventListener("DOMContentLoaded", () => {
   $("#index-reindex")?.addEventListener("click", async event => {
     if (!confirm("Se reconstruirán los vectores y los pasajes de toda la memoria en segundo plano. La búsqueda sigue funcionando mientras tanto. ¿Continuar?")) return;
     event.currentTarget.disabled = true;
-    try { await api("/api/index/reindex", {method: "POST"}); setTimeout(() => refreshWatch(false), 400); }
+    try { await api("/api/index/reindex", {method: "POST"}); state.indexStatus = null; setTimeout(() => refreshWatch(false), 400); }
     catch (error) { alert(error.message); }
   });
 

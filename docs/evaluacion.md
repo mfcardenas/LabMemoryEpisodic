@@ -25,6 +25,19 @@ Plan de fases y objetivos: `plan-agentes-consulta.md`.
 | Fecha | Commit | Modo | momento@1 | momento@5 | episodio@5 | abstención | falsas abst. | p50 ms | p95 ms |
 |---|---|---|---|---|---|---|---|---|---|
 | 2026-10-14 | `d08cace` | passages | 88 % | 88 % | 88 % | 50 % | 0 | 934 | 1008 |
+| 2026-10-14 | R1 | passages | 92 % | 92 % | 92 % | 50 % | 0 | 903 | 1068 |
+
+### 2026-10-14 · Fase R1: el evento como pasaje
+
+Índice reconstruido con formato v2 (40 pasajes: 16 eventos, frases sueltas y
+fragmentos de documento). Aciertan ya q15 (texto visible), q13/q14/q17
+(habla adherida al evento). Lección: con el texto del evento completo el
+reordenador descartaba los 20 candidatos de las preguntas sobre el habla
+(solo lee 800 caracteres y el habla iba al final); se reordenó el texto
+(título, resumen, habla, texto visible, objetos, acciones, actores y después
+la descripción larga) y pasaron de 76 % a 92 %. Pendientes: q05 (Mobil: la vía
+léxica lo encuentra, el reordenador lo descarta), q25 (fecha → R2), q27/q28
+(abstención con distractor → A2).
 
 ### 2026-10-14 · línea base (Fase 0)
 

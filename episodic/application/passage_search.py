@@ -21,13 +21,12 @@ from typing import Optional
 
 from episodic.application.temporal_index import absolute_interval_filter
 from episodic.domain.passages import (
+    Passage,
     PassageGroup,
     PassageHit,
     PassageScores,
     PassageSearchRun,
     order_score,
-    passage_span,
-    passage_text,
 )
 from episodic.domain.retrieval import HybridSearchFilters
 from episodic.domain.types import RepresentationSpace
@@ -186,18 +185,25 @@ class PassageSearchService:
             filters=vector_filters,
             limit=self.candidates,
         ):
-            observation_id = candidate.payload.get("observation_id") or candidate.target_id
-            dense.append((observation_id, candidate.score))
+            dense.append((candidate.payload.get("passage_id") or candidate.target_id, candidate.score))
         run.dense_candidates = len(dense)
 
-        # 2. Texto completo (BM25). Los filtros se aplican al hidratar.
+        # 2. Texto completo (BM25), con los mismos filtros antes del límite.
         lexical: list[tuple[str, float, str]] = []
         if run.lexical_query:
+            timeline = absolute_interval_filter(filters.interval)
             try:
                 lexical = [
-                    (obs_id, score, fragment)
-                    for obs_id, _episode_id, score, fragment in self.repository.search_passages(
-                        run.lexical_query, self.candidates
+                    (passage_id, score, fragment)
+                    for passage_id, _episode_id, score, fragment in self.repository.search_passages(
+                        run.lexical_query,
+                        self.candidates,
+                        environment_ids=tuple(filters.environment_ids),
+                        source_ids=tuple(filters.source_ids),
+                        modalities=tuple(filters.modalities),
+                        kinds=tuple(filters.observation_types),
+                        start_ms=timeline.get("timeline_query_start_ms"),
+                        end_ms=timeline.get("timeline_query_end_ms"),
                     )
                 ]
             except Exception as exc:  # una expresión rara no debe tumbar la búsqueda
@@ -218,25 +224,22 @@ class PassageSearchService:
             snippets[obs_id] = fragment
         run.fused_candidates = len(scores)
 
-        # 4. Hidratar desde SQLite (la verdad) y aplicar filtros.
+        # 4. Hidratar desde SQLite (en lote) y confirmar los filtros.
         hits: list[PassageHit] = []
         episodes: dict[str, object] = {}
-        for obs_id, entry in sorted(scores.items(), key=lambda item: item[1].fused, reverse=True):
-            observation = self.repository.get_observation(obs_id)
-            if observation is None or not observation.episode_id:
-                continue
-            if observation.episode_id not in episodes:
-                episodes[observation.episode_id] = self.repository.get_episode(observation.episode_id)
-            episode = episodes[observation.episode_id]
+        passages = self.repository.get_passages(list(scores))
+        for passage_id, entry in sorted(scores.items(), key=lambda item: item[1].fused, reverse=True):
+            passage = passages.get(passage_id)
+            if passage is None:
+                continue  # punto huérfano en Qdrant: el reindexado lo retira
+            if passage.episode_id not in episodes:
+                episodes[passage.episode_id] = self.repository.get_episode(passage.episode_id)
+            episode = episodes[passage.episode_id]
             if episode is None or not episode.is_visible:
                 continue
-            start, end = passage_span(observation, episode)
-            if not _matches(observation, episode, filters, start, end):
+            if not _matches(passage, episode, filters):
                 continue
-            text = passage_text(observation)
-            if not text:
-                continue
-            hits.append(PassageHit(observation, text, entry, snippets.get(obs_id, ""), start, end))
+            hits.append(PassageHit(passage, entry, snippets.get(passage_id, "")))
 
         # 5. Reordenar los mejores con el cross-encoder. Con reordenado solo
         # quedan los que puntuó: los que llegan al umbral o en los que ambas
@@ -291,28 +294,29 @@ def _kept_by(scores: PassageScores, min_score: Optional[float], agreement_rank: 
 def _group(hits: list[PassageHit], episodes: dict, max_episodes: int, per_episode: int) -> list[PassageGroup]:
     groups: dict[str, PassageGroup] = {}
     for hit in hits:
-        group = groups.get(hit.observation.episode_id)
+        group = groups.get(hit.episode_id)
         if group is None:
             if len(groups) >= max_episodes:
                 continue
-            group = groups[hit.observation.episode_id] = PassageGroup(episodes[hit.observation.episode_id])
+            group = groups[hit.episode_id] = PassageGroup(episodes[hit.episode_id])
         if len(group.passages) < per_episode:
             group.passages.append(hit)
     return list(groups.values())
 
 
-def _matches(observation, episode, filters: HybridSearchFilters, start, end) -> bool:
-    environments = {observation.environment_id} if observation.environment_id else set(episode.environment_ids)
+def _matches(passage: Passage, episode, filters: HybridSearchFilters) -> bool:
+    environments = {passage.environment_id} if passage.environment_id else set(episode.environment_ids)
     if filters.environment_ids and not environments & set(filters.environment_ids):
         return False
-    if filters.source_ids and observation.source_id not in filters.source_ids:
+    if filters.source_ids and passage.source_id not in filters.source_ids:
         return False
-    if filters.modalities and observation.modality not in filters.modalities:
+    if filters.modalities and passage.modality not in filters.modalities:
         return False
-    if filters.observation_types and observation.observation_type not in filters.observation_types:
+    if filters.observation_types and passage.kind not in filters.observation_types:
         return False
     interval = filters.interval
     if interval and interval.start and interval.end and interval.start.absolute and interval.end.absolute:
+        start, end = passage.start_time, passage.end_time
         if start is None or not (start < interval.end.absolute and (end or start) >= interval.start.absolute):
             return False
     return True

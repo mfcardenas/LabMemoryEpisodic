@@ -30,6 +30,7 @@ from episodic.domain.entities import (
     Source,
 )
 from episodic.domain.episodes import MicroEpisode
+from episodic.domain.passages import Passage
 from episodic.domain.processing import Event, ProcessingRun, ProcessingWindow
 from episodic.domain.provenance import Asset, Environment, EvidenceReference
 from episodic.domain.relations import Hypothesis, Relation
@@ -56,6 +57,10 @@ def _to_json(val: Any) -> str:
     if isinstance(val, (dict, list)):
         return json.dumps(val, ensure_ascii=False)
     return json.dumps(val, ensure_ascii=False)
+
+
+def _epoch_ms(value: Optional[datetime]) -> Optional[int]:
+    return int(value.timestamp() * 1000) if value else None
 
 
 def _from_json(val: Optional[str], default: Any = None) -> Any:
@@ -696,6 +701,13 @@ class SqliteEpisodicRepository:
             conditions.append("created_at < ?")
             params.append(cursor)
 
+        if interval and interval.start and interval.start.absolute and interval.end and interval.end.absolute:
+            # Poda en SQL (idx_episodes_time); la comprobación precisa sigue abajo.
+            conditions.append("(start_time IS NULL OR start_time <= ?)")
+            params.append(interval.end.absolute.isoformat())
+            conditions.append("(end_time IS NULL OR end_time >= ?)")
+            params.append(interval.start.absolute.isoformat())
+
         where_clause = " AND ".join(conditions)
         query = f"SELECT * FROM episodes WHERE {where_clause} ORDER BY created_at DESC LIMIT ?"
         params.append(limit + 1)
@@ -1184,9 +1196,20 @@ class SqliteEpisodicRepository:
             INSERT INTO events (
                 id, environment_id, source_id, processing_run_id,
                 processing_window_id, event_type, start_time, end_time,
-                created_at, payload_json
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(id) DO UPDATE SET payload_json=excluded.payload_json
+                created_at, payload_json, episode_id, asset_id, sequence_number,
+                start_offset_seconds, end_offset_seconds, title, revision
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                payload_json = excluded.payload_json,
+                start_time = excluded.start_time,
+                end_time = excluded.end_time,
+                episode_id = coalesce(excluded.episode_id, events.episode_id),
+                asset_id = excluded.asset_id,
+                sequence_number = excluded.sequence_number,
+                start_offset_seconds = excluded.start_offset_seconds,
+                end_offset_seconds = excluded.end_offset_seconds,
+                title = excluded.title,
+                revision = excluded.revision
             """,
             (
                 event.id,
@@ -1199,14 +1222,104 @@ class SqliteEpisodicRepository:
                 event.end_time.isoformat(),  # type: ignore[union-attr]
                 event.created_at.isoformat(),
                 _to_json(event.to_dict()),
+                event.episode_id,
+                event.asset_id,
+                int(event.sequence_number or 0),
+                event.start_offset_seconds,
+                event.end_offset_seconds,
+                event.title or "",
+                int(event.revision or 1),
             ),
         )
 
     def get_event(self, event_id: str) -> Optional[Event]:
         row = self._conn.execute(
-            "SELECT payload_json FROM events WHERE id = ?", (event_id,)
+            "SELECT payload_json, episode_id FROM events WHERE id = ?", (event_id,)
         ).fetchone()
-        return Event.from_dict(_from_json(row["payload_json"])) if row else None
+        return self._row_to_event(row) if row else None
+
+    def get_events(self, event_ids: List[str]) -> Dict[str, Event]:
+        """Varios eventos en una consulta (hidratación sin N+1)."""
+        result: Dict[str, Event] = {}
+        ids = list(dict.fromkeys(event_ids))
+        for start in range(0, len(ids), 500):
+            chunk = ids[start:start + 500]
+            placeholders = ",".join("?" for _ in chunk)
+            for row in self._conn.execute(
+                f"SELECT payload_json, episode_id FROM events WHERE id IN ({placeholders})", chunk
+            ):
+                event = self._row_to_event(row)
+                result[event.id] = event
+        return result
+
+    def list_events(self, episode_id: str) -> List[Event]:
+        """Eventos de un episodio en orden cronológico."""
+        rows = self._conn.execute(
+            "SELECT payload_json, episode_id FROM events WHERE episode_id = ? "
+            "ORDER BY sequence_number, start_time",
+            (episode_id,),
+        ).fetchall()
+        return [self._row_to_event(row) for row in rows]
+
+    def get_event_neighbors(self, event_id: str, before: int = 1, after: int = 1) -> Tuple[List[Event], List[Event]]:
+        """Eventos anteriores y posteriores del mismo episodio (o activo, si
+        el evento no está enlazado a ninguno), ambos en orden cronológico."""
+        row = self._conn.execute(
+            "SELECT episode_id, asset_id, sequence_number, start_time FROM events WHERE id = ?", (event_id,)
+        ).fetchone()
+        if row is None:
+            return [], []
+        scope, scope_value = ("episode_id", row["episode_id"]) if row["episode_id"] else ("asset_id", row["asset_id"])
+        if scope_value is None:
+            return [], []
+        key = (row["sequence_number"], row["start_time"])
+        previous = self._conn.execute(
+            f"SELECT payload_json, episode_id FROM events WHERE {scope} = ? AND id != ? "
+            "AND (sequence_number, start_time) < (?, ?) ORDER BY sequence_number DESC, start_time DESC LIMIT ?",
+            (scope_value, event_id, *key, max(0, before)),
+        ).fetchall()
+        following = self._conn.execute(
+            f"SELECT payload_json, episode_id FROM events WHERE {scope} = ? AND id != ? "
+            "AND (sequence_number, start_time) > (?, ?) ORDER BY sequence_number, start_time LIMIT ?",
+            (scope_value, event_id, *key, max(0, after)),
+        ).fetchall()
+        return [self._row_to_event(r) for r in reversed(previous)], [self._row_to_event(r) for r in following]
+
+    def count_events(self) -> int:
+        return int(self._conn.execute("SELECT count(*) FROM events").fetchone()[0])
+
+    def link_events_to_episode(self, episode_id: str, observation_ids: List[str]) -> int:
+        """Enlaza con el episodio los eventos nacidos de esas observaciones."""
+        total = 0
+        ids = list(dict.fromkeys(observation_ids))
+        for start in range(0, len(ids), 500):
+            chunk = ids[start:start + 500]
+            placeholders = ",".join("?" for _ in chunk)
+            cursor = self._conn.execute(
+                f"""
+                UPDATE events SET episode_id = ?, payload_json = json_set(payload_json, '$.episode_id', ?)
+                WHERE json_extract(payload_json, '$.metadata.observation_ids[0]') IN ({placeholders})
+                """,
+                (episode_id, episode_id, *chunk),
+            )
+            total += cursor.rowcount
+        return total
+
+    def delete_events_for_asset(self, asset_id: str, keep_ids: List[str]) -> List[str]:
+        """Borra los eventos del activo que ya no están vigentes (otra versión
+        del derivador) y devuelve sus ids."""
+        rows = self._conn.execute("SELECT id FROM events WHERE asset_id = ?", (asset_id,)).fetchall()
+        stale = [row["id"] for row in rows if row["id"] not in set(keep_ids)]
+        for start in range(0, len(stale), 500):
+            chunk = stale[start:start + 500]
+            self._conn.execute(f"DELETE FROM events WHERE id IN ({','.join('?' for _ in chunk)})", chunk)
+        return stale
+
+    def _row_to_event(self, row: sqlite3.Row) -> Event:
+        event = Event.from_dict(_from_json(row["payload_json"]))
+        if row["episode_id"] and event.episode_id != row["episode_id"]:
+            event.episode_id = row["episode_id"]
+        return event
 
     def save_microepisode(self, microepisode: MicroEpisode) -> None:
         self._require_existing("environments", [microepisode.environment_id], "environment_id")
@@ -1771,39 +1884,87 @@ class SqliteEpisodicRepository:
     # Pasajes (índice de texto completo)
     # -----------------------------------------------------------------------
 
-    def replace_episode_passages(
-        self, episode_id: str, passages: List[Tuple[str, str, str, str]]
-    ) -> List[str]:
-        """Sustituye los pasajes del episodio (observation_id, tipo, título,
-        texto) y devuelve los observation_id que dejaron de serlo."""
-        new_ids = {row[0] for row in passages}
+    _PASSAGE_COLUMNS = (
+        "id, kind, episode_id, environment_id, source_id, modality, asset_id, start_time, end_time, "
+        "start_ms, end_ms, start_offset_seconds, end_offset_seconds, page_number, sequence_number, "
+        "event_id, observation_id, title, text, model, keyframes"
+    )
+
+    def replace_episode_passages(self, episode_id: str, passages: List[Passage]) -> List[str]:
+        """Sustituye los pasajes del episodio y devuelve los ids que dejaron de serlo."""
+        new_ids = {item.id for item in passages}
         self.begin_transaction()
         try:
             previous = [
                 row[0]
-                for row in self._conn.execute(
-                    "SELECT observation_id FROM passage_index WHERE episode_id = ?",
-                    (episode_id,),
-                )
+                for row in self._conn.execute("SELECT id FROM passages WHERE episode_id = ?", (episode_id,))
             ]
-            self._conn.execute("DELETE FROM passage_index WHERE episode_id = ?", (episode_id,))
+            self._conn.execute("DELETE FROM passages WHERE episode_id = ?", (episode_id,))
+            # Un id repetido en otro episodio (reprocesado) no debe romper la escritura.
+            stale = [item.id for item in passages]
+            for start in range(0, len(stale), 500):
+                chunk = stale[start:start + 500]
+                self._conn.execute(f"DELETE FROM passages WHERE id IN ({','.join('?' for _ in chunk)})", chunk)
             self._conn.executemany(
-                "INSERT INTO passage_index (text, title, observation_id, episode_id, observation_type) "
-                "VALUES (?, ?, ?, ?, ?)",
-                [(text, title, obs_id, episode_id, obs_type) for obs_id, obs_type, title, text in passages],
+                f"INSERT INTO passages ({self._PASSAGE_COLUMNS}) VALUES ({','.join('?' for _ in range(21))})",
+                [self._passage_row(item) for item in passages],
             )
             self.commit_transaction()
         except Exception:
             self.rollback_transaction()
             raise
-        return [obs_id for obs_id in previous if obs_id not in new_ids]
+        return [item for item in previous if item not in new_ids]
 
     def delete_episode_passages(self, episode_id: str) -> List[str]:
-        rows = self._conn.execute(
-            "SELECT observation_id FROM passage_index WHERE episode_id = ?", (episode_id,)
-        ).fetchall()
-        self._conn.execute("DELETE FROM passage_index WHERE episode_id = ?", (episode_id,))
+        rows = self._conn.execute("SELECT id FROM passages WHERE episode_id = ?", (episode_id,)).fetchall()
+        self._conn.execute("DELETE FROM passages WHERE episode_id = ?", (episode_id,))
         return [row[0] for row in rows]
+
+    def get_passages(self, passage_ids: List[str]) -> Dict[str, Passage]:
+        result: Dict[str, Passage] = {}
+        ids = list(dict.fromkeys(passage_ids))
+        for start in range(0, len(ids), 500):
+            chunk = ids[start:start + 500]
+            placeholders = ",".join("?" for _ in chunk)
+            for row in self._conn.execute(
+                f"SELECT {self._PASSAGE_COLUMNS} FROM passages WHERE id IN ({placeholders})", chunk
+            ):
+                passage = self._row_to_passage(row)
+                result[passage.id] = passage
+        return result
+
+    def list_passages_for_episode(self, episode_id: str) -> List[Passage]:
+        rows = self._conn.execute(
+            f"SELECT {self._PASSAGE_COLUMNS} FROM passages WHERE episode_id = ? "
+            "ORDER BY start_ms, sequence_number",
+            (episode_id,),
+        ).fetchall()
+        return [self._row_to_passage(row) for row in rows]
+
+    @staticmethod
+    def _passage_row(item: Passage) -> tuple:
+        return (
+            item.id, item.kind, item.episode_id, item.environment_id, item.source_id, item.modality, item.asset_id,
+            item.start_time.isoformat() if item.start_time else None,
+            item.end_time.isoformat() if item.end_time else None,
+            _epoch_ms(item.start_time), _epoch_ms(item.end_time),
+            item.start_offset_seconds, item.end_offset_seconds, item.page_number, item.sequence_number,
+            item.event_id, item.observation_id, item.title or "", item.text, item.model, int(item.keyframes or 0),
+        )
+
+    @staticmethod
+    def _row_to_passage(row: sqlite3.Row) -> Passage:
+        return Passage(
+            id=row["id"], kind=row["kind"], episode_id=row["episode_id"], text=row["text"], title=row["title"] or "",
+            environment_id=row["environment_id"], source_id=row["source_id"], modality=row["modality"],
+            asset_id=row["asset_id"],
+            start_time=datetime.fromisoformat(row["start_time"]) if row["start_time"] else None,
+            end_time=datetime.fromisoformat(row["end_time"]) if row["end_time"] else None,
+            start_offset_seconds=row["start_offset_seconds"], end_offset_seconds=row["end_offset_seconds"],
+            page_number=row["page_number"], sequence_number=row["sequence_number"],
+            event_id=row["event_id"], observation_id=row["observation_id"], model=row["model"],
+            keyframes=int(row["keyframes"] or 0),
+        )
 
     def get_system_state(self, name: str) -> Optional[Any]:
         row = self._conn.execute("SELECT value_json FROM system_state WHERE name = ?", (name,)).fetchone()
@@ -1819,22 +1980,50 @@ class SqliteEpisodicRepository:
         )
 
     def count_passages(self) -> int:
-        return int(self._conn.execute("SELECT count(*) FROM passage_index").fetchone()[0])
+        return int(self._conn.execute("SELECT count(*) FROM passages").fetchone()[0])
 
-    def search_passages(self, match: str, limit: int) -> List[Tuple[str, str, float, str]]:
-        """Pasajes que casan con una expresión FTS5: (observation_id,
-        episode_id, puntuación BM25 —mayor es mejor—, fragmento resaltado
-        entre los caracteres de control 2 y 3)."""
+    def search_passages(
+        self,
+        match: str,
+        limit: int,
+        *,
+        environment_ids: Tuple[str, ...] = (),
+        source_ids: Tuple[str, ...] = (),
+        modalities: Tuple[str, ...] = (),
+        kinds: Tuple[str, ...] = (),
+        start_ms: Optional[int] = None,
+        end_ms: Optional[int] = None,
+    ) -> List[Tuple[str, str, float, str]]:
+        """Pasajes que casan con una expresión FTS5, con los filtros aplicados
+        **antes** del límite: (passage_id, episode_id, puntuación BM25 —mayor es
+        mejor—, fragmento resaltado entre los caracteres de control 2 y 3)."""
         if not match.strip():
             return []
+        conditions = ["passage_index MATCH ?"]
+        params: List[Any] = [match]
+        for column, values in (
+            ("p.environment_id", environment_ids),
+            ("p.source_id", source_ids),
+            ("p.modality", modalities),
+            ("p.kind", kinds),
+        ):
+            if values:
+                conditions.append(f"{column} IN ({','.join('?' for _ in values)})")
+                params.extend(values)
+        if start_ms is not None and end_ms is not None:
+            # Solapamiento semiabierto, como en Qdrant; un punto cuenta si cae dentro.
+            conditions.append("p.start_ms IS NOT NULL AND p.start_ms < ? AND coalesce(p.end_ms, p.start_ms) + 1 > ?")
+            params.extend([end_ms, start_ms])
+        params.append(limit)
         rows = self._conn.execute(
-            """
-            SELECT observation_id, episode_id, -bm25(passage_index, 1.0, 2.0) AS score,
+            f"""
+            SELECT p.id, p.episode_id, -bm25(passage_index, 1.0, 2.0) AS score,
                    snippet(passage_index, 0, char(2), char(3), '…', 24) AS fragment
-            FROM passage_index WHERE passage_index MATCH ?
+            FROM passage_index JOIN passages p ON p.pid = passage_index.rowid
+            WHERE {' AND '.join(conditions)}
             ORDER BY score DESC LIMIT ?
             """,
-            (match, limit),
+            params,
         ).fetchall()
         return [(row[0], row[1], float(row[2]), row[3]) for row in rows]
 

@@ -134,9 +134,15 @@ trabajos con sus etapas y el registro de ejecución en vivo.
 
 ### Consultas: búsqueda por momentos
 
-Cada tramo de vídeo descrito, frase transcrita y fragmento de documento se
-indexa como **pasaje** con su hora absoluta. Una consulta los busca por dos
-vías y las fusiona con RRF:
+La unidad de búsqueda es el **evento**: cada tramo de vídeo descrito se
+indexa como **pasaje** con su título, resumen, descripción, escena, acciones,
+actores, objetos, texto visible y lo que se dijo mientras tanto, además de
+su hora absoluta y su posición en el vídeo. Las frases transcritas que no
+caen dentro de ningún evento y los fragmentos de documento son pasajes
+aparte. SQLite guarda los pasajes en la tabla `passages` (proyección
+reconstruible, como Qdrant). Una consulta los busca por dos vías, ambas con
+los mismos filtros de ambiente, fuente, modalidad y tiempo aplicados antes
+del corte, y las fusiona con RRF:
 
 - **significado** (Nomic en Qdrant): paráfrasis y sinónimos;
 - **palabras** (BM25 en SQLite FTS5): códigos, nombres y frases exactas
