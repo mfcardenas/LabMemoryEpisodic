@@ -595,6 +595,31 @@ CREATE TRIGGER passages_au AFTER UPDATE ON passages BEGIN
 END;
 """
 
+MIGRATION_V11 = """
+-- Resúmenes jerárquicos generados por el modelo de texto (episodio, día,
+-- entorno), con revisiones: regenerar añade una fila y la anterior deja de
+-- ser la vigente. Nunca se borran.
+CREATE TABLE summaries (
+    id TEXT PRIMARY KEY,
+    scope TEXT NOT NULL,
+    scope_key TEXT NOT NULL,
+    revision INTEGER NOT NULL,
+    is_current INTEGER NOT NULL DEFAULT 1,
+    title TEXT NOT NULL DEFAULT '',
+    summary TEXT NOT NULL DEFAULT '',
+    narrative TEXT NOT NULL DEFAULT '',
+    highlights_json TEXT NOT NULL DEFAULT '[]',
+    open_questions_json TEXT NOT NULL DEFAULT '[]',
+    model_id TEXT NOT NULL,
+    prompt_version TEXT NOT NULL DEFAULT '',
+    input_hash TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL,
+    metadata_json TEXT NOT NULL DEFAULT '{}',
+    UNIQUE (scope, scope_key, revision)
+);
+CREATE INDEX idx_summaries_current ON summaries(scope, scope_key, is_current);
+"""
+
 MIGRATIONS: List[Tuple[int, str]] = [
     (1, MIGRATION_V1),
     (2, MIGRATION_V2),
@@ -606,6 +631,7 @@ MIGRATIONS: List[Tuple[int, str]] = [
     (8, MIGRATION_V8),
     (9, MIGRATION_V9),
     (10, MIGRATION_V10),
+    (11, MIGRATION_V11),
 ]
 
 

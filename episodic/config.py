@@ -196,6 +196,22 @@ class EpisodicConfig:
         default_factory=lambda: _env("DESCRIPTION_LANGUAGE", "es")
     )
 
+    # Modelo de texto (resúmenes jerárquicos, Fase H). ``text_backend``:
+    # ollama | fake | none. Nota: la etiqueta ``gpt-oss:20b`` descargada hace
+    # meses falla en Ollama ≥ 0.35 («size overflows»); ``gpt-oss:latest`` sí
+    # funciona (o vuelva a descargar la etiqueta).
+    text_backend: str = field(default_factory=lambda: _env("TEXT_BACKEND", "ollama"))
+    text_model: str = field(default_factory=lambda: _env("TEXT_MODEL", "gpt-oss:latest"))
+    text_timeout_seconds: float = field(default_factory=lambda: _env("TEXT_TIMEOUT_SECONDS", 600.0, float))
+    text_temperature: float = field(default_factory=lambda: _env("TEXT_TEMPERATURE", 0.2, float))
+    text_num_ctx: int = field(default_factory=lambda: _env("TEXT_NUM_CTX", 16384, int))
+    # Esfuerzo de razonamiento de gpt-oss (low | medium | high); otros modelos lo ignoran.
+    text_reasoning: str = field(default_factory=lambda: _env("TEXT_REASONING", "low"))
+    # Caracteres de entrada que ve el modelo por resumen (eventos + habla + documentos).
+    text_max_input_chars: int = field(default_factory=lambda: _env("TEXT_MAX_INPUT_CHARS", 16000, int))
+    # Días que entran en el resumen de un entorno.
+    digest_environment_days: int = field(default_factory=lambda: _env("DIGEST_ENVIRONMENT_DAYS", 30, int))
+
     # Transcripción del habla (Fase D). ``speech_backend``: http | fake | none.
     # ``http`` llama a un servicio compatible con la API de OpenAI
     # (``/v1/audio/transcriptions``), p. ej. Speaches en Docker.
@@ -249,6 +265,8 @@ class EpisodicConfig:
             raise ValueError(f"Backend de visión no soportado: {self.vision_backend}")
         if self.speech_backend not in {"http", "fake", "none"}:
             raise ValueError(f"Backend de habla no soportado: {self.speech_backend}")
+        if self.text_backend not in {"ollama", "fake", "none"}:
+            raise ValueError(f"Backend de texto no soportado: {self.text_backend}")
 
     @classmethod
     def from_env(cls, **overrides: Any) -> "EpisodicConfig":

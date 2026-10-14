@@ -30,6 +30,14 @@ from episodic.application.activity import ActivityLog
 from episodic.application.indexing import IndexingWorker
 from episodic.application.inspection import MemoryInspectionService
 from episodic.application.asset_ingestion import AssetIngestionService
+from episodic.application.summaries import (
+    DIGEST_JOB_KIND,
+    DIGEST_STAGES,
+    SUMMARY_JOB_KIND,
+    SummaryService,
+    day_key,
+)
+from episodic.domain.captures import JobState
 from episodic.application.captures import (
     CAPTURE_JOB_KIND,
     CAPTURE_STAGES,
@@ -122,6 +130,36 @@ def build_speech_transcriber(config: EpisodicConfig):
         api_key=config.speech_api_key,
         prompt=config.speech_prompt,
         temperature=config.speech_temperature,
+    )
+
+
+def build_text_composer(config: EpisodicConfig):
+    """Modelo de texto para resúmenes, o ``None`` si está desactivado."""
+    if config.text_backend == "none":
+        return None
+    if config.text_backend == "fake":
+        from episodic.adapters.models.fake_text import FakeTextComposer
+
+        return FakeTextComposer()
+    from episodic.adapters.models.ollama_text import OllamaTextComposer
+
+    return OllamaTextComposer(
+        model=config.text_model,
+        base_url=config.ollama_url,
+        timeout_seconds=config.text_timeout_seconds,
+        temperature=config.text_temperature,
+        num_ctx=config.text_num_ctx,
+        reasoning=config.text_reasoning,
+    )
+
+
+def build_summary_service(config: EpisodicConfig, repository) -> SummaryService:
+    return SummaryService(
+        repository,
+        build_text_composer(config),
+        timezone=_query_timezone(config),
+        max_input_chars=config.text_max_input_chars,
+        environment_days=config.digest_environment_days,
     )
 
 
@@ -224,6 +262,8 @@ class AppContainer:
     activity_log: ActivityLog
     passage_search: Optional[PassageSearchService] = None
     index_maintenance: Optional[IndexMaintenanceService] = None
+    # Lectura de resúmenes y encolado de regeneraciones desde la API.
+    summaries: Optional[SummaryService] = None
     watcher: Optional[InboxWatcher] = None
 
     def close(self) -> None:
@@ -488,6 +528,7 @@ def create_app_container(
         job_runner=job_runner,
         activity_log=ActivityLog(repo, config.activity_log_max_rows, config.activity_log_max_passes),
         passage_search=passage_search_svc,
+        summaries=build_summary_service(config, repo),
         index_maintenance=IndexMaintenanceService(
             repo, vector_index, lifecycle_svc, indexing_worker, _index_profile(config)
         ),
@@ -569,6 +610,7 @@ def _create_job_runner(
         clip_vision_model_id=config.clip_vision_model,
     )
     maintenance = IndexMaintenanceService(repo, vector_index, lifecycle, worker, _index_profile(config))
+    summaries = build_summary_service(config, repo)
     processing = CaptureProcessingService(
         repository=repo,
         windowing=WindowingService(repo),
@@ -577,20 +619,55 @@ def _create_job_runner(
         composition=DeterministicEpisodeComposer(repo),
         lifecycle=lifecycle,
         indexing_worker=worker,
+        summaries=summaries,
     )
+    runner_ref: dict = {}
 
     def process_capture(job, report):
-        return processing.process(job.target_id, on_stage=report).to_dict()
+        result = processing.process(job.target_id, on_stage=report)
+        # Con el episodio resumido, el día y el entorno se ponen al día aparte:
+        # no retrasa la captura y se ve como trabajo propio en Vigilancia.
+        episode = repo.get_episode(result.episode_id)
+        if summaries.enabled and episode is not None and episode.start_time and episode.environment_ids:
+            key = day_key(episode.environment_ids[0], episode.start_time.astimezone(summaries.timezone))
+            if not any(
+                item.target_id == key and item.state in (JobState.QUEUED, JobState.RUNNING)
+                for item in repo.list_jobs(states=[JobState.QUEUED, JobState.RUNNING])
+                if item.job_type == DIGEST_JOB_KIND
+            ):
+                runner_ref["runner"].submit(DIGEST_JOB_KIND, key, DIGEST_STAGES)
+        return result.to_dict()
+
+    def summarize(job, report):
+        return summaries.run_summarize_job(
+            job, report, index=lambda episode_id: lifecycle.index_episodes(worker, [episode_id])
+        )
 
     def describe(job):
         if job.job_type == REINDEX_JOB_KIND:
             return f"reindexado de la memoria ({job.target_id})"
+        if job.job_type == SUMMARY_JOB_KIND:
+            scope, _, key = job.target_id.partition("|")
+            if scope == "episode":
+                episode = repo.get_episode(key)
+                return f"resumen del episodio «{episode.title if episode else key}»"
+            return f"resumen de {'día' if scope == 'day' else 'entorno'} {key}"
+        if job.job_type == DIGEST_JOB_KIND:
+            environment_id, _, day = job.target_id.partition("|")
+            return f"resumen diario {day} de {environment_id}"
         capture = repo.get_capture(job.target_id) if job.job_type == CAPTURE_JOB_KIND else None
         return f"captura «{capture.title}»" if capture else f"{job.job_type} {job.target_id}"
 
-    return JobRunner(
+    runner = JobRunner(
         repo,
-        {CAPTURE_JOB_KIND: process_capture, REINDEX_JOB_KIND: maintenance.run},
+        {
+            CAPTURE_JOB_KIND: process_capture,
+            REINDEX_JOB_KIND: maintenance.run,
+            SUMMARY_JOB_KIND: summarize,
+            DIGEST_JOB_KIND: summaries.run_digest_job,
+        },
         activity=ActivityLog(repo, config.activity_log_max_rows, config.activity_log_max_passes),
         describe=describe,
     )
+    runner_ref["runner"] = runner
+    return runner

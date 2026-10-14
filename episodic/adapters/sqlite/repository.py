@@ -32,6 +32,7 @@ from episodic.domain.entities import (
 from episodic.domain.episodes import MicroEpisode
 from episodic.domain.passages import Passage
 from episodic.domain.processing import Event, ProcessingRun, ProcessingWindow
+from episodic.domain.summaries import Summary
 from episodic.domain.provenance import Asset, Environment, EvidenceReference
 from episodic.domain.relations import Hypothesis, Relation
 from episodic.domain.times import Interval, TimeSpec, utc_now
@@ -1981,6 +1982,90 @@ class SqliteEpisodicRepository:
 
     def count_passages(self) -> int:
         return int(self._conn.execute("SELECT count(*) FROM passages").fetchone()[0])
+
+    # -- Resúmenes jerárquicos --------------------------------------------------
+
+    _SUMMARY_COLUMNS = (
+        "id, scope, scope_key, revision, is_current, title, summary, narrative, highlights_json, "
+        "open_questions_json, model_id, prompt_version, input_hash, created_at, metadata_json"
+    )
+
+    def save_summary(self, summary: Summary) -> None:
+        """Guarda una revisión; si es la vigente, las anteriores dejan de serlo."""
+        self.begin_transaction()
+        try:
+            if summary.is_current:
+                self._conn.execute(
+                    "UPDATE summaries SET is_current = 0 WHERE scope = ? AND scope_key = ? AND id != ?",
+                    (summary.scope, summary.scope_key, summary.id),
+                )
+            self._conn.execute(
+                f"""
+                INSERT INTO summaries ({self._SUMMARY_COLUMNS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET
+                    is_current = excluded.is_current, title = excluded.title, summary = excluded.summary,
+                    narrative = excluded.narrative, highlights_json = excluded.highlights_json,
+                    open_questions_json = excluded.open_questions_json, metadata_json = excluded.metadata_json
+                """,
+                (
+                    summary.id, summary.scope, summary.scope_key, summary.revision, 1 if summary.is_current else 0,
+                    summary.title, summary.summary, summary.narrative, _to_json(summary.highlights),
+                    _to_json(summary.open_questions), summary.model_id, summary.prompt_version, summary.input_hash,
+                    summary.created_at.isoformat(), _to_json(summary.metadata),
+                ),
+            )
+            self.commit_transaction()
+        except Exception:
+            self.rollback_transaction()
+            raise
+
+    def get_summary(self, summary_id: str) -> Optional[Summary]:
+        row = self._conn.execute(f"SELECT {self._SUMMARY_COLUMNS} FROM summaries WHERE id = ?", (summary_id,)).fetchone()
+        return self._row_to_summary(row) if row else None
+
+    def get_current_summary(self, scope: str, scope_key: str) -> Optional[Summary]:
+        row = self._conn.execute(
+            f"SELECT {self._SUMMARY_COLUMNS} FROM summaries WHERE scope = ? AND scope_key = ? AND is_current = 1 "
+            "ORDER BY revision DESC LIMIT 1",
+            (scope, scope_key),
+        ).fetchone()
+        return self._row_to_summary(row) if row else None
+
+    def list_summary_revisions(self, scope: str, scope_key: str) -> List[Summary]:
+        rows = self._conn.execute(
+            f"SELECT {self._SUMMARY_COLUMNS} FROM summaries WHERE scope = ? AND scope_key = ? ORDER BY revision DESC",
+            (scope, scope_key),
+        ).fetchall()
+        return [self._row_to_summary(row) for row in rows]
+
+    def list_current_summaries(self, scope: str, prefix: Optional[str] = None, limit: int = 500) -> List[Summary]:
+        """Resúmenes vigentes de un ámbito; ``prefix`` acota la clave («env|»)."""
+        conditions, params = ["scope = ?", "is_current = 1"], [scope]
+        if prefix:
+            conditions.append("scope_key LIKE ?")
+            params.append(prefix.replace("%", "%%") + "%")
+        params.append(limit)
+        rows = self._conn.execute(
+            f"SELECT {self._SUMMARY_COLUMNS} FROM summaries WHERE {' AND '.join(conditions)} "
+            "ORDER BY scope_key LIMIT ?",
+            params,
+        ).fetchall()
+        return [self._row_to_summary(row) for row in rows]
+
+    def count_summaries(self, scope: Optional[str] = None) -> int:
+        if scope:
+            return int(self._conn.execute("SELECT count(*) FROM summaries WHERE scope = ? AND is_current = 1", (scope,)).fetchone()[0])
+        return int(self._conn.execute("SELECT count(*) FROM summaries WHERE is_current = 1").fetchone()[0])
+
+    @staticmethod
+    def _row_to_summary(row: sqlite3.Row) -> Summary:
+        return Summary(
+            id=row["id"], scope=row["scope"], scope_key=row["scope_key"], revision=int(row["revision"]),
+            is_current=bool(row["is_current"]), title=row["title"], summary=row["summary"], narrative=row["narrative"],
+            highlights=_from_json(row["highlights_json"], []), open_questions=_from_json(row["open_questions_json"], []),
+            model_id=row["model_id"], prompt_version=row["prompt_version"], input_hash=row["input_hash"],
+            created_at=datetime.fromisoformat(row["created_at"]), metadata=_from_json(row["metadata_json"], {}),
+        )
 
     def search_passages(
         self,

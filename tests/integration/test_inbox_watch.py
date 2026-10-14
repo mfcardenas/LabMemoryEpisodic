@@ -430,19 +430,24 @@ def test_watch_api_exposes_sources_files_jobs_and_log(tmp_path) -> None:
             files = client.get("/api/watch/files", params={"state": "captured"}).json()["files"]
             assert [item["rel_path"] for item in files] == ["captura_1/notas.txt"]
 
+            # La captura encola después el resumen del día; se espera a que termine.
+            for pending in container.repository.list_jobs(states=[JobState.QUEUED, JobState.RUNNING]):
+                container.job_runner.wait(pending.id, timeout=60)
             jobs = client.get("/api/jobs").json()
             assert jobs["active_count"] == 0
-            assert jobs["jobs"][0]["capture"]["origin"]["kind"] == "watch"
-            assert jobs["jobs"][0]["capture"]["title"] == "env_context_01_1791786600"
+            capture_job = next(item for item in jobs["jobs"] if item["job_type"] == "process_capture")
+            assert capture_job["capture"]["origin"]["kind"] == "watch"
+            assert capture_job["capture"]["title"] == "env_context_01_1791786600"
 
             status = client.get("/api/watch").json()
             assert status["pass_count"] == 2
 
             # Sin los pases del vigilante (que pueden llegar tras el trabajo).
             main_levels = {"level": ["info", "warning", "error"]}
-            log = client.get("/api/activity", params={"limit": 3, **main_levels}).json()
-            assert len(log["entries"]) == 3
-            assert log["entries"][-1]["message"] == "Completado: captura «env_context_01_1791786600»"
+            log = client.get("/api/activity", params={"limit": 40, **main_levels}).json()
+            messages = [entry["message"] for entry in log["entries"]]
+            assert "Completado: captura «env_context_01_1791786600»" in messages, messages
+            assert messages[-1].startswith("Completado: resumen diario"), messages
             newer = client.get("/api/activity", params={"after_id": log["last_id"], **main_levels}).json()
             assert newer["entries"] == [] and newer["last_id"] == log["last_id"]
             passes = client.get("/api/activity", params={"level": "debug"}).json()["entries"]

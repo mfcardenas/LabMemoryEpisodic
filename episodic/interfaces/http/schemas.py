@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Literal, Optional
 from pydantic import BaseModel, Field, model_validator
 
 
@@ -42,6 +42,13 @@ class SearchRequest(BaseModel):
         if self.start_time >= self.end_time:
             raise ValueError("start_time debe ser anterior a end_time")
         return self
+
+
+class SummaryRegenerateRequest(BaseModel):
+    """Pide una revisión nueva del resumen de un episodio, un día o un entorno."""
+
+    scope: Literal["episode", "day", "environment"]
+    key: str = Field(..., min_length=1, description="id del episodio, «<entorno>|AAAA-MM-DD» o id del entorno")
 
 
 class PassageSearchRequest(BaseModel):

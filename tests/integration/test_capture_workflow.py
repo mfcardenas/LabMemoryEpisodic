@@ -63,7 +63,7 @@ def test_joint_upload_becomes_one_episode_with_all_assets(app) -> None:
 
     job_view = client.get(f"/api/jobs/{job.id}").json()
     assert job_view["progress"] == 1.0
-    assert [stage["state"] for stage in job_view["stages"]] == ["completed"] * 5
+    assert [stage["state"] for stage in job_view["stages"]] == ["completed"] * 6
 
     capture = client.get(f"/api/captures/{created['id']}").json()
     assert capture["status"] == "ready"
@@ -102,6 +102,33 @@ def test_joint_upload_becomes_one_episode_with_all_assets(app) -> None:
     assert datetime.fromisoformat(detail["episode"]["start_time"]) == datetime(
         2026, 10, 10, 7, 0, tzinfo=timezone.utc
     )
+
+    # El episodio llega resumido (modelo de texto falso), con citas a eventos
+    # reales, indexado como pasaje, y se puede regenerar como trabajo visible.
+    summary = detail["summary"]
+    assert summary and summary["revision"] == 1 and summary["model_id"] == "fake-text"
+    assert summary["highlights"][0]["event_sequence"] == first["sequence_number"]
+    assert detail["summary_revisions"] == 1
+    found = client.post("/api/passage-search", json={"text_query": "resumen simulado", "rerank": False}).json()
+    kinds = {hit["kind"]: hit for group in found["groups"] for hit in group["passages"]}
+    assert kinds["episode_summary"]["passage_id"] == summary["id"]
+
+    listing = client.get("/api/summaries", params={"scope": "episode", "key": episode_id}).json()
+    assert listing["enabled"] is True and listing["current"]["id"] == summary["id"]
+    regenerated = client.post("/api/summaries/regenerate", json={"scope": "episode", "key": episode_id})
+    assert regenerated.status_code == 202, regenerated.text
+    job = container.job_runner.wait(regenerated.json()["id"], timeout=60)
+    assert job.state.value == "completed", job.error
+    assert client.get(f"/api/memory/episodes/{episode_id}").json()["summary"]["revision"] == 2
+    assert client.post("/api/summaries/regenerate", json={"scope": "episode", "key": "nope"}).status_code == 404
+
+    # Tras la captura se encoló el resumen del día y del entorno.
+    digests = [item for item in client.get("/api/jobs").json()["jobs"] if item["job_type"] == "digest"]
+    assert digests, "la captura debe encolar el resumen del día"
+    container.job_runner.wait(digests[0]["id"], timeout=60)
+    days = client.get("/api/summaries", params={"scope": "day", "environment_id": "taller_01"}).json()["items"]
+    assert [item["scope_key"] for item in days] == ["taller_01|2026-10-10"]
+    assert client.get("/api/summaries", params={"scope": "environment", "key": "taller_01"}).json()["current"]
 
 
 def test_new_capture_does_not_alter_previous_episode(app) -> None:

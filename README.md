@@ -170,6 +170,27 @@ Todo se ajusta en `.env` (ver `.env.example`). El formulario muestra los
 umbrales vigentes y permite cambiarlos en cada consulta
 (`GET /api/passage-search/settings`).
 
+### Resúmenes jerárquicos: episodio, día y entorno
+
+Al terminar una captura, el modelo de texto (`EPIGRAPH_TEXT_MODEL`, por
+defecto `gpt-oss:latest` en Ollama; `EPIGRAPH_TEXT_BACKEND=none` lo
+desactiva) redacta el **resumen del episodio** solo a partir de sus eventos,
+del habla y de los documentos adjuntos: título, resumen, narrativa
+cronológica con citas `[ev N · mm:ss]`, momentos clave y lo que no consta.
+Las citas se **verifican** contra los eventos reales (las inválidas se
+eliminan y quedan anotadas) y en la ficha del episodio cada cita abre el
+vídeo en ese segundo. Después, un trabajo aparte («Resumen del día y del
+entorno», visible en Vigilancia) redacta el **resumen del día** del entorno a
+partir de los resúmenes de sus episodios, y el **del entorno** a partir de sus
+últimos días (`EPIGRAPH_DIGEST_ENVIRONMENT_DAYS`). Es texto generado:
+cada resumen guarda modelo, versión del prompt y huella de la entrada;
+regenerar («Regenerar resumen» o `POST /api/summaries/regenerate`) crea
+`revisión + 1` y conserva la anterior (`GET /api/summaries?scope=&key=`).
+Si el modelo falla, la captura termina igual y el fallo queda en su etapa.
+El resumen vigente de cada episodio se indexa como un pasaje más
+(`episode_summary`), así que una pregunta general («¿qué se hizo en el
+taller?») puede responderse con él.
+
 **El índice se mantiene al día solo.** Cada captura se indexa al procesarse.
 SQLite guarda además la huella con la que se indexó (modelos, prefijo de
 documento, versión del formato); al arrancar (`serve` o `watch`), si no

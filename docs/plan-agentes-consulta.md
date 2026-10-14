@@ -258,7 +258,21 @@ hace falta.
 Tests: unitarios de `parse_query` (tabla de 30 expresiones), integración de
 vecindad. Aceptación: banco con preguntas temporales y antes/después ≥ 0,8.
 
-### Fase H — Memoria jerárquica (4–5 días)
+### Fase H — Memoria jerárquica (4–5 días) · ✅ hecha (2026-10-14)
+
+Hecho: puerto `ports/text_composer.py`; `adapters/models/ollama_text.py`
+(`/api/chat`, JSON por esquema, `num_ctx`, `Reasoning:` para gpt-oss) y
+`fake_text.py`; `domain/summaries.py` + migración v11 (`summaries` con
+revisiones); `application/summaries.py` (`SummaryService`: entradas por
+nivel, verificación determinista de citas, trabajos `summarize` y `digest`);
+etapa «Resumen» en la captura (6 etapas; el fallo del modelo no tumba la
+captura) y encolado del digesto diario/entorno; resumen vigente indexado
+como pasaje `episode_summary`; `GET /api/summaries`, `POST
+/api/summaries/regenerate`; ficha del episodio con resumen, citas que
+abren el vídeo, momentos clave, «no consta» y «Regenerar». **Ojo**: la
+etiqueta `gpt-oss:20b` instalada falla en Ollama 0.35 (GGUF antiguo); se usa
+`gpt-oss:latest` (misma familia). **No hecho**: reformulación de consultas por
+LLM (`QUERY_REWRITE`), queda para A2 donde el agente ya reformula.
 
 Objetivo: resúmenes revisables por episodio, día y entorno, indexados como
 pasajes de primer nivel, para que el agente navegue de arriba abajo sin leer

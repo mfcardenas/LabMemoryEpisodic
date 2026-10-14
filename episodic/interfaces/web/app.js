@@ -715,6 +715,17 @@ document.addEventListener("DOMContentLoaded", () => {
         }).join("");
         return `<section class="transcript-section"><div class="section-title"><p class="kicker">HABLA</p><h3>Transcripción</h3><p>Lo que se dijo, con su tiempo dentro de cada archivo.</p></div>${blocks}</section>`;
       })() : "";
+      // Resumen generado por el modelo de texto: citas [ev N · mm:ss] clicables.
+      const summary = data.summary;
+      const cite = text => esc(text).replace(/\[ev (\d+) · (\d{1,2}):(\d{2})\]/g, (all, seq, mm, ss) => `<button type="button" class="cite" data-seek="${Number(mm) * 60 + Number(ss)}" title="Ver en el vídeo">ev ${seq} · ${mm}:${ss}</button>`);
+      const summaryHtml = summary
+        ? `<section class="summary-section" id="episode-summary"><div class="section-title"><p class="kicker">RESUMEN</p><h3>${esc(summary.title || "Resumen del episodio")}</h3><p>Texto generado por ${esc(summary.model_id)} · revisión ${summary.revision}${data.summary_revisions > 1 ? ` de ${data.summary_revisions}` : ""} · no verificado salvo las citas, que apuntan a eventos reales.</p></div>
+            <p class="summary-lead">${esc(summary.summary)}</p>
+            <div class="summary-narrative">${String(summary.narrative || "").split(/\n+/).filter(Boolean).map(line => `<p>${cite(line)}</p>`).join("")}</div>
+            ${summary.highlights?.length ? `<div class="summary-highlights"><b>Momentos clave</b>${summary.highlights.map(item => `<button type="button" class="highlight" data-seek="${esc(item.offset_seconds ?? 0)}"><time>${fmtClock(item.offset_seconds ?? 0)}</time><span>${esc(item.text)}</span></button>`).join("")}</div>` : ""}
+            ${summary.open_questions?.length ? `<div class="summary-questions"><b>No consta</b><ul>${summary.open_questions.map(item => `<li>${esc(item)}</li>`).join("")}</ul></div>` : ""}
+            <footer><button type="button" class="button-mini" id="regenerate-summary" data-episode-id="${esc(episode.id)}">Regenerar resumen</button>${summary.metadata?.dropped_citations?.length ? `<small>${summary.metadata.dropped_citations.length} cita(s) inválida(s) eliminada(s)</small>` : ""}</footer></section>`
+        : data.events.length ? `<section class="summary-section empty-summary" id="episode-summary"><div class="section-title"><p class="kicker">RESUMEN</p><h3>Sin resumen todavía</h3><p>El modelo de texto no lo ha redactado (sin modelo configurado o falló). Puedes pedirlo ahora.</p></div><footer><button type="button" class="button-mini" id="regenerate-summary" data-episode-id="${esc(episode.id)}">Redactar resumen</button></footer></section>` : "";
       const eventsHtml = orderedEvents.length ? `<section class="event-section"><div class="section-title"><p class="kicker">EVENTOS</p><h3>Qué ocurrió, tramo a tramo</h3><p>Cada evento es un tramo del vídeo descrito por el modelo de visión, con lo que se dijo durante ese tramo. Pulsa un fotograma o un tiempo para verlo en el vídeo.</p></div>${playerHtml}${orderedEvents.map(renderEvent).join("")}</section>` : "";
       const microHtml = data.microepisodes.map(({microepisode, observations, events}, index) => {
         const rules = (microepisode.metadata?.grouping_decisions || []).flatMap(item => item.rules || []);
@@ -727,7 +738,7 @@ document.addEventListener("DOMContentLoaded", () => {
       const environment = environmentIds.map(environmentLabel).join(", ") || "Ambiente no declarado";
       root.innerHTML = `<header class="episode-hero"><div><p class="kicker">EPISODIO EN LA MEMORIA</p><h2>${esc(episodeTitle(episode))}</h2>${episode.external_id ? `<p class="episode-key">Captura <code>${esc(episode.external_id)}</code></p>` : ""}<p>${esc(fmtInterval(episode))}${episode.metadata?.captured_at_origin ? ` · ${esc(timeOriginLabel(episode.metadata.captured_at_origin))}` : ""}</p></div><span class="episode-place">${esc(environment)}</span></header>${compatibilityNotice}
         <div class="memory-facts"><div><span>CONTENIDO EXTRAÍDO</span><b>${allObservations.length} observación(es)</b></div><div><span>PROCEDENCIA</span><b>${data.assets.length} activo(s)</b></div><div><span>EVENTOS</span><b>${data.events.length || "Sin eventos"}</b></div><div><span>ESTRUCTURA</span><b>${data.microepisodes.length} microepisodio(s)</b></div></div>
-        <div class="episode-readable"><main>${eventsHtml}${transcriptHtml}<section class="content-section"><div class="section-title"><p class="kicker">QUÉ CONTIENE</p><h3>${hasVideoEvents ? "Otro contenido extraído" : "Contenido extraído"}</h3><p>Texto o descripción producido por los procesadores. No sustituye al original.</p></div>${observationsHtml || '<div class="empty">No hay más contenido extraído en este episodio.</div>'}</section></main>
+        <div class="episode-readable"><main>${summaryHtml}${eventsHtml}${transcriptHtml}<section class="content-section"><div class="section-title"><p class="kicker">QUÉ CONTIENE</p><h3>${hasVideoEvents ? "Otro contenido extraído" : "Contenido extraído"}</h3><p>Texto o descripción producido por los procesadores. No sustituye al original.</p></div>${observationsHtml || '<div class="empty">No hay más contenido extraído en este episodio.</div>'}</section></main>
           <aside class="origin-section"><div class="section-title"><p class="kicker">DE DÓNDE PROCEDE</p><h3>Archivos y fuentes</h3><p>Cada observación debe poder volver a su evidencia original.</p></div>${originsHtml || '<div class="empty">No hay activos originales enlazados.</div>'}</aside></div>
         ${hypothesesHtml}
         <details class="episode-structure"><summary><span>Cómo se construyó este episodio</span><small>Reglas deterministas y microepisodios</small></summary><div class="structure-content">${structureHtml}</div></details>
@@ -739,6 +750,22 @@ document.addEventListener("DOMContentLoaded", () => {
         video.scrollIntoView({ behavior: "smooth", block: "center" });
         video.play().catch(() => {});
       }));
+      root.querySelector("#regenerate-summary")?.addEventListener("click", async event => {
+        const button = event.currentTarget; button.disabled = true; button.textContent = "Redactando…";
+        try {
+          const job = await api("/api/summaries/regenerate", { method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({ scope: "episode", key: button.dataset.episodeId }) });
+          const poll = async () => {
+            const current = await api(`/api/jobs/${encodeURIComponent(job.id)}`);
+            if (current.state === "completed" || current.state === "failed") {
+              if (current.state === "failed") alert(current.error || "No se pudo redactar el resumen");
+              if (state.inspectedEpisode === episodeId) openEpisode(episodeId);
+              return;
+            }
+            setTimeout(poll, 1500);
+          };
+          setTimeout(poll, 1500);
+        } catch (error) { alert(error.message); button.disabled = false; button.textContent = "Regenerar resumen"; }
+      });
       applyEpisodeFocus(root, episodeId);
     } catch (error) {
       if (requestToken !== state.inspectRequest) return;
@@ -1544,7 +1571,7 @@ document.addEventListener("DOMContentLoaded", () => {
       return `<div class="job-card ${esc(job.state)}">
         <header>
           <div><strong>${esc(capture?.title || job.title || job.target_id)}</strong>
-            <small>${esc(job.job_type === "reindex" ? `pedido ${job.target_id === "manual" ? "a mano" : "al arrancar"}` : originLabel(capture?.origin))} · ${capture ? `${capture.asset_count} fichero(s) · ` : ""}${fmtClockTime(job.created_at)}${job.attempts > 1 ? ` · intento ${job.attempts}` : ""}</small></div>
+            <small>${esc(job.job_type === "reindex" ? `pedido ${job.target_id === "manual" ? "a mano" : "al arrancar"}` : job.job_type === "summarize" ? "resumen pedido a mano" : job.job_type === "digest" ? "resumen del día y del entorno" : originLabel(capture?.origin))} · ${capture ? `${capture.asset_count} fichero(s) · ` : ""}${fmtClockTime(job.created_at)}${job.attempts > 1 ? ` · intento ${job.attempts}` : ""}</small></div>
           <span class="capture-status ${job.state === "completed" ? "ready" : job.state === "failed" ? "failed" : "processing"}">${esc(jobStateLabel(job.state))}${job.state === "running" ? ` ${percent}%` : ""}</span>
         </header>
         <div class="job-bar"><i style="width:${percent}%"></i></div>

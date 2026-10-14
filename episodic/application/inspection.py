@@ -153,6 +153,13 @@ class MemoryInspectionService:
                 item.to_dict() for item in observations if item.id not in grouped_observation_ids
             ],
             "events": [item.to_dict() for item in events],
+            # Texto generado por el modelo, con su revisión; None si no lo hay.
+            "summary": (
+                current.to_dict()
+                if (current := self.repository.get_current_summary("episode", episode.id)) is not None
+                else None
+            ),
+            "summary_revisions": len(self.repository.list_summary_revisions("episode", episode.id)),
             "evidence_references": [item.to_dict() for item in references],
             "assets": [
                 {

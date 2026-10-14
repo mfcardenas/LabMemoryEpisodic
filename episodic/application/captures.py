@@ -41,6 +41,7 @@ CAPTURE_STAGES: tuple[tuple[str, str], ...] = (
     ("observations", "Observaciones"),
     ("events", "Eventos"),
     ("episode", "Episodio"),
+    ("summary", "Resumen"),
     ("index", "Indexación"),
 )
 
@@ -93,11 +94,13 @@ class CaptureProcessingResult:
     processor_failures: tuple[str, ...]
     indexed_points: int
     removed_episode_ids: tuple[str, ...] = field(default=())
+    summary_id: str | None = None
 
     def to_dict(self) -> dict:
         return {
             "capture_id": self.capture_id,
             "episode_id": self.episode_id,
+            "summary_id": self.summary_id,
             "processing_window_ids": list(self.processing_window_ids),
             "observation_ids": list(self.observation_ids),
             "microepisode_ids": list(self.microepisode_ids),
@@ -237,6 +240,7 @@ class CaptureProcessingService:
         composition: DeterministicEpisodeComposer,
         lifecycle: LifecycleService,
         indexing_worker: IndexingWorker,
+        summaries=None,
     ) -> None:
         self.repository = repository
         self.windowing = windowing
@@ -244,6 +248,8 @@ class CaptureProcessingService:
         self.events = events
         self.composition = composition
         self.lifecycle = lifecycle
+        # Redactor de resúmenes (Fase H); None: la etapa se omite.
+        self.summaries = summaries
         self.indexing_worker = indexing_worker
 
     def process(
@@ -333,6 +339,26 @@ class CaptureProcessingService:
             f"{len(composed.microepisodes)} microepisodio(s)",
         )
 
+        # El resumen es texto generado: si el modelo falla, la captura sigue y
+        # el fallo queda a la vista en la etapa.
+        report("summary", StageState.RUNNING, "")
+        summary_id = None
+        if self.summaries is None or not self.summaries.enabled:
+            report("summary", StageState.COMPLETED, "sin modelo de texto configurado")
+        else:
+            try:
+                summary = self.summaries.summarize("episode", episode.id, reason="captura")
+            except Exception as exc:  # el modelo de texto no debe tumbar la captura
+                logger.warning("Resumen del episodio %s fallido: %s", episode.id, exc)
+                report("summary", StageState.FAILED, str(exc)[:300])
+            else:
+                summary_id = summary.id if summary else None
+                report(
+                    "summary",
+                    StageState.COMPLETED,
+                    f"revisión {summary.revision} · {summary.model_id}" if summary else "nada que resumir",
+                )
+
         report("index", StageState.RUNNING, "")
         self.lifecycle.index_episodes(
             self.indexing_worker,
@@ -356,6 +382,7 @@ class CaptureProcessingService:
             processor_failures=tuple(failures),
             indexed_points=len(indexed),
             removed_episode_ids=composed.removed_episode_ids,
+            summary_id=summary_id,
         )
 
 

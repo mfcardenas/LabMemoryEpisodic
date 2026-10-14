@@ -185,10 +185,41 @@ def passage_from_observation(observation: Observation, episode: Any) -> Optional
     )
 
 
-def episode_passages(episode: Any, events: Iterable[Event], observations: Iterable[Observation]) -> list[Passage]:
-    """Los pasajes de un episodio: sus eventos y las observaciones con
-    contenido que ningún evento ya recoge (habla adherida, tramo descrito)."""
+SUMMARY_KIND = "episode_summary"
+
+
+def passage_from_summary(summary: Any, episode: Any) -> Optional[Passage]:
+    """El resumen vigente del episodio, buscable como un pasaje más."""
+    text = summary.searchable_text
+    if not text:
+        return None
+    return Passage(
+        id=summary.id,
+        kind=SUMMARY_KIND,
+        episode_id=episode.id,
+        text=text,
+        title=summary.title,
+        environment_id=episode.environment_ids[0] if episode.environment_ids else None,
+        modality="text",
+        start_time=episode.start_time,
+        end_time=episode.end_time,
+        model=summary.model_id,
+    )
+
+
+def episode_passages(
+    episode: Any,
+    events: Iterable[Event],
+    observations: Iterable[Observation],
+    summaries: Iterable[Any] = (),
+) -> list[Passage]:
+    """Los pasajes de un episodio: su resumen vigente, sus eventos y las
+    observaciones con contenido que ningún evento ya recoge."""
     passages: list[Passage] = []
+    for summary in summaries:
+        passage = passage_from_summary(summary, episode)
+        if passage is not None:
+            passages.append(passage)
     covered: set[str] = set()
     for event in sorted(events, key=lambda item: (item.sequence_number, item.start_time or datetime.min)):
         passage = passage_from_event(event, episode)

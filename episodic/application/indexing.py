@@ -275,10 +275,12 @@ class IndexingWorker:
     def _index_passages(self, episode) -> int:
         """Un punto y una fila de texto completo por pasaje del episodio: sus
         eventos y las observaciones con contenido que ningún evento recoge."""
+        current_summary = self.repository.get_current_summary("episode", episode.id)
         passages = episode_passages(
             episode,
             self.repository.list_events(episode.id),
             self.repository.list_observations_for_episode(episode.id),
+            [current_summary] if current_summary is not None else [],
         )
         removed = self.repository.replace_episode_passages(episode.id, passages)
         if removed:

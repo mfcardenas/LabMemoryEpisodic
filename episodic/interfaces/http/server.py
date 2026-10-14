@@ -25,6 +25,7 @@ from episodic.application.captures import (
     CaptureFile,
 )
 from episodic.application.index_maintenance import REINDEX_JOB_KIND, TRIGGER_MANUAL
+from episodic.application.summaries import SUMMARY_JOB_KIND, SUMMARY_STAGES
 from episodic.application.passage_search import DEFAULT
 from episodic.application.watch import (
     ACTIVITY_COMPONENT as WATCH_COMPONENT,
@@ -59,6 +60,7 @@ from episodic.interfaces.http.schemas import (
     QueryResultDTO,
     RebuildIndexResponse,
     SearchRequest,
+    SummaryRegenerateRequest,
 )
 from episodic.tools.contracts import MemoryToolOutput, ToolDescriptor
 
@@ -733,6 +735,44 @@ def create_api_app(
     def reindex():
         """Encola una reconstrucción completa; si ya hay una, devuelve esa."""
         job = container.index_maintenance.active_job() or submit_reindex(container, TRIGGER_MANUAL)
+        return job_response(job)
+
+    # -----------------------------------------------------------------------
+    # Resúmenes jerárquicos (texto generado, con revisiones)
+    # -----------------------------------------------------------------------
+
+    @app.get("/api/summaries")
+    def get_summaries(scope: str, key: Optional[str] = None, environment_id: Optional[str] = None):
+        """``scope``=episode|day|environment. Con ``key``: el vigente y sus
+        revisiones; sin ella: los vigentes del ámbito (``environment_id``
+        acota los días de un entorno)."""
+        if scope not in {"episode", "day", "environment"}:
+            raise HTTPException(status_code=422, detail="scope debe ser episode, day o environment")
+        repo = container.repository
+        service = getattr(container, "summaries", None)
+        if key:
+            current = repo.get_current_summary(scope, key)
+            revisions = repo.list_summary_revisions(scope, key)
+            return {
+                "scope": scope,
+                "key": key,
+                "enabled": bool(service and service.enabled),
+                "current": current.to_dict() if current else None,
+                "revisions": [item.to_dict() for item in revisions],
+            }
+        prefix = f"{environment_id}|" if scope == "day" and environment_id else None
+        items = repo.list_current_summaries(scope, prefix=prefix)
+        return {"scope": scope, "enabled": bool(service and service.enabled), "items": [item.to_dict() for item in items]}
+
+    @app.post("/api/summaries/regenerate", status_code=202)
+    def regenerate_summary(req: SummaryRegenerateRequest):
+        """Encola la redacción de una revisión nueva; se ve en Vigilancia."""
+        service = getattr(container, "summaries", None)
+        if service is None or not service.enabled:
+            raise HTTPException(status_code=503, detail="No hay modelo de texto configurado (EPIGRAPH_TEXT_BACKEND)")
+        if req.scope == "episode" and container.repository.get_episode(req.key) is None:
+            raise HTTPException(status_code=404, detail=f"Episodio no encontrado: {req.key}")
+        job = container.job_runner.submit(SUMMARY_JOB_KIND, f"{req.scope}|{req.key}", SUMMARY_STAGES)
         return job_response(job)
 
     @app.post("/api/rebuild-index", response_model=RebuildIndexResponse)
