@@ -1,5 +1,6 @@
 """Búsqueda por pasajes sobre el corpus Atlas: el momento exacto, por dos vías."""
 import json
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
@@ -9,7 +10,7 @@ from episodic.bootstrap import create_app_container
 from episodic.config import EpisodicConfig
 from episodic.domain.passages import passage_from_observation, passage_point_id
 from episodic.domain.retrieval import HybridSearchFilters
-from episodic.domain.times import Interval
+from episodic.domain.times import Interval, TimeSpec
 from episodic.domain.types import RepresentationSpace
 from episodic.interfaces.http.server import create_api_app
 
@@ -155,6 +156,94 @@ def test_thresholds_are_visible_and_overridable_per_query(atlas) -> None:
             "/api/passage-search", json={**query, "rerank_min_score": 100, "agreement_rank": 0}
         ).json()
         assert strict["groups"] == [] and strict["discarded_groups"]
+
+
+def test_time_in_the_question_becomes_a_filter_and_leaves_the_text(atlas) -> None:
+    # Los sucesos Atlas son del 1 de enero de 2026.
+    found = atlas.passage_search.search("mochila ayer", now=datetime(2026, 1, 2, 12, 0, tzinfo=timezone.utc))
+    assert found.groups and found.plan.time_expression == "ayer"
+    assert found.lexical_query == '"mochil"*' and found.plan.search_text == "mochila"
+    assert found.to_dict()["plan"]["interval"]["start"] < "2026-01-01T18:23:35"
+
+    nothing = atlas.passage_search.search("mochila ayer", now=datetime(2026, 3, 1, 12, 0, tzinfo=timezone.utc))
+    assert not nothing.groups and nothing.dense_candidates == 0 and nothing.lexical_candidates == 0
+
+    # Un intervalo explícito manda sobre el de la pregunta.
+    explicit = atlas.passage_search.search(
+        "mochila ayer",
+        HybridSearchFilters(
+            interval=Interval(
+                start=TimeSpec.from_utc(datetime(2026, 1, 1, tzinfo=timezone.utc)),
+                end=TimeSpec.from_utc(datetime(2026, 1, 2, tzinfo=timezone.utc)),
+            )
+        ),
+        now=datetime(2026, 3, 1, 12, 0, tzinfo=timezone.utc),
+    )
+    assert explicit.groups
+
+
+@pytest.fixture()
+def workshop(tmp_path):
+    """Un episodio con tres eventos consecutivos, indexados como en una captura."""
+    from datetime import timedelta
+
+    from episodic.domain.entities import Episode, Observation, Source
+    from episodic.domain.processing import Event
+    from episodic.domain.provenance import Asset, Environment
+    from episodic.domain.types import EvidenceMediaType, SourceType
+
+    config = EpisodicConfig(data_dir=str(tmp_path / "taller"), watch_config="", query_timezone="UTC")
+    container = create_app_container(config, use_fake_encoders=True, use_memory_qdrant=True)
+    repo = container.repository
+    t0 = datetime(2026, 10, 12, 14, 21, 15, tzinfo=timezone.utc)
+    repo.save_environment(Environment(id="taller", name="Taller", producer="test"))
+    repo.save_source(Source(id="taller.cam", environment_id="taller", name="cam", source_type=SourceType.CAMERA))
+    repo.save_asset(Asset(id="asset-1", environment_id="taller", source_id="taller.cam", uri="x://v.mp4",
+                          media_type=EvidenceMediaType.VIDEO, content_hash="h1"))
+    episode = Episode(id="ep-taller", title="Taller", external_id="taller_1", environment_ids=["taller"],
+                      start_time=t0, end_time=t0 + timedelta(seconds=15), source_ids=["taller.cam"])
+    repo.save_episode(episode)
+    titles = ["Aplicar lubricante", "Girar la pieza con la llave", "Retirar la pieza"]
+    for seq, title in enumerate(titles):
+        repo.save_observation(Observation(id=f"obs-{seq}", episode_id=episode.id, observation_type="video_event",
+                                          description=title, environment_id="taller", source_id="taller.cam", asset_id="asset-1"))
+        repo.save_event(Event(id=f"ev-{seq}", event_type="video_segment", description=f"El mecánico decide {title.lower()}.",
+                              environment_id="taller", source_id="taller.cam", asset_id="asset-1", sequence_number=seq,
+                              title=title, start_offset_seconds=seq * 5.0, end_offset_seconds=seq * 5.0 + 5.0,
+                              start_time=t0 + timedelta(seconds=seq * 5), end_time=t0 + timedelta(seconds=seq * 5 + 5),
+                              producer="video-event-derivation", model_version="events-v2",
+                              metadata={"observation_ids": [f"obs-{seq}"]}))
+    episode.observation_ids = [f"obs-{seq}" for seq in range(3)]
+    repo.save_episode(episode)
+    repo.link_events_to_episode(episode.id, episode.observation_ids)
+    container.lifecycle_service.index_episodes(container.indexing_worker, [episode.id])
+    yield container
+    container.close()
+
+
+def test_before_after_questions_bring_the_neighbouring_events(workshop) -> None:
+    run = workshop.passage_search.search("¿qué pasó después de aplicar lubricante?", rerank=False)
+    assert run.plan.intent == "antes_despues" and run.plan.neighbors == 2
+    hit = next(hit for group in run.groups for hit in group.passages if hit.passage.event_id == "ev-0")
+    assert [item.title for item in hit.neighbors["before"]] == []
+    assert [item.title for item in hit.neighbors["after"]] == ["Girar la pieza con la llave", "Retirar la pieza"]
+    assert hit.to_dict()["neighbors"]["after"][0]["start_offset_seconds"] == 5.0
+
+    plain = workshop.passage_search.search("girar la pieza", rerank=False)
+    middle = next(hit for group in plain.groups for hit in group.passages if hit.passage.event_id == "ev-1")
+    assert middle.neighbors is None  # sin intención de vecindad no se cargan
+
+    explicit = workshop.passage_search.search("girar la pieza", rerank=False, neighbors=1)
+    middle = next(hit for group in explicit.groups for hit in group.passages if hit.passage.event_id == "ev-1")
+    assert [item.id for item in middle.neighbors["before"]] == ["ev-0"]
+    assert [item.id for item in middle.neighbors["after"]] == ["ev-2"]
+
+    with TestClient(create_api_app(container=workshop, start_watcher=False)) as client:
+        body = client.post("/api/passage-search", json={"text_query": "girar la pieza", "neighbors": 1, "rerank": False}).json()
+        assert body["plan"]["intent"] == "libre" and body["plan"]["timezone"] == "UTC"
+        hit = next(h for g in body["groups"] for h in g["passages"] if h["event_id"] == "ev-1")
+        assert hit["neighbors"]["before"][0]["event_id"] == "ev-0"
+        assert client.get("/api/passage-search/settings").json()["timezone"] == "UTC"
 
 
 def test_empty_passage_index_is_reported(tmp_path) -> None:

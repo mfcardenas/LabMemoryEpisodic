@@ -69,6 +69,13 @@ class PassageSearchRequest(BaseModel):
         description="Se conserva bajo el umbral si ambas vías lo ponen entre sus N primeros; 0: nunca; "
         "omitido: EPIGRAPH_PASSAGE_AGREEMENT_RANK",
     )
+    neighbors: Optional[int] = Field(
+        None,
+        ge=0,
+        le=10,
+        description="Eventos anterior y siguiente que acompañan a cada resultado; omitido: los que "
+        "sugiera la pregunta (2 si pregunta por antes/después)",
+    )
 
     @model_validator(mode="after")
     def validate_interval(self) -> "PassageSearchRequest":

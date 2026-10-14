@@ -911,6 +911,7 @@ def create_api_app(
                 # Un null explícito quita el umbral; omitirlo usa el configurado.
                 min_score=req.rerank_min_score if "rerank_min_score" in req.model_fields_set else DEFAULT,
                 agreement_rank=req.agreement_rank,
+                neighbors=req.neighbors,
             )
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc

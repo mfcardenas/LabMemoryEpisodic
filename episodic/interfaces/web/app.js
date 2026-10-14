@@ -1254,9 +1254,24 @@ document.addEventListener("DOMContentLoaded", () => {
     const rules = `umbral ${rerank.min_score ?? "ninguno"} · acuerdo top ${rerank.agreement_rank || "no"}`;
     const discarded = rerank.discarded_low_relevance ? ` · ${rerank.discarded_low_relevance} descartado(s)` : "";
     const rerankText = rerank.applied ? `reordenado con ${rerank.model} (${rules})${discarded}` : rerank.error ? `sin reordenar: ${rerank.error}` : "sin reordenar";
-    const summary = `<div class="passage-summary"><b>${data.passage_count} momento(s) en ${data.groups.length} episodio(s)</b>
+    const plan = data.plan || {};
+    const intentLabel = { cuando: "cuándo", quien: "quién", donde: "dónde", que: "qué", cuanto: "cuánto", documento: "documento", antes_despues: "antes / después", libre: "" }[plan.intent] ?? plan.intent;
+    const understood = [
+      intentLabel ? `pregunta por <b>${esc(intentLabel)}</b>` : "",
+      plan.interval ? `entre <b>${esc(fmtTime(plan.interval.start))}</b> y <b>${esc(fmtTime(plan.interval.end))}</b>${plan.time_expression ? ` («${esc(plan.time_expression)}»)` : ""}` : "",
+      (plan.environment_ids || []).length ? `ambiente ${esc(plan.environment_ids.map(environmentLabel).join(", "))}` : "",
+      plan.search_text && plan.search_text !== plan.text ? `busca «${esc(plan.search_text)}»` : "",
+      plan.neighbors ? `con ${plan.neighbors} evento(s) antes y después` : "",
+    ].filter(Boolean);
+    const planHtml = understood.length ? `<div class="passage-plan">Entendí: ${understood.join(" · ")}</div>` : "";
+    const summary = `${planHtml}<div class="passage-summary"><b>${data.passage_count} momento(s) en ${data.groups.length} episodio(s)</b>
       <span>significado: ${data.dense_candidates} candidatos</span><span>palabras: ${data.lexical_candidates}${data.lexical_query ? ` (${esc(data.lexical_query)})` : ""}</span>
       <span class="${rerank.error ? "warn" : ""}">${esc(rerankText)}</span><span>${Math.round(data.took_ms)} ms</span></div>`;
+    const neighborItem = (item, label) => `<button type="button" class="neighbor" data-passage-episode="${esc(item.episode_id)}" data-passage-observation="${esc(item.observation_id || "")}" ${item.start_offset_seconds != null ? `data-passage-seek="${esc(item.start_offset_seconds)}"` : ""}><small>${label}</small>${item.keyframes > 0 && item.event_id ? `<img loading="lazy" alt="" src="/api/memory/events/${encodeURIComponent(item.event_id)}/keyframes/0">` : ""}<span>${esc(item.title || clip(item.text, 60))}</span><time>${item.start_offset_seconds != null ? fmtClock(item.start_offset_seconds) : ""}</time></button>`;
+    const neighborsHtml = hit => {
+      const n = hit.neighbors; if (!n || (!n.before?.length && !n.after?.length)) return "";
+      return `<div class="passage-neighbors">${(n.before || []).map(item => neighborItem(item, "antes")).join("")}<span class="neighbor-here">este momento</span>${(n.after || []).map(item => neighborItem(item, "después")).join("")}</div>`;
+    };
     const renderGroups = list => list.map((group, index) => {
       const episode = group.episode;
       const hits = group.passages.map(hit => {
@@ -1277,6 +1292,7 @@ document.addEventListener("DOMContentLoaded", () => {
           <header><span class="modality-tag ${esc(hit.modality || "")}">${esc(passageTypeLabel(hit))}</span>${hit.title ? `<b>${esc(hit.title)}</b>` : ""}<time>${esc(where)}</time></header>
           <p class="passage-text">${hit.snippet ? marked(hit.snippet) : esc(clip(hit.text))}</p>
           <footer><span class="passage-why">${why}</span><button type="button" class="button-mini" ${seekAttrs}>Ver en el episodio${seekable ? ` ▶ ${fmtClock(hit.start_offset_seconds)}` : ""}</button></footer>
+          ${neighborsHtml(hit)}
           ${hit.text.length > 320 || hit.snippet ? `<details><summary>Texto completo</summary>${paragraphs(hit.text)}</details>` : ""}
         </div></article>`;
       }).join("");

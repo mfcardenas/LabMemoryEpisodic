@@ -220,7 +220,18 @@ Aceptación: acierto@5 de momento en el banco ≥ línea base + mejora clara
 (objetivo ≥ 0,8 en preguntas con respuesta); una búsqueda con filtro de
 ambiente devuelve candidatos léxicos.
 
-### Fase R2 — Comprensión de la consulta y vecindad temporal (2–3 días)
+### Fase R2 — Comprensión de la consulta y vecindad temporal (2–3 días) · ✅ hecha (2026-10-14)
+
+Hecho: `application/query_understanding.py` (`parse_query` → `QueryPlan`:
+intervalo absoluto con zona horaria `EPIGRAPH_QUERY_TIMEZONE`, intención,
+ambientes/fuentes nombrados, texto limpio; 37 casos de prueba);
+`PassageSearchService.search(..., neighbors, now)` aplica el plan (el
+intervalo explícito manda), con intervalo no descarta por umbral, y devuelve
+vecinos (`get_event_neighbors`) para antes/después o si se piden;
+`plan` y `neighbors` en la API y en el front («Entendí: …», tira
+antes/este momento/después). Banco: 92 % → 96 %. **No hecho**: la
+reformulación por LLM (`QUERY_REWRITE=llm`) necesita el `TextComposer` de la
+Fase H; se hace allí.
 
 Objetivo: que «¿qué pasó después de aplicar el lubricante el lunes por la
 tarde?» se convierta en filtros y subconsultas correctas, sin LLM cuando no

@@ -17,8 +17,12 @@ import logging
 import re
 import time
 import unicodedata
+from dataclasses import replace
+from datetime import datetime, tzinfo
+from datetime import timezone as _timezone
 from typing import Optional
 
+from episodic.application.query_understanding import QueryPlan, parse_query
 from episodic.application.temporal_index import absolute_interval_filter
 from episodic.domain.passages import (
     Passage,
@@ -27,7 +31,10 @@ from episodic.domain.passages import (
     PassageScores,
     PassageSearchRun,
     order_score,
+    passage_from_event,
 )
+
+utc = _timezone.utc
 from episodic.domain.retrieval import HybridSearchFilters
 from episodic.domain.types import RepresentationSpace
 from episodic.ports.encoders import EpisodeTextEncoder, PassageReranker
@@ -106,11 +113,14 @@ class PassageSearchService:
         max_episodes: int = 10,
         per_episode: int = 5,
         rrf_k: int = 60,
+        timezone: Optional[tzinfo] = None,
     ) -> None:
         self.repository = repository
         self.vector_index = vector_index
         self.text_encoder = text_encoder
         self.reranker = reranker
+        # Zona horaria de «ayer», «el lunes por la tarde»… en las preguntas.
+        self.timezone = timezone or utc
         self.candidates = candidates
         self.rerank_candidates = rerank_candidates
         self.rerank_max_chars = rerank_max_chars
@@ -135,8 +145,19 @@ class PassageSearchService:
             "max_episodes": self.max_episodes,
             "per_episode": self.per_episode,
             "rrf_k": self.rrf_k,
+            "timezone": getattr(self.timezone, "key", None) or str(self.timezone),
             "indexed_passages": self.repository.count_passages(),
         }
+
+    def understand(self, query: str, now: Optional[datetime] = None) -> QueryPlan:
+        """Plan determinista de la pregunta: intención, intervalo, filtros nombrados."""
+        return parse_query(
+            query,
+            now=now,
+            tz=self.timezone,
+            environments=[(item.id, item.name) for item in self.repository.list_environments()],
+            sources=[(item.id, item.name) for item in self.repository.list_sources()],
+        )
 
     def warm_up(self) -> None:
         """Carga los modelos antes de la primera consulta (la carga tarda segundos)."""
@@ -154,10 +175,16 @@ class PassageSearchService:
         rerank: bool = True,
         min_score: Optional[float] | object = DEFAULT,
         agreement_rank: Optional[int] = None,
+        neighbors: Optional[int] = None,
+        now: Optional[datetime] = None,
+        understand: bool = True,
     ) -> PassageSearchRun:
         """`min_score` y `agreement_rank` sustituyen a los configurados solo en
         esta consulta; `min_score=None` quita el umbral y `agreement_rank=0`
-        desactiva el acuerdo entre vías."""
+        desactiva el acuerdo entre vías. La pregunta se entiende antes de
+        buscar (`understand`): su tiempo pasa a filtro si no se dio uno
+        explícito, y sus ambientes o fuentes nombrados también. `neighbors`
+        fuerza cuántos eventos vecinos acompañan a cada resultado."""
         query = (query or "").strip()
         if not query:
             raise ValueError("La consulta está vacía")
@@ -165,11 +192,29 @@ class PassageSearchService:
         filters = filters or HybridSearchFilters()
         min_score = self.rerank_min_score if min_score is DEFAULT else min_score
         agreement_rank = self.agreement_rank if agreement_rank is None else agreement_rank
+
+        plan = self.understand(query, now) if understand else None
+        search_text = query
+        if plan is not None:
+            search_text = plan.search_text or query
+            if plan.interval is not None and filters.interval is None:
+                filters = replace(filters, interval=plan.interval)
+            if plan.environment_ids and not filters.environment_ids:
+                filters = replace(filters, environment_ids=tuple(plan.environment_ids))
+            if plan.source_ids and not filters.source_ids:
+                filters = replace(filters, source_ids=tuple(plan.source_ids))
+        neighbors = (plan.neighbors if plan is not None else 0) if neighbors is None else neighbors
+        if filters.interval is not None and min_score is not None:
+            # Con intervalo, el tiempo ya es el filtro de pertinencia: «¿qué
+            # capturas hubo ayer?» no describe ningún pasaje y el reordenador
+            # los descartaría todos. Ordena, pero no descarta.
+            min_score = None
         run = PassageSearchRun(
             query=query,
             groups=[],
-            lexical_query=lexical_query(query),
+            lexical_query=lexical_query(search_text),
             indexed_passages=self.repository.count_passages(),
+            plan=plan,
         )
 
         # 1. Significado (Qdrant, filtrado antes del top-k).
@@ -180,7 +225,7 @@ class PassageSearchService:
                 vector_filters[key] = list(getattr(filters, key))
         vector_filters.update(absolute_interval_filter(filters.interval))
         for candidate in self.vector_index.search(
-            query_vector=self.text_encoder.embed_query(query),
+            query_vector=self.text_encoder.embed_query(search_text),
             space=RepresentationSpace.NOMIC_TEXT,
             filters=vector_filters,
             limit=self.candidates,
@@ -250,7 +295,7 @@ class PassageSearchService:
             head = hits[: self.rerank_candidates]
             try:
                 texts = [hit.text[: self.rerank_max_chars] for hit in head]
-                for hit, value in zip(head, self.reranker.rerank(query, texts)):
+                for hit, value in zip(head, self.reranker.rerank(search_text, texts)):
                     hit.scores.rerank = value
                 run.rerank_applied = True
                 run.rerank_min_score = min_score
@@ -272,6 +317,17 @@ class PassageSearchService:
         per_episode = per_episode or self.per_episode
         run.groups = _group(hits, episodes, max_episodes, per_episode)
         run.discarded_groups = _group(discarded, episodes, max_episodes, per_episode)
+
+        # 7. Vecindad: qué pasó justo antes y después de cada evento devuelto.
+        if neighbors:
+            for group in run.groups:
+                for hit in group.passages:
+                    if hit.passage.event_id:
+                        before, after = self.repository.get_event_neighbors(hit.passage.event_id, neighbors, neighbors)
+                        hit.neighbors = {
+                            "before": [p for p in (passage_from_event(e, group.episode) for e in before) if p],
+                            "after": [p for p in (passage_from_event(e, group.episode) for e in after) if p],
+                        }
         run.took_ms = (time.perf_counter() - started) * 1000
         return run
 

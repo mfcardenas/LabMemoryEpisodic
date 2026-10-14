@@ -289,6 +289,8 @@ class PassageHit:
     # Tras reordenar: "threshold" (llega al umbral), "agreement" (ambas vías
     # coinciden) o None (descartado, o sin reordenar).
     kept_by: Optional[str] = None
+    # Eventos anterior y siguiente del mismo episodio, si se pidieron.
+    neighbors: Optional[dict[str, list[Passage]]] = None
 
     @property
     def text(self) -> str:
@@ -312,6 +314,11 @@ class PassageHit:
             "snippet": self.snippet,
             "scores": self.scores.to_dict(),
             "kept_by": self.kept_by,
+            "neighbors": (
+                {key: [item.to_dict() for item in value] for key, value in self.neighbors.items()}
+                if self.neighbors is not None
+                else None
+            ),
         }
 
 
@@ -361,10 +368,13 @@ class PassageSearchRun:
     # Pasajes que hay en el índice de texto: 0 significa que falta indexar.
     indexed_passages: Optional[int] = None
     discarded_groups: list[PassageGroup] = field(default_factory=list)
+    # Cómo se entendió la pregunta (intención, intervalo, texto buscado).
+    plan: Any = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "query": self.query,
+            "plan": self.plan.to_dict() if self.plan is not None else None,
             "lexical_query": self.lexical_query,
             "dense_candidates": self.dense_candidates,
             "lexical_candidates": self.lexical_candidates,

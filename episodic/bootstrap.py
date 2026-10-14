@@ -416,6 +416,7 @@ def create_app_container(
         max_episodes=config.passage_max_episodes,
         per_episode=config.passage_per_episode,
         rrf_k=config.rrf_k,
+        timezone=_query_timezone(config),
     )
 
     logical_graph_svc = LogicalGraphService(repo)
@@ -492,6 +493,17 @@ def create_app_container(
         ),
         watcher=watcher,
     )
+
+
+def _query_timezone(config: EpisodicConfig):
+    """Zona horaria de las expresiones temporales de las preguntas."""
+    from datetime import datetime
+
+    if config.query_timezone:
+        from zoneinfo import ZoneInfo
+
+        return ZoneInfo(config.query_timezone)
+    return datetime.now().astimezone().tzinfo
 
 
 def _index_profile(config: EpisodicConfig) -> dict:

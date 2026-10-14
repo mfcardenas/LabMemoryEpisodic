@@ -149,6 +149,10 @@ class EpisodicConfig:
     # …salvo que significado y palabras lo pongan ambos entre sus N primeros
     # (0: sin esta excepción). Las preguntas puntúan bajo aunque haya respuesta.
     passage_agreement_rank: int = field(default_factory=lambda: _env("PASSAGE_AGREEMENT_RANK", 3, int))
+    # Zona horaria con la que se entienden «ayer», «el lunes por la tarde» o
+    # «después de las 16:30» en las preguntas (IANA, p. ej. Europe/Madrid);
+    # vacío: la del sistema.
+    query_timezone: str = field(default_factory=lambda: _env("QUERY_TIMEZONE", ""))
 
     # Indexación outbox existente.
     outbox_batch_size: int = field(default_factory=lambda: _env("OUTBOX_BATCH_SIZE", 50, int))

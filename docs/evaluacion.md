@@ -26,6 +26,23 @@ Plan de fases y objetivos: `plan-agentes-consulta.md`.
 |---|---|---|---|---|---|---|---|---|---|
 | 2026-10-14 | `d08cace` | passages | 88 % | 88 % | 88 % | 50 % | 0 | 934 | 1008 |
 | 2026-10-14 | R1 | passages | 92 % | 92 % | 92 % | 50 % | 0 | 903 | 1068 |
+| 2026-10-14 | R2 | passages | 96 % | 96 % | 96 % | 50 % | 0 | 958 | 1076 |
+
+### 2026-10-14 · Fase R2: comprensión de la consulta y vecindad
+
+`parse_query` convierte las expresiones temporales en intervalo absoluto
+(zona horaria del sistema; `EPIGRAPH_QUERY_TIMEZONE` para fijarla) y detecta
+la intención; las preguntas de antes/después traen los eventos vecinos.
+Acierta ya q25 (fecha y hora). Dos lecciones del banco:
+
+- «¿Quién se comprometió a terminar la presentación **antes de las 6**?» se
+  tomó como filtro horario y vació la búsqueda → una hora sin día no es
+  filtro (sigue buscándose como texto).
+- Con intervalo, «¿qué capturas se hicieron…?» no describe ningún pasaje y el
+  reordenador descartaba los únicos candidatos → con intervalo el reordenador
+  ordena pero no descarta.
+
+Pendientes: q05 (Mobil), q27/q28 (abstención con distractor → A2).
 
 ### 2026-10-14 · Fase R1: el evento como pasaje
 

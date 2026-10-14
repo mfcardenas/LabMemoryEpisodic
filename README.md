@@ -148,6 +148,16 @@ del corte, y las fusiona con RRF:
 - **palabras** (BM25 en SQLite FTS5): códigos, nombres y frases exactas
   entre comillas; plural y género se casan por prefijo.
 
+Antes de buscar, la pregunta se **entiende** sin modelos
+(`episodic/application/query_understanding.py`): «ayer por la tarde», «el
+lunes», «el 12 de octubre después de las 16:30» o «hace tres días» se
+convierten en un intervalo absoluto (zona horaria `EPIGRAPH_QUERY_TIMEZONE`,
+por defecto la del sistema) que filtra las dos vías y desaparece del texto
+buscado; se detecta la intención (cuándo, quién, dónde, cuánto, documento,
+antes/después) y, si la pregunta es de antes/después, cada evento encontrado
+llega con sus eventos **anterior y siguiente** (`neighbors` en la API). El
+plan aplicado se devuelve en `plan` y el front lo muestra («Entendí: …»).
+
 Un cross-encoder multilingüe (`EPIGRAPH_RERANK_MODEL`) reordena los mejores y
 descarta los que no llegan a `EPIGRAPH_RERANK_MIN_SCORE`, salvo que ambas vías
 los pongan entre sus `EPIGRAPH_PASSAGE_AGREEMENT_RANK` primeros: una pregunta
