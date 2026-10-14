@@ -193,6 +193,25 @@ pero la búsqueda por momentos **no lo usa salvo que se pida**
 momento exacto; los resúmenes están pensados para que el agente navegue la
 memoria de arriba abajo (entorno → día → episodio → evento).
 
+### Herramientas para agentes
+
+`GET /api/tools` publica el catálogo (entrada y salida como esquema JSON) y
+`POST /api/tools/{nombre}` ejecuta cada herramienta; todas son de solo
+lectura. A las once deterministas de la Fase 8 se suman seis pensadas para
+un agente, compactas (`max_chars`) y paginadas:
+
+| Herramienta | Qué devuelve |
+|---|---|
+| `search_moments` | momentos citables (evento, habla, documento) con plan de la pregunta, posición en el vídeo y vecinos |
+| `get_event` / `get_event_neighbors` | un evento completo (acciones, actores, objetos, texto visible, habla) y los de alrededor |
+| `get_episode_summary` | el resumen generado del episodio (marcado `generated`) y, si se pide, sus revisiones |
+| `browse_memory` | navegación ambientes → días → episodios → eventos, con los resúmenes de cada nivel |
+| `get_document_passages` | fragmentos de los documentos de un episodio |
+
+La pestaña **Herramientas** del front genera los formularios desde ese
+catálogo. Las salidas separan `fact` (observado), `generated` (texto de
+modelo) y `evidence`.
+
 **El índice se mantiene al día solo.** Cada captura se indexa al procesarse.
 SQLite guarda además la huella con la que se indexó (modelos, prefijo de
 documento, versión del formato); al arrancar (`serve` o `watch`), si no

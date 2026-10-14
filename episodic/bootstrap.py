@@ -469,6 +469,8 @@ def create_app_container(
         repository=repo,
         hybrid_retrieval=hybrid_retrieval_svc,
         logical_graph=logical_graph_svc,
+        passage_search=passage_search_svc,
+        timezone=_query_timezone(config),
     )
 
     lifecycle_svc = LifecycleService(

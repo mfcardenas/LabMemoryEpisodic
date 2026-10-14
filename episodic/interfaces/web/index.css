@@ -662,6 +662,7 @@ button.speech-time:hover { outline: 2px solid var(--signal); }
 .highlight:hover { border-color: var(--ink); }
 .summary-questions ul { margin: 4px 0 0; padding-left: 18px; color: var(--muted); }
 .summary-section footer { display: flex; gap: 12px; align-items: center; color: var(--muted); font-size: 12px; }
+.tool-json { max-height: 420px; overflow: auto; font-size: 11px; line-height: 1.4; background: var(--paper); border: 1px solid var(--line); padding: 10px; white-space: pre-wrap; }
 .passage-plan { padding: 8px 12px; border: 1px dashed var(--ink); background: var(--paper); font-size: 12px; color: var(--muted); }
 .passage-plan b { color: var(--ink); }
 .passage-neighbors { display: flex; flex-wrap: wrap; gap: 6px; align-items: stretch; }

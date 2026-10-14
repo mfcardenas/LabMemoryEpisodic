@@ -974,137 +974,65 @@ document.addEventListener("DOMContentLoaded", () => {
     });
   });
 
-  const TOOL_DEFS = [
-    {
-      name: "get_last_confirmed_observation",
-      label: "get_last_confirmed_observation · Última observación confirmada",
-      desc: "Devuelve la última observación con estado 'validated' para una identidad de entidad.",
-      fields: [{ name: "entity_id", label: "ID de la Entidad", type: "text", required: true, placeholder: "ej. drill_north_track" }]
-    },
-    {
-      name: "get_entity_timeline",
-      label: "get_entity_timeline · Línea temporal de entidad",
-      desc: "Observaciones cronológicas asociadas a una identidad validada y sus alias.",
-      fields: [
-        { name: "entity_id", label: "ID de la Entidad", type: "text", required: true, placeholder: "ej. drill_north_track" },
-        { name: "limit", label: "Límite", type: "number", value: 20 }
-      ]
-    },
-    {
-      name: "search_observations",
-      label: "search_observations · Buscar observaciones estructuradas",
-      desc: "Observaciones filtradas o semánticamente relacionadas.",
-      fields: [
-        { name: "query", label: "Consulta", type: "text", placeholder: "ej. taladro, pipeta, inspección" },
-        { name: "modality", label: "Modalidad", type: "select", options: ["", "video", "audio", "image", "document", "text"] },
-        { name: "limit", label: "Límite", type: "number", value: 10 }
-      ]
-    },
-    {
-      name: "search_documents",
-      label: "search_documents · Fragmentos documentales",
-      desc: "Búsqueda de fragmentos documentales con número de página y cita textual.",
-      fields: [
-        { name: "query", label: "Término en documentos", type: "text", required: true, placeholder: "ej. número de serie, calibración" },
-        { name: "limit", label: "Límite", type: "number", value: 5 }
-      ]
-    },
-    {
-      name: "find_contradictions",
-      label: "find_contradictions · Detectar contradicciones",
-      desc: "Encuentra relaciones CONTRADICTS, extremos en conflicto y evidencias asociadas.",
-      fields: [
-        { name: "entity_id", label: "Entidad (opcional)", type: "text", placeholder: "ej. drill_north_track" },
-        { name: "environment_id", label: "Ambiente (opcional)", type: "text", placeholder: "ej. workshop_north" }
-      ]
-    },
-    {
-      name: "compare_entities",
-      label: "compare_entities · Comparar entidades",
-      desc: "Compara dos identidades (validated_same, hypothesized_same o undetermined) sin crear decisiones arbitrarias.",
-      fields: [
-        { name: "entity_id_a", label: "Entidad A", type: "text", required: true, placeholder: "ej. drill_north_track" },
-        { name: "entity_id_b", label: "Entidad B", type: "text", required: true, placeholder: "ej. drill_south_track" }
-      ]
-    },
-    {
-      name: "get_environment_topology",
-      label: "get_environment_topology · Topología de ambiente",
-      desc: "Ambientes, fuentes, entidades presentes, episodios y vínculos espaciales.",
-      fields: [
-        { name: "include_inferred", label: "Incluir inferencias", type: "checkbox", checked: true },
-        { name: "include_hypotheses", label: "Incluir hipótesis", type: "checkbox", checked: true }
-      ]
-    },
-    {
-      name: "expand_relations",
-      label: "expand_relations · Recorrido lógico",
-      desc: "Recorrido determinista acotado por las relaciones del grafo lógico.",
-      fields: [
-        { name: "origin_id", label: "ID del nodo origen", type: "text", required: true, placeholder: "ej. episode_south_repair" },
-        { name: "max_depth", label: "Profundidad máxima (1-5)", type: "number", value: 2, min: 1, max: 5 }
-      ]
-    },
-    {
-      name: "get_supporting_evidence",
-      label: "get_supporting_evidence · Evidencias de respaldo",
-      desc: "Evidencias verificables de observación, episodio, relación, hipótesis, entidad o activo.",
-      fields: [
-        { name: "target_kind", label: "Tipo de objetivo", type: "select", options: ["observation", "episode", "relation", "hypothesis", "entity", "asset"] },
-        { name: "target_id", label: "ID del objetivo", type: "text", required: true, placeholder: "ej. observation_drill_south" }
-      ]
-    },
-    {
-      name: "get_episode",
-      label: "get_episode · Detalle canónico de episodio",
-      desc: "Recupera el detalle canónico completo de un episodio.",
-      fields: [{ name: "episode_id", label: "ID del Episodio", type: "text", required: true, placeholder: "ej. episode_south_repair" }]
-    },
-    {
-      name: "search_episodes",
-      label: "search_episodes · Recuperación híbrida",
-      desc: "Episodios rehidratados con observaciones y evidencias.",
-      fields: [
-        { name: "query", label: "Texto de consulta", type: "text", required: true, placeholder: "ej. mantenimiento taller" },
-        { name: "limit", label: "Límite", type: "number", value: 5 }
-      ]
-    }
-  ];
-
+  // Catálogo de herramientas generado desde GET /api/tools (esquema JSON de cada entrada).
+  let toolCatalog = [];
   let toolsLoaded = false;
+  const TOOL_LABELS = {
+    search_moments: "Momentos que responden", get_event: "Evento completo", get_event_neighbors: "Eventos vecinos",
+    get_episode_summary: "Resumen del episodio", browse_memory: "Navegar la memoria", get_document_passages: "Documentos del episodio",
+  };
   async function loadToolsCatalog() {
     if (toolsLoaded) return;
     const select = $("#tool-select");
     if (!select) return;
-
-    select.innerHTML = TOOL_DEFS.map(t => `<option value="${esc(t.name)}">${esc(t.label)}</option>`).join("");
+    try { toolCatalog = await api("/api/tools"); } catch (error) { select.innerHTML = `<option>${esc(error.message)}</option>`; return; }
+    const agentNames = Object.keys(TOOL_LABELS);
+    const ordered = [...toolCatalog.filter(t => agentNames.includes(t.name)), ...toolCatalog.filter(t => !agentNames.includes(t.name))];
+    select.innerHTML = ordered.map(t => `<option value="${esc(t.name)}">${esc(t.name)}${TOOL_LABELS[t.name] ? ` · ${esc(TOOL_LABELS[t.name])}` : ""}</option>`).join("");
     select.addEventListener("change", () => renderToolForm(select.value));
-    renderToolForm(TOOL_DEFS[0].name);
+    renderToolForm(ordered[0]?.name);
     toolsLoaded = true;
   }
 
-  function renderToolForm(toolName) {
-    const def = TOOL_DEFS.find(t => t.name === toolName) || TOOL_DEFS[0];
-    const desc = $("#tool-description");
-    if (desc) desc.textContent = def.desc;
+  // Resuelve $ref dentro del esquema de entrada (enum de pydantic, por ejemplo).
+  const resolveSchema = (schema, root) => schema?.$ref ? (root.$defs || {})[schema.$ref.split("/").pop()] || {} : (schema || {});
+  const schemaKind = (prop, root) => {
+    const resolved = resolveSchema(prop, root);
+    const variants = (resolved.anyOf || []).map(v => resolveSchema(v, root)).filter(v => v.type !== "null");
+    const base = variants.length === 1 ? variants[0] : resolved;
+    if (base.enum) return { kind: "select", options: base.enum };
+    if (base.type === "boolean") return { kind: "checkbox" };
+    if (base.type === "integer" || base.type === "number") return { kind: "number", min: base.minimum, max: base.maximum };
+    if (base.type === "array") return { kind: "list" };
+    if (base.format === "date-time") return { kind: "datetime" };
+    return { kind: "text" };
+  };
 
+  function renderToolForm(toolName) {
+    const def = toolCatalog.find(t => t.name === toolName) || toolCatalog[0];
+    if (!def) return;
+    const desc = $("#tool-description");
+    if (desc) desc.textContent = def.description || "";
     const fieldsContainer = $("#tool-fields");
     if (!fieldsContainer) return;
-
-    fieldsContainer.innerHTML = def.fields.map(f => {
-      if (f.type === "select") {
-        const opts = (f.options || []).map(opt => `<option value="${esc(opt)}">${opt ? esc(opt) : "(Cualquiera)"}</option>`).join("");
-        return `<label>${esc(f.label)}<select name="${esc(f.name)}">${opts}</select></label>`;
+    const schema = def.input_schema || {};
+    const required = new Set(schema.required || []);
+    fieldsContainer.innerHTML = Object.entries(schema.properties || {}).map(([name, prop]) => {
+      const meta = schemaKind(prop, schema);
+      const label = `${name}${required.has(name) ? " *" : ""}`;
+      const hint = prop.description ? ` title="${esc(prop.description)}"` : "";
+      if (meta.kind === "select") {
+        const opts = [...(required.has(name) ? [] : [""]), ...meta.options].map(opt => `<option value="${esc(opt)}">${opt === "" ? "(cualquiera)" : esc(String(opt))}</option>`).join("");
+        return `<label${hint}>${esc(label)}<select name="${esc(name)}" data-kind="select">${opts}</select></label>`;
       }
-      if (f.type === "checkbox") {
-        return `<label class="switch"><input type="checkbox" name="${esc(f.name)}" ${f.checked ? "checked" : ""}><span></span>${esc(f.label)}</label>`;
+      if (meta.kind === "checkbox") {
+        return `<label class="switch"${hint}><input type="checkbox" name="${esc(name)}" data-kind="checkbox" ${prop.default ? "checked" : ""}><span></span>${esc(name)}</label>`;
       }
-      return `<label>${esc(f.label)}
-        <input type="${f.type || "text"}" name="${esc(f.name)}" ${f.value !== undefined ? `value="${esc(f.value)}"` : ""}
-          ${f.placeholder ? `placeholder="${esc(f.placeholder)}"` : ""} ${f.required ? "required" : ""}
-          ${f.min !== undefined ? `min="${f.min}"` : ""} ${f.max !== undefined ? `max="${f.max}"` : ""}>
-      </label>`;
-    }).join("");
+      const value = prop.default !== undefined && prop.default !== null ? `value="${esc(Array.isArray(prop.default) ? prop.default.join(", ") : prop.default)}"` : "";
+      const type = meta.kind === "number" ? "number" : meta.kind === "datetime" ? "datetime-local" : "text";
+      const placeholder = meta.kind === "list" ? 'placeholder="valores separados por comas"' : "";
+      return `<label${hint}>${esc(label)}<input type="${type}" name="${esc(name)}" data-kind="${meta.kind}" ${value} ${placeholder} ${required.has(name) ? "required" : ""} ${meta.min !== undefined ? `min="${meta.min}"` : ""} ${meta.max !== undefined ? `max="${meta.max}"` : ""}></label>`;
+    }).join("") || '<p class="tool-desc">Esta herramienta no necesita parámetros.</p>';
   }
 
   $("#tool-form")?.addEventListener("submit", async event => {
@@ -1112,24 +1040,17 @@ document.addEventListener("DOMContentLoaded", () => {
     const submit = $("#tool-submit");
     const root = $("#tool-results");
     const toolName = $("#tool-select").value;
-    const formData = new FormData(event.currentTarget);
     const payload = {};
-    const def = TOOL_DEFS.find(t => t.name === toolName);
-    const fieldTypes = new Map((def?.fields || []).map(f => [f.name, f.type]));
-
-    for (const [key, value] of formData.entries()) {
-      if (value === "") continue;
-      const type = fieldTypes.get(key);
-      // Solo los campos numéricos se convierten: un ID "123" sigue siendo texto.
-      if (type === "checkbox") payload[key] = true;
-      else if (type === "number") payload[key] = Number(value);
-      else payload[key] = value;
-    }
-    if (def) {
-      def.fields.filter(f => f.type === "checkbox").forEach(f => {
-        if (!(f.name in payload)) payload[f.name] = false;
-      });
-    }
+    event.currentTarget.querySelectorAll("[name]").forEach(input => {
+      const kind = input.dataset.kind;
+      if (kind === "checkbox") { payload[input.name] = input.checked; return; }
+      const value = input.value.trim();
+      if (value === "") return;
+      if (kind === "number") payload[input.name] = Number(value);
+      else if (kind === "list") payload[input.name] = value.split(",").map(item => item.trim()).filter(Boolean);
+      else if (kind === "datetime") payload[input.name] = new Date(value).toISOString();
+      else payload[input.name] = value;
+    });
 
     submit.disabled = true;
     submit.textContent = "Consultando...";
@@ -1198,6 +1119,21 @@ document.addEventListener("DOMContentLoaded", () => {
 
     const resultCount = (out.result_ids || []).length;
 
+    // Herramientas para agentes: momentos citables, texto generado y navegación.
+    const momentCard = (item, small = false) => `<article class="passage-hit${!small && item.keyframes > 0 && item.event_id ? " has-thumb" : ""}">
+        ${!small && item.keyframes > 0 && item.event_id ? `<button type="button" class="passage-thumb" data-passage-episode="${esc(item.episode_id)}" data-passage-observation="${esc(item.observation_id || "")}" data-passage-seek="${esc(item.start_offset_seconds ?? "")}"><img loading="lazy" alt="" src="/api/memory/events/${encodeURIComponent(item.event_id)}/keyframes/0"></button>` : ""}
+        <div class="passage-body"><header><span class="modality-tag ${esc(item.kind === "video_event" ? "video" : "text")}">${esc(passageTypeLabel(item))}</span>${item.title ? `<b>${esc(item.title)}</b>` : ""}<time>${esc([item.episode_external_id || "", item.start_offset_seconds != null ? fmtClock(item.start_offset_seconds) : "", item.page_number ? `pág. ${item.page_number}` : ""].filter(Boolean).join(" · "))}</time></header>
+        <p class="passage-text">${esc(item.snippet || item.text)}</p>
+        ${(item.speech || []).length ? `<p class="passage-text"><b>Se dijo:</b> ${item.speech.map(s => esc(s.text)).join(" · ")}</p>` : ""}
+        ${item.before?.length || item.after?.length ? `<div class="passage-neighbors">${(item.before || []).map(n => `<span class="neighbor"><small>antes</small><span>${esc(n.title)}</span></span>`).join("")}<span class="neighbor-here">este momento</span>${(item.after || []).map(n => `<span class="neighbor"><small>después</small><span>${esc(n.title)}</span></span>`).join("")}</div>` : ""}
+        <footer><span class="passage-why">${item.scores?.dense_rank ? `<span class="dense">Significado #${item.scores.dense_rank}</span>` : ""}${item.scores?.lexical_rank ? `<span class="lexical">Palabras #${item.scores.lexical_rank}</span>` : ""}${item.scores?.rerank != null ? `<span class="rerank">Reordenado ${Number(item.scores.rerank).toFixed(2)}</span>` : ""}</span><button type="button" class="button-mini" data-passage-episode="${esc(item.episode_id)}" data-passage-observation="${esc(item.observation_id || "")}" ${item.start_offset_seconds != null ? `data-passage-seek="${esc(item.start_offset_seconds)}"` : ""}>Ver en el episodio</button></footer></div></article>`;
+    const momentsHtml = (out.moments || []).map(item => momentCard(item)).join("");
+    const summariesHtml = (out.summaries || []).map(item => `<article class="summary-section"><div class="section-title"><p class="kicker">TEXTO GENERADO · ${esc(item.model_id)} · rev ${item.revision}</p><h3>${esc(item.title)}</h3></div><p class="summary-lead">${esc(item.summary)}</p><div class="summary-narrative">${paragraphs(item.narrative)}</div></article>`).join("");
+    const browseHtml = (out.browse || []).map(item => `<article class="event-card"><header><span class="event-seq">${esc(item.level)}</span><div><strong>${esc(item.label)}</strong><small>${esc([item.external_id || item.id, item.start_time ? fmtTime(item.start_time) : "", item.count != null ? `${item.count} elemento(s)` : "", item.offset_seconds != null ? fmtClock(item.offset_seconds) : ""].filter(Boolean).join(" · "))}</small></div></header>${item.summary_text ? `<p class="event-summary">${esc(item.summary_text)}</p>` : ""}</article>`).join("");
+    const pageInfo = out.metadata?.total != null ? `<p class="tool-desc">Página ${out.metadata.page} · ${out.metadata.total} en total${out.metadata.has_more ? " · hay más" : ""}</p>` : "";
+    const planInfo = out.metadata?.plan ? `<p class="tool-desc">Entendí: ${esc(out.metadata.plan.intent)}${out.metadata.plan.time_expression ? ` · ${esc(out.metadata.plan.time_expression)}` : ""}</p>` : "";
+    const anything = obsHtml || relsHtml || docsHtml || compsHtml || momentsHtml || summariesHtml || browseHtml;
+
     root.innerHTML = `
       <div class="panel">
         <div class="tool-output-head">
@@ -1205,13 +1141,22 @@ document.addEventListener("DOMContentLoaded", () => {
           <span>Confianza: ${out.confidence !== null && out.confidence !== undefined ? `${Math.round(out.confidence * 100)}%` : "—"}</span>
         </div>
         <div style="padding: 22px;">
+          ${planInfo}${pageInfo}
+          ${momentsHtml ? `<div class="tool-card-section"><h4>Momentos (${(out.moments || []).length})</h4><div class="search-results">${momentsHtml}</div></div>` : ""}
+          ${summariesHtml ? `<div class="tool-card-section"><h4>Resúmenes generados (${(out.summaries || []).length})</h4>${summariesHtml}</div>` : ""}
+          ${browseHtml ? `<div class="tool-card-section"><h4>Navegación (${(out.browse || []).length})</h4>${browseHtml}</div>` : ""}
           ${obsHtml ? `<div class="tool-card-section"><h4>Observaciones verificadas (${(out.observations || []).length})</h4>${obsHtml}</div>` : ""}
           ${relsHtml ? `<div class="tool-card-section"><h4>Relaciones y contradicciones (${(out.relations || []).length})</h4>${relsHtml}</div>` : ""}
           ${docsHtml ? `<div class="tool-card-section"><h4>Citas documentales (${(out.documents || []).length})</h4>${docsHtml}</div>` : ""}
           ${compsHtml ? `<div class="tool-card-section"><h4>Comparaciones (${(out.comparisons || []).length})</h4>${compsHtml}</div>` : ""}
-          ${!obsHtml && !relsHtml && !docsHtml && !compsHtml ? `<div class="empty">La consulta finalizó con éxito pero no devolvió registros coincidentes.</div>` : ""}
+          ${!anything ? `<div class="empty">La consulta finalizó con éxito pero no devolvió registros coincidentes.</div>` : ""}
+          <details class="technical-details"><summary>Respuesta completa (JSON)</summary><pre class="tool-json">${esc(JSON.stringify(out, null, 2))}</pre></details>
         </div>
       </div>`;
+    root.querySelectorAll("[data-passage-episode]").forEach(button => button.addEventListener("click", () => {
+      const seek = button.dataset.passageSeek;
+      openEpisode(button.dataset.passageEpisode, { observationId: button.dataset.passageObservation || null, seek: seek === undefined || seek === "" ? null : Number(seek) });
+    }));
   }
 
   // Foco al abrir un episodio desde un resultado: el momento exacto.

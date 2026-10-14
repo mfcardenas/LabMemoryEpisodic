@@ -973,7 +973,10 @@ def create_api_app(
         except KeyError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         except ValidationError as exc:
-            raise HTTPException(status_code=422, detail=exc.errors()) from exc
+            # Sin ctx ni url: el contexto puede llevar excepciones no serializables.
+            raise HTTPException(
+                status_code=422, detail=exc.errors(include_url=False, include_context=False, include_input=False)
+            ) from exc
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 

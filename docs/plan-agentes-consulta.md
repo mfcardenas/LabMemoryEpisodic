@@ -323,7 +323,17 @@ Tests: unidad del composer con `FakeSession`; integración del flujo con
 válida). Aceptación: episodio legible sin abrir el vídeo (criterio 4 del plan
 anterior); `browse` por día devuelve el digesto.
 
-### Fase A1 — Capa de herramientas para agentes (2–3 días)
+### Fase A1 — Capa de herramientas para agentes (2–3 días) · ✅ hecha (2026-10-14)
+
+Hecho: `tools/agent_tools.py` (`search_moments`, `get_event`,
+`get_event_neighbors`, `get_episode_summary`, `browse_memory`,
+`get_document_passages`) registradas en `MemoryToolbox` (17 herramientas);
+contratos `MomentRecord` (`fact`), `SummaryRecord` (`generated`),
+`BrowseItemRecord`; `max_chars` y paginación; front con formularios
+generados desde `/api/tools`. **No hecho** (decisión): las 11 herramientas de
+la Fase 8 se dejan intactas (sus pruebas dependen de datos legados); su
+barrido de `list_observations()` se acota en la Fase S si el agente llega a
+usarlas (el agente usa las seis nuevas).
 
 Objetivo: un catálogo compacto, paginado y barato en tokens, sin scans.
 

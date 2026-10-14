@@ -121,6 +121,135 @@ class GetEnvironmentTopologyInput(ToolInput):
     include_hypotheses: bool = True
 
 
+# -- Herramientas para agentes (Fase A1): compactas, paginadas, sin barridos --
+
+
+class SearchMomentsInput(IntervalToolInput):
+    """Momentos (eventos, habla suelta, fragmentos de documento) que responden a
+    la pregunta; la pregunta se entiende antes (tiempo, intención, ambientes)."""
+
+    query: str = Field(min_length=1)
+    environment_ids: list[str] = Field(default_factory=list)
+    source_ids: list[str] = Field(default_factory=list)
+    modalities: list[str] = Field(default_factory=list)
+    kinds: list[str] = Field(default_factory=list, description="video_event, speech_segment, document_text_fragment…")
+    max_episodes: int = Field(5, ge=1, le=50)
+    per_episode: int = Field(3, ge=1, le=20)
+    neighbors: int | None = Field(None, ge=0, le=5, description="eventos antes/después de cada momento; omitido: según la pregunta")
+    include_summaries: bool = False
+    max_chars: int = Field(600, ge=80, le=8000, description="caracteres de texto por momento")
+
+
+class GetEventInput(ToolInput):
+    event_id: str = Field(min_length=1)
+    max_chars: int = Field(4000, ge=80, le=20000)
+
+
+class GetEventNeighborsInput(ToolInput):
+    event_id: str = Field(min_length=1)
+    before: int = Field(2, ge=0, le=20)
+    after: int = Field(2, ge=0, le=20)
+    max_chars: int = Field(400, ge=80, le=8000)
+
+
+class GetEpisodeSummaryInput(ToolInput):
+    episode_id: str = Field(min_length=1)
+    include_revisions: bool = False
+
+
+class BrowseMemoryInput(ToolInput):
+    """Navegación de arriba abajo: environments → days → episodes → events."""
+
+    level: Literal["environments", "days", "episodes", "events"]
+    environment_id: str | None = None
+    day: str | None = Field(None, description="AAAA-MM-DD en la zona horaria del servidor (niveles episodes)")
+    episode_id: str | None = Field(None, description="necesario en el nivel events")
+    page: int = Field(1, ge=1)
+    page_size: int = Field(20, ge=1, le=100)
+
+    @model_validator(mode="after")
+    def validate_scope(self):
+        if self.level in {"days", "episodes"} and not self.environment_id:
+            raise ValueError(f"el nivel {self.level} necesita environment_id")
+        if self.level == "events" and not self.episode_id:
+            raise ValueError("el nivel events necesita episode_id")
+        return self
+
+
+class GetDocumentPassagesInput(ToolInput):
+    episode_id: str = Field(min_length=1)
+    query: str | None = None
+    limit: int = Field(5, ge=1, le=50)
+    max_chars: int = Field(800, ge=80, le=8000)
+
+
+class MomentRecord(BaseModel):
+    """Un momento citable: pasaje con su posición en el episodio y en el vídeo."""
+
+    record_kind: Literal["fact"] = "fact"
+    id: str
+    kind: str
+    event_id: str | None = None
+    observation_id: str | None = None
+    episode_id: str
+    episode_external_id: str | None = None
+    episode_title: str = ""
+    environment_id: str | None = None
+    source_id: str | None = None
+    title: str = ""
+    text: str = ""
+    snippet: str = ""
+    start_time: datetime | None = None
+    end_time: datetime | None = None
+    start_offset_seconds: float | None = None
+    end_offset_seconds: float | None = None
+    page_number: int | None = None
+    sequence_number: int | None = None
+    scores: dict[str, float | int | None] = Field(default_factory=dict)
+    kept_by: str | None = None
+    actions: list[str] = Field(default_factory=list)
+    actors: list[str] = Field(default_factory=list)
+    objects: list[str] = Field(default_factory=list)
+    visible_text: list[str] = Field(default_factory=list)
+    speech: list[dict[str, Any]] = Field(default_factory=list)
+    keyframes: int = 0
+    model: str | None = None
+    before: list["MomentRecord"] = Field(default_factory=list)
+    after: list["MomentRecord"] = Field(default_factory=list)
+
+
+class SummaryRecord(BaseModel):
+    """Texto generado por el modelo (nunca un hecho observado)."""
+
+    record_kind: Literal["generated"] = "generated"
+    id: str
+    scope: str
+    scope_key: str
+    revision: int
+    is_current: bool
+    title: str
+    summary: str
+    narrative: str
+    highlights: list[dict[str, Any]] = Field(default_factory=list)
+    open_questions: list[str] = Field(default_factory=list)
+    model_id: str
+    created_at: datetime
+
+
+class BrowseItemRecord(BaseModel):
+    record_kind: Literal["fact"] = "fact"
+    level: str
+    id: str
+    label: str
+    external_id: str | None = None
+    start_time: datetime | None = None
+    end_time: datetime | None = None
+    count: int | None = None
+    summary_title: str | None = None
+    summary_text: str | None = None
+    offset_seconds: float | None = None
+
+
 class EvidenceToolRecord(BaseModel):
     record_kind: Literal["evidence"] = "evidence"
     id: str
@@ -274,6 +403,9 @@ class MemoryToolOutput(BaseModel):
     environments: list[EnvironmentTopologyRecord] = Field(default_factory=list)
     sources: list[TopologySourceRecord] = Field(default_factory=list)
     comparisons: list[EntityComparisonRecord] = Field(default_factory=list)
+    moments: list[MomentRecord] = Field(default_factory=list)
+    summaries: list[SummaryRecord] = Field(default_factory=list)
+    browse: list[BrowseItemRecord] = Field(default_factory=list)
     confidence: float | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
 
