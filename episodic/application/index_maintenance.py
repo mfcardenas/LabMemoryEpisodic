@@ -107,16 +107,16 @@ class IndexMaintenanceService:
     # -- Comprobación -------------------------------------------------------
 
     def status(self) -> IndexStatus:
-        episodes = self._visible_episodes()
+        episode_count = self.repository.count_visible_episodes()
         stored = self.repository.get_system_state(PROFILE_KEY)
         status = IndexStatus(
-            episodes=len(episodes),
+            episodes=episode_count,
             points=self.vector_index.count(),
             indexed_passages=self.repository.count_passages(),
             current_profile=self.profile,
             stored_profile=stored,
         )
-        if not episodes:
+        if not episode_count:
             return status
         if stored is None:
             status.reasons.append("no consta con qué configuración se indexó (índice anterior a esta comprobación)")
@@ -125,16 +125,9 @@ class IndexMaintenanceService:
                 if stored.get(key) != self.profile.get(key):
                     status.reasons.append(f"cambió el {label}: {stored.get(key)!r} → {self.profile.get(key)!r}")
         if status.points == 0:
-            status.reasons.append(f"Qdrant no tiene puntos y hay {len(episodes)} episodio(s)")
+            status.reasons.append(f"Qdrant no tiene puntos y hay {episode_count} episodio(s)")
         status.full = bool(status.reasons)
-        status.missing_episode_ids = [
-            episode.id
-            for episode in episodes
-            if not any(
-                rep.target_type == PASSAGES_TARGET
-                for rep in self.repository.list_representations_for_target(episode.id)
-            )
-        ]
+        status.missing_episode_ids = self.repository.list_episode_ids_without_representation(PASSAGES_TARGET)
         if status.missing_episode_ids and not status.full:
             status.reasons.append(f"{len(status.missing_episode_ids)} episodio(s) sin pasajes indexados")
         return status
@@ -201,10 +194,3 @@ class IndexMaintenanceService:
         self.repository.set_system_state(PROFILE_KEY, self.profile)
         return total
 
-    def _visible_episodes(self) -> list:
-        episodes, cursor = [], None
-        while True:
-            page, cursor = self.repository.list_episodes(limit=100, cursor=cursor)
-            episodes.extend(episode for episode in page if episode.is_visible)
-            if not cursor:
-                return episodes

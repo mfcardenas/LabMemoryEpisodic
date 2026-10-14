@@ -20,6 +20,16 @@ Métricas:
 
 Plan de fases y objetivos: `plan-agentes-consulta.md`.
 
+## Escala (Fase S)
+
+`scripts/scale_test.py` sobre corpus sintético (`scripts/synthesize_corpus.py`).
+Latencias p50 / p95 en ms de la búsqueda por momentos (sin y con
+reordenador) y de `search_moments`; «hash» mide solo la ruta de datos
+(vectores de hash, reordenador falso), «real» usa Nomic y jina-v2 en CPU.
+
+| Fecha | Commit | Perfil | Eventos | Pasajes | búsqueda | +reordenador | search_moments | construcción s |
+|---|---|---|---|---|---|---|---|---|
+
 ## Resultados
 
 | Fecha | Commit | Modo | momento@1 | momento@5 | episodio@5 | abstención | falsas abst. | p50 ms | p95 ms |

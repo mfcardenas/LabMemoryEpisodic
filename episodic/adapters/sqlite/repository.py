@@ -741,6 +741,43 @@ class SqliteEpisodicRepository:
             (1 if visible else 0, episode_id),
         )
 
+    def count_visible_episodes(self) -> int:
+        return int(self._conn.execute("SELECT count(*) FROM episodes WHERE is_visible = 1").fetchone()[0])
+
+    def list_episode_ids_without_representation(self, target_type: str, limit: int = 100000) -> List[str]:
+        """Episodios visibles sin representación de ese tipo en el outbox (en
+        SQL: a 200 k eventos recorrerlos en Python tardaba 40 s)."""
+        rows = self._conn.execute(
+            """
+            SELECT e.id FROM episodes e
+            WHERE e.is_visible = 1
+              AND NOT EXISTS (SELECT 1 FROM representations r WHERE r.target_id = e.id AND r.target_type = ?)
+            ORDER BY e.created_at LIMIT ?
+            """,
+            (target_type, limit),
+        ).fetchall()
+        return [row[0] for row in rows]
+
+    def environment_episode_stats(self) -> Dict[str, Dict[str, Any]]:
+        """Por ambiente: episodios visibles y primer/último inicio (una consulta)."""
+        rows = self._conn.execute(
+            """
+            SELECT json_each.value AS environment_id, count(*) AS episodes,
+                   min(episodes.start_time) AS first_start, max(episodes.start_time) AS last_start
+            FROM episodes, json_each(episodes.environment_ids_json)
+            WHERE episodes.is_visible = 1
+            GROUP BY json_each.value
+            """
+        ).fetchall()
+        return {
+            row["environment_id"]: {
+                "episodes": int(row["episodes"]),
+                "first_start": datetime.fromisoformat(row["first_start"]) if row["first_start"] else None,
+                "last_start": datetime.fromisoformat(row["last_start"]) if row["last_start"] else None,
+            }
+            for row in rows
+        }
+
     def list_episodes_for_environment(self, environment_id: str) -> List[Episode]:
         rows = self._conn.execute(
             """

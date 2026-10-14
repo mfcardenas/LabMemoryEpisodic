@@ -231,6 +231,19 @@ La pestaña **Herramientas** del front genera los formularios desde ese
 catálogo. Las salidas separan `fact` (observado), `generated` (texto de
 modelo) y `evidence`.
 
+### Prueba de escala
+
+`scripts\scale_test.bat` (o `scripts/scale_test.sh`) ejecuta sin intervención
+los dos perfiles de la Fase S sobre un corpus sintético propio
+(`episodic-data-scale-<perfil>`, colección `episodic_memory_scale_<perfil>`;
+nunca toca las capturas reales): **hash** (200 000 eventos con vectores de
+hash: mide SQLite, FTS y Qdrant) y **real** (50 000 eventos con Nomic y el
+reordenador; horas en CPU). Cada perfil genera, indexa y mide la búsqueda por
+momentos (con y sin reordenador, con intervalo), `search_moments`,
+`browse_memory`, `get_event` y vecinos, y deja `data/eval/escala-*.json` más
+una fila para `docs/evaluacion.md`. `python scripts/scale_test.py --help`
+muestra las opciones (`--events`, `--skip-build` para medir sin regenerar).
+
 **El índice se mantiene al día solo.** Cada captura se indexa al procesarse.
 SQLite guarda además la huella con la que se indexó (modelos, prefijo de
 documento, versión del formato); al arrancar (`serve` o `watch`), si no

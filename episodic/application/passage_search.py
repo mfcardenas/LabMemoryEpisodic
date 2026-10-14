@@ -77,9 +77,11 @@ def _stem(term: str) -> str:
     return term
 
 
-def lexical_query(text: str) -> str:
+def lexical_query(text: str, operator: str = "OR") -> str:
     """Expresión FTS5 a partir de la pregunta: frases entre comillas tal cual
-    y, para el resto, cada término significativo como prefijo, unidos con OR."""
+    y, para el resto, cada término significativo como prefijo, unidos con
+    ``operator`` (OR: cualquier término; AND: todos, mucho más barato en
+    corpus grandes porque puntúa pocas filas)."""
     clauses: list[str] = []
     for phrase in _PHRASE.findall(text):
         words = _WORD.findall(_fold(phrase))
@@ -95,7 +97,7 @@ def lexical_query(text: str) -> str:
             continue
         seen.add(term)
         clauses.append(f'"{term}"*' if len(term) >= 4 else f'"{term}"')
-    return " OR ".join(clauses)
+    return f" {operator} ".join(clauses)
 
 
 class PassageSearchService:
@@ -160,6 +162,16 @@ class PassageSearchService:
             sources=[(item.id, item.name) for item in self.repository.list_sources()],
         )
 
+    def _indexed_passages(self) -> int:
+        """Cuenta de pasajes con caché breve: contar 300 k filas cuesta ~20 ms
+        y solo sirve para avisar de un índice vacío."""
+        now = time.monotonic()
+        cached = getattr(self, "_count_cache", None)
+        if cached is None or now - cached[0] > 10.0:
+            cached = (now, self.repository.count_passages())
+            self._count_cache = cached
+        return cached[1]
+
     def warm_up(self) -> None:
         """Carga los modelos antes de la primera consulta (la carga tarda segundos)."""
         self.text_encoder.embed_query("calentamiento")
@@ -215,7 +227,7 @@ class PassageSearchService:
             query=query,
             groups=[],
             lexical_query=lexical_query(search_text),
-            indexed_passages=self.repository.count_passages(),
+            indexed_passages=self._indexed_passages(),
             plan=plan,
         )
 
@@ -242,26 +254,36 @@ class PassageSearchService:
         run.dense_candidates = len(dense)
 
         # 2. Texto completo (BM25), con los mismos filtros antes del límite.
+        # Primero con todos los términos (AND: puntúa pocas filas, barato);
+        # si no llena los candidatos, con cualquiera (OR), que en corpus
+        # grandes puntúa cientos de miles de filas.
         lexical: list[tuple[str, float, str]] = []
         if run.lexical_query:
             timeline = absolute_interval_filter(filters.interval)
-            try:
-                lexical = [
-                    (passage_id, score, fragment)
+            lexical_filters = dict(
+                environment_ids=tuple(filters.environment_ids),
+                source_ids=tuple(filters.source_ids),
+                modalities=tuple(filters.modalities),
+                kinds=tuple(filters.observation_types),
+                exclude_kinds=excluded_kinds,
+                start_ms=timeline.get("timeline_query_start_ms"),
+                end_ms=timeline.get("timeline_query_end_ms"),
+            )
+            expressions = [lexical_query(search_text, "AND"), run.lexical_query]
+            seen_ids: set[str] = set()
+            for expression in dict.fromkeys(expressions):
+                if len(lexical) >= self.candidates // 2:
+                    break
+                try:
                     for passage_id, _episode_id, score, fragment in self.repository.search_passages(
-                        run.lexical_query,
-                        self.candidates,
-                        environment_ids=tuple(filters.environment_ids),
-                        source_ids=tuple(filters.source_ids),
-                        modalities=tuple(filters.modalities),
-                        kinds=tuple(filters.observation_types),
-                        exclude_kinds=excluded_kinds,
-                        start_ms=timeline.get("timeline_query_start_ms"),
-                        end_ms=timeline.get("timeline_query_end_ms"),
-                    )
-                ]
-            except Exception as exc:  # una expresión rara no debe tumbar la búsqueda
-                logger.warning("Búsqueda por texto completo fallida (%s): %s", run.lexical_query, exc)
+                        expression, self.candidates, **lexical_filters
+                    ):
+                        if passage_id not in seen_ids:
+                            seen_ids.add(passage_id)
+                            lexical.append((passage_id, score, fragment))
+                except Exception as exc:  # una expresión rara no debe tumbar la búsqueda
+                    logger.warning("Búsqueda por texto completo fallida (%s): %s", expression, exc)
+            lexical = lexical[: self.candidates]
         run.lexical_candidates = len(lexical)
 
         # 3. Fusión por posición (RRF).

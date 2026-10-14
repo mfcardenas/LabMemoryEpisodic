@@ -164,16 +164,16 @@ class AgentMemoryTools:
     def browse_memory(self, request: BrowseMemoryInput) -> MemoryToolOutput:
         items: list[BrowseItemRecord] = []
         if request.level == "environments":
+            stats = self.repository.environment_episode_stats()  # una consulta, no un barrido por ambiente
             for environment in self.repository.list_environments():
-                episodes = [e for e in self.repository.list_episodes_for_environment(environment.id) if e.is_visible]
-                if not episodes:
+                stat = stats.get(environment.id)
+                if not stat:
                     continue  # sin memoria que navegar (p. ej. el ambiente legado por defecto)
                 overview = self.repository.get_current_summary("environment", environment.id)
-                starts = [e.start_time for e in episodes if e.start_time]
                 items.append(BrowseItemRecord(
                     level="environment", id=environment.id, label=environment.name or environment.id,
-                    start_time=min(starts) if starts else None, end_time=max(starts) if starts else None,
-                    count=len(episodes), summary_title=overview.title if overview else None,
+                    start_time=stat["first_start"], end_time=stat["last_start"],
+                    count=stat["episodes"], summary_title=overview.title if overview else None,
                     summary_text=overview.summary if overview else None,
                 ))
             items.sort(key=lambda item: item.id)
