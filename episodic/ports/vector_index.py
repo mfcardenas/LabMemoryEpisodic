@@ -39,6 +39,10 @@ class VectorIndex(Protocol):
         """Insertar o actualizar un punto."""
         ...
 
+    def upsert_many(self, points: List[tuple]) -> None:
+        """Varios puntos en una escritura: (point_id, target_id, vectors, payload)."""
+        ...
+
     def delete_points(self, point_ids: List[str]) -> None: ...
 
     def search(

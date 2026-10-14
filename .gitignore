@@ -14,7 +14,9 @@ watch.toml
 # Datos generados por EpiGraph (memoria, índice, medios y ejecuciones)
 episodic-data/
 episodic-data-synth/
+episodic-data-scale-*/
 data/eval/resultados-*.json
+data/eval/escala-*.json
 .runtime/
 scratch_uploads/
 

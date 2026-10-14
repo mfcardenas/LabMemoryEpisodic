@@ -295,14 +295,11 @@ class IndexingWorker:
             vectors = self.text_encoder.embed_documents([item.text for item in batch])
             if len(vectors) != len(batch):
                 raise ValueError("El encoder de texto no devolvió un vector por pasaje")
-            for passage, vector in zip(batch, vectors):
-                self.vector_index.upsert(
-                    point_id=passage.point_id,
-                    target_id=passage.id,
-                    vectors={"text": vector},
-                    payload=passage_payload(passage, episode),
-                )
-                self.points_written += 1
+            self.vector_index.upsert_many([
+                (passage.point_id, passage.id, {"text": vector}, passage_payload(passage, episode))
+                for passage, vector in zip(batch, vectors)
+            ])
+            self.points_written += len(batch)
             if len(passages) > self.passage_batch_size:
                 note(f"{min(start + self.passage_batch_size, len(passages))}/{len(passages)} pasajes")
         note(f"{len(passages)} pasaje(s) indexados en {time.monotonic() - started:.1f} s")

@@ -163,6 +163,20 @@ class QdrantVectorIndex:
             points=[point],
         )
 
+    def upsert_many(self, points: List[tuple]) -> None:
+        """Varios puntos en una petición: (point_id, target_id, vectors, payload).
+        Un viaje HTTP por lote en vez de uno por punto (×20 al indexar)."""
+        if not points:
+            return
+        structs = []
+        for point_id, target_id, vectors, payload in points:
+            point_payload = dict(payload)
+            point_payload["target_id"] = target_id
+            point_payload["raw_point_id"] = point_id
+            point_payload.setdefault("is_visible", True)
+            structs.append(models.PointStruct(id=_sanitize_point_id(point_id), vector=vectors, payload=point_payload))
+        self.client.upsert(collection_name=self.collection_name, points=structs)
+
     def delete_points(self, point_ids: List[str]) -> None:
         """Elimina puntos por su lista de IDs."""
         if not point_ids:
