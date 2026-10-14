@@ -50,6 +50,7 @@ from episodic.domain.types import (
 )
 from episodic.interfaces.http.schemas import (
     AnnotationCreateRequest,
+    AskRequest,
     HealthResponse,
     HybridQueryRunResponse,
     IndexingSummaryResponse,
@@ -736,6 +737,42 @@ def create_api_app(
         """Encola una reconstrucción completa; si ya hay una, devuelve esa."""
         job = container.index_maintenance.active_job() or submit_reindex(container, TRIGGER_MANUAL)
         return job_response(job)
+
+    # -----------------------------------------------------------------------
+    # Agente de consulta: pregunta → herramientas → respuesta con citas
+    # -----------------------------------------------------------------------
+
+    @app.post("/api/ask")
+    def ask(req: AskRequest):
+        agent = getattr(container, "answers", None)
+        if agent is None or not agent.enabled:
+            raise HTTPException(status_code=503, detail="No hay modelo de razonamiento configurado (EPIGRAPH_AGENT_BACKEND)")
+        try:
+            run = agent.ask(req.question)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        return run.to_dict()
+
+    @app.get("/api/ask/status")
+    def ask_status():
+        agent = getattr(container, "answers", None)
+        return {
+            "enabled": bool(agent and agent.enabled),
+            "model": agent.model.model_id if agent and agent.model else None,
+            "tools": list(agent.tool_names) if agent else [],
+            "max_steps": agent.max_steps if agent else None,
+        }
+
+    @app.get("/api/answers")
+    def list_answers(limit: int = Query(20, ge=1, le=200)):
+        return {"answers": [item.to_dict() for item in container.repository.list_answer_runs(limit)]}
+
+    @app.get("/api/answers/{run_id}")
+    def get_answer(run_id: str):
+        run = container.repository.get_answer_run(run_id)
+        if run is None:
+            raise HTTPException(status_code=404, detail=f"Respuesta no encontrada: {run_id}")
+        return run.to_dict()
 
     # -----------------------------------------------------------------------
     # Resúmenes jerárquicos (texto generado, con revisiones)

@@ -15,6 +15,7 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 
 from episodic.adapters.sqlite.migrations import apply_migrations, init_connection
 from episodic.adapters.sqlite.serialized import SerializedConnection
+from episodic.domain.answers import AnswerRun
 from episodic.domain.captures import Capture, Job, JobState
 from episodic.domain.watch import ActivityEntry, ActivityLevel, InboxFile, InboxFileState
 from episodic.domain.entities import (
@@ -1982,6 +1983,45 @@ class SqliteEpisodicRepository:
 
     def count_passages(self) -> int:
         return int(self._conn.execute("SELECT count(*) FROM passages").fetchone()[0])
+
+    # -- Respuestas del agente -------------------------------------------------------
+
+    def save_answer_run(self, run: AnswerRun) -> None:
+        self._conn.execute(
+            """
+            INSERT INTO answer_runs (id, question, answer, confidence, abstained, citations_json, steps_json,
+                                     model_id, usage_json, took_ms, error, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET answer = excluded.answer, confidence = excluded.confidence,
+                abstained = excluded.abstained, citations_json = excluded.citations_json,
+                steps_json = excluded.steps_json, usage_json = excluded.usage_json, took_ms = excluded.took_ms,
+                error = excluded.error
+            """,
+            (
+                run.id, run.question, run.answer, run.confidence, 1 if run.abstained else 0,
+                _to_json(run.citations), _to_json({"steps": run.steps, "dropped": run.dropped_citations, "metadata": run.metadata}),
+                run.model_id, _to_json(run.usage), run.took_ms, run.error, run.created_at.isoformat(),
+            ),
+        )
+
+    def get_answer_run(self, run_id: str) -> Optional[AnswerRun]:
+        row = self._conn.execute("SELECT * FROM answer_runs WHERE id = ?", (run_id,)).fetchone()
+        return self._row_to_answer_run(row) if row else None
+
+    def list_answer_runs(self, limit: int = 50) -> List[AnswerRun]:
+        rows = self._conn.execute("SELECT * FROM answer_runs ORDER BY created_at DESC LIMIT ?", (limit,)).fetchall()
+        return [self._row_to_answer_run(row) for row in rows]
+
+    @staticmethod
+    def _row_to_answer_run(row: sqlite3.Row) -> AnswerRun:
+        extra = _from_json(row["steps_json"], {}) or {}
+        return AnswerRun(
+            id=row["id"], question=row["question"], answer=row["answer"], confidence=row["confidence"],
+            abstained=bool(row["abstained"]), citations=_from_json(row["citations_json"], []),
+            dropped_citations=extra.get("dropped", []), steps=extra.get("steps", []), model_id=row["model_id"],
+            usage=_from_json(row["usage_json"], {}), took_ms=float(row["took_ms"] or 0), error=row["error"],
+            created_at=datetime.fromisoformat(row["created_at"]), metadata=extra.get("metadata", {}),
+        )
 
     # -- Resúmenes jerárquicos --------------------------------------------------
 

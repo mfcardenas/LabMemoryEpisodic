@@ -30,6 +30,7 @@ from episodic.application.activity import ActivityLog
 from episodic.application.indexing import IndexingWorker
 from episodic.application.inspection import MemoryInspectionService
 from episodic.application.asset_ingestion import AssetIngestionService
+from episodic.application.agents.orchestrator import AnswerOrchestrator
 from episodic.application.summaries import (
     DIGEST_JOB_KIND,
     DIGEST_STAGES,
@@ -153,6 +154,40 @@ def build_text_composer(config: EpisodicConfig):
     )
 
 
+def build_reasoning_model(config: EpisodicConfig):
+    """Modelo del agente de respuestas, o ``None`` si está desactivado."""
+    if config.agent_backend == "none":
+        return None
+    if config.agent_backend == "fake":
+        from episodic.adapters.models.fake_chat import FakeReasoningModel
+
+        return FakeReasoningModel()
+    from episodic.adapters.models.ollama_chat import OllamaReasoningModel
+
+    return OllamaReasoningModel(
+        model=config.agent_model or config.text_model,
+        base_url=config.ollama_url,
+        timeout_seconds=config.agent_timeout_seconds,
+        temperature=config.agent_temperature,
+        num_ctx=config.agent_num_ctx,
+        reasoning=config.agent_reasoning,
+    )
+
+
+def build_answer_orchestrator(config: EpisodicConfig, repository, toolbox, activity=None) -> AnswerOrchestrator:
+    return AnswerOrchestrator(
+        repository,
+        toolbox,
+        build_reasoning_model(config),
+        timezone=_query_timezone(config),
+        max_steps=config.agent_max_steps,
+        max_tool_calls=config.agent_max_tool_calls,
+        max_seconds=config.agent_max_seconds,
+        tool_result_chars=config.agent_tool_result_chars,
+        activity=activity,
+    )
+
+
 def build_summary_service(config: EpisodicConfig, repository) -> SummaryService:
     return SummaryService(
         repository,
@@ -264,6 +299,8 @@ class AppContainer:
     index_maintenance: Optional[IndexMaintenanceService] = None
     # Lectura de resúmenes y encolado de regeneraciones desde la API.
     summaries: Optional[SummaryService] = None
+    # Agente de respuestas (Preguntar).
+    answers: Optional[AnswerOrchestrator] = None
     watcher: Optional[InboxWatcher] = None
 
     def close(self) -> None:
@@ -531,6 +568,10 @@ def create_app_container(
         activity_log=ActivityLog(repo, config.activity_log_max_rows, config.activity_log_max_passes),
         passage_search=passage_search_svc,
         summaries=build_summary_service(config, repo),
+        answers=build_answer_orchestrator(
+            config, repo, memory_tools,
+            ActivityLog(repo, config.activity_log_max_rows, config.activity_log_max_passes),
+        ),
         index_maintenance=IndexMaintenanceService(
             repo, vector_index, lifecycle_svc, indexing_worker, _index_profile(config)
         ),

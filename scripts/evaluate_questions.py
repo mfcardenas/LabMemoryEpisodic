@@ -132,6 +132,53 @@ class PassageRunner:
             self.container.close()
 
 
+class AskRunner(PassageRunner):
+    """Consulta al agente; los momentos evaluados son sus citas (la primera, la principal)."""
+
+    mode = "ask"
+
+    def __init__(self, url: Optional[str]) -> None:
+        super().__init__(url)
+        if self.container is not None and not (self.container.answers and self.container.answers.enabled):
+            raise SystemExit("El agente no está configurado (EPIGRAPH_AGENT_BACKEND)")
+
+    def describe(self) -> dict[str, Any]:
+        if self.container is not None:
+            agent = self.container.answers
+            return {"transport": "in-process", "model": agent.model.model_id, "max_steps": agent.max_steps, "tools": list(agent.tool_names)}
+        return {"transport": self.url, **self.session.get(f"{self.url}/api/ask/status", timeout=30).json()}
+
+    def run(self, question: dict[str, Any]) -> Outcome:
+        started = time.perf_counter()
+        if self.container is not None:
+            data = self.container.answers.ask(question["pregunta"]).to_dict()
+        else:
+            response = self.session.post(f"{self.url}/api/ask", json={"question": question["pregunta"]}, timeout=600)
+            response.raise_for_status()
+            data = response.json()
+        took = (time.perf_counter() - started) * 1000
+        moments = [
+            Moment(external_id=c.get("episode_external_id") or "", start_offset=c.get("start_offset_seconds"),
+                   end_offset=c.get("end_offset_seconds"), kind=c.get("kind", ""))
+            for c in data.get("citations", [])
+        ]
+        return Outcome(
+            question_id=question["id"],
+            tipo=question["tipo"],
+            moments=moments,
+            took_ms=took,
+            abstained=bool(data.get("abstained")) or not moments,
+            extra={
+                "confidence": data.get("confidence"),
+                "answer": (data.get("answer") or "")[:300],
+                "steps": [s.get("tool") for s in data.get("steps", [])],
+                "tokens": (data.get("usage") or {}).get("prompt_tokens", 0) + (data.get("usage") or {}).get("completion_tokens", 0),
+                "dropped": data.get("dropped_citations"),
+                "top": [f"{m.external_id}@{m.start_offset}" if m.start_offset is not None else f"{m.external_id}[{m.kind}]" for m in moments[:5]],
+            },
+        )
+
+
 def evaluate(outcome: Outcome, question: dict[str, Any]) -> dict[str, Any]:
     expected = question["episodios_esperados"]
     window = question.get("ventana_esperada")
@@ -177,7 +224,9 @@ def summarize(rows: list[dict[str, Any]]) -> dict[str, Any]:
     with_answer = [row for row in rows if "momento_at_1" in row]
     without = [row for row in rows if "abstencion_correcta" in row]
     latencies = [row["took_ms"] for row in rows]
+    tokens = [row["tokens"] for row in rows if isinstance(row.get("tokens"), (int, float))]
     return {
+        **({"tokens_medios": round(sum(tokens) / len(tokens))} if tokens else {}),
         "preguntas": len(rows),
         "con_respuesta": len(with_answer),
         "momento_at_1": _rate(with_answer, "momento_at_1"),
@@ -210,7 +259,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--questions", default="data/eval/preguntas.jsonl")
     parser.add_argument("--url", default=None, help="Servidor EpiGraph; sin él se evalúa en proceso")
-    parser.add_argument("--mode", choices=("passages",), default="passages")
+    parser.add_argument("--mode", choices=("passages", "ask"), default="passages")
     parser.add_argument("--out-dir", default="data/eval")
     parser.add_argument("--only", default=None, help="Ids separados por comas")
     args = parser.parse_args()
@@ -224,7 +273,7 @@ def main() -> None:
         wanted = set(args.only.split(","))
         questions = [q for q in questions if q["id"] in wanted]
 
-    runner = PassageRunner(args.url)
+    runner = AskRunner(args.url) if args.mode == "ask" else PassageRunner(args.url)
     try:
         rows = []
         for question in questions:

@@ -44,6 +44,12 @@ class SearchRequest(BaseModel):
         return self
 
 
+class AskRequest(BaseModel):
+    """Pregunta en lenguaje natural para el agente de consulta."""
+
+    question: str = Field(..., min_length=1, max_length=2000)
+
+
 class SummaryRegenerateRequest(BaseModel):
     """Pide una revisión nueva del resumen de un episodio, un día o un entorno."""
 

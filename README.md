@@ -193,6 +193,25 @@ pero la búsqueda por momentos **no lo usa salvo que se pida**
 momento exacto; los resúmenes están pensados para que el agente navegue la
 memoria de arriba abajo (entorno → día → episodio → evento).
 
+### Preguntar: el agente de consulta
+
+La pestaña **Preguntar** (`POST /api/ask`) envía la pregunta a un agente
+(`EPIGRAPH_AGENT_MODEL`, por defecto el mismo gpt-oss de los resúmenes) que
+solo puede usar las herramientas de memoria: busca momentos, navega
+ambientes → días → episodios → eventos, lee eventos vecinos y documentos, y
+responde en español. Cada momento que recupera recibe una marca corta
+(`m1`, `m2`…) y el agente **cita con esas marcas**; antes de devolver la
+respuesta, cada marca se resuelve contra lo recuperado de verdad: las
+inventadas se eliminan y quedan anotadas, y la confianza se calcula de eso
+(`alta`: todo citado y verificado; `media`: alguna cita inválida; `baja`:
+afirma sin citar; `sin_evidencia`: «No consta en la memoria»). En el front
+cada cita abre el episodio en ese segundo. El bucle está acotado
+(`EPIGRAPH_AGENT_MAX_STEPS`, `_MAX_TOOL_CALLS`, `_MAX_SECONDS`); cada paso
+se registra en Vigilancia (componente `agente`) y la respuesta completa
+—pasos, argumentos, tokens, latencia— queda en `answer_runs`
+(`GET /api/answers`). `scripts/evaluate_questions.py --mode ask` evalúa las
+citas del agente con el mismo banco de preguntas.
+
 ### Herramientas para agentes
 
 `GET /api/tools` publica el catálogo (entrada y salida como esquema JSON) y

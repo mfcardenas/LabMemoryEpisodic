@@ -21,7 +21,8 @@
         <button class="nav-item" data-view="ingest"><span>03</span>Ingesta</button>
         <button class="nav-item" data-view="watch"><span>04</span>Vigilancia</button>
         <button class="nav-item" data-view="search"><span>05</span>Consultas</button>
-        <button class="nav-item" data-view="system"><span>06</span>Sistema</button>
+        <button class="nav-item" data-view="ask"><span>06</span>Preguntar</button>
+        <button class="nav-item" data-view="system"><span>07</span>Sistema</button>
       </nav>
 
       <div class="rail-status">
@@ -343,6 +344,19 @@
             <div class="empty roomy">Selecciona una herramienta y ejecuta la consulta para auditar la memoria canónica.</div>
           </div>
         </div>
+      </section>
+
+      <section class="view" id="view-ask">
+        <article class="panel search-panel">
+          <div class="panel-heading"><div><p class="kicker">AGENTE DE CONSULTA</p><h2>Pregunta a la memoria</h2></div><span class="truth-badge vector" id="ask-status">…</span></div>
+          <p class="search-hint">El agente busca con las herramientas de memoria y responde solo con lo que encuentra; cada afirmación lleva una cita que abre el vídeo en ese segundo. Si no hay evidencia, lo dice.</p>
+          <form id="ask-form" class="search-form">
+            <input id="ask-question" placeholder="Ej.: ¿qué pasó justo después de cortar la pieza en el taller?" required>
+            <button class="button primary" type="submit" id="ask-submit">Preguntar</button>
+          </form>
+        </article>
+        <div id="ask-results" class="search-results"><div class="empty roomy">Las respuestas quedan guardadas con sus pasos y sus citas (auditoría).</div></div>
+        <details class="technical-details" id="ask-history-box"><summary>Preguntas anteriores</summary><div id="ask-history"></div></details>
       </section>
 
       <section class="view" id="view-system">

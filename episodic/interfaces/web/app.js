@@ -133,7 +133,8 @@ document.addEventListener("DOMContentLoaded", () => {
     timeline: ["CRONOLOGÍA MULTI-FUENTE", "Eje temporal continuo", "Visualización temporal por carriles: duración real de intervalos, simultaneidad y solapamientos."],
     ingest: ["RECORRIDO CANÓNICO", "Registro y custodia de activos", "El archivo original inicia la memoria; SHA-256 inmutable y procesamiento observable."],
     watch: ["ENTRADA AUTOMÁTICA", "Vigilancia y trabajos", "Lo que llega a las carpetas vigiladas se convierte en capturas: cada fichero leído, cada trabajo y su registro de ejecución."],
-    search: ["CONSULTA Y AUDITORÍA", "Búsqueda híbrida y herramientas", "Recuperación semántica vectorial en Qdrant y herramientas tipadas de la Fase 8."],
+    search: ["CONSULTA Y AUDITORÍA", "Búsqueda por momentos y herramientas", "Cada resultado es un momento concreto con su hora, su origen y el motivo por el que aparece; las herramientas son el catálogo que usa el agente."],
+    ask: ["AGENTE DE CONSULTA", "Pregunta a la memoria", "Respuesta en lenguaje natural con citas verificadas a momentos reales; sin evidencia, no hay afirmación."],
     system: ["ARQUITECTURA Y ESTADO", "Proyección vectorial y runtime", "Separación estricta entre la verdad canónica (SQLite) y la proyección reconstruible (Qdrant)."],
   };
 
@@ -153,6 +154,7 @@ document.addEventListener("DOMContentLoaded", () => {
     if (loadData && name === "timeline") loadTimeline().catch(showTimelineError);
     if (loadData && name === "ingest") Promise.all([loadAssets(), loadCaptures()]).catch(error => console.error(error));
     if (loadData && name === "search") loadToolsCatalog().catch(error => console.error(error));
+    if (loadData && name === "ask") loadAskView().catch(error => console.error(error));
     if (name === "watch") startWatchPolling(); else stopWatchPolling();
     if (loadData && name === "system") loadSystem().catch(error => console.error(error));
   }
@@ -1158,6 +1160,65 @@ document.addEventListener("DOMContentLoaded", () => {
       openEpisode(button.dataset.passageEpisode, { observationId: button.dataset.passageObservation || null, seek: seek === undefined || seek === "" ? null : Number(seek) });
     }));
   }
+
+  // -- Preguntar: el agente responde con citas [mN] que abren el vídeo ------
+  async function loadAskView() {
+    const badge = $("#ask-status");
+    try {
+      const status = await api("/api/ask/status");
+      badge.textContent = status.enabled ? `${status.model} · ${status.tools.length} herramientas` : "SIN MODELO (EPIGRAPH_AGENT_BACKEND)";
+      $("#ask-submit").disabled = !status.enabled;
+    } catch (error) { badge.textContent = error.message; }
+    renderAskHistory(await api("/api/answers?limit=20").catch(() => ({ answers: [] })));
+  }
+  const answerConfidenceLabel = value => ({ alta: "evidencia verificada", media: "con citas, alguna inválida", baja: "sin citas", sin_evidencia: "no consta" })[value] || value;
+  function renderAnswer(run, root = $("#ask-results")) {
+    const byHandle = new Map((run.citations || []).map(item => [item.handle, item]));
+    const cite = handle => {
+      const c = byHandle.get(handle);
+      if (!c) return `<span class="cite dropped">${esc(handle)}</span>`;
+      const seek = c.start_offset_seconds != null ? ` data-passage-seek="${esc(c.start_offset_seconds)}"` : "";
+      return `<button type="button" class="cite" data-passage-episode="${esc(c.episode_id)}" data-passage-observation="${esc(c.observation_id || "")}"${seek} title="${esc(c.title || c.text || "")}">${esc(c.episode_external_id || c.episode_id)}${c.start_offset_seconds != null ? ` · ${fmtClock(c.start_offset_seconds)}` : c.page_number ? ` · pág. ${c.page_number}` : ""}</button>`;
+    };
+    const html = esc(run.answer || "").replace(/\[(m\d+(?:\s*,\s*m\d+)*)\]/g, (all, list) => list.split(",").map(h => cite(h.trim())).join(" "));
+    const body = html.split(/\n{2,}|\n/).filter(Boolean).map(line => `<p>${line.replace(/\*\*(.+?)\*\*/g, "<b>$1</b>")}</p>`).join("");
+    const steps = (run.steps || []).map(step => `<li><code>${esc(step.tool)}</code>(${esc(JSON.stringify(step.arguments))}) → ${step.error ? `<span class="warn">${esc(step.error)}</span>` : `${step.result_count ?? 0} resultado(s)`} · ${Math.round(step.took_ms || 0)} ms</li>`).join("");
+    const citations = (run.citations || []).map(c => `<article class="passage-hit"><div class="passage-body"><header><span class="modality-tag ${esc(c.kind === "video_event" ? "video" : "text")}">${esc(c.handle)}</span><b>${esc(c.title || c.kind)}</b><time>${esc([c.episode_external_id || "", c.start_time ? fmtTime(c.start_time) : "", c.start_offset_seconds != null ? `${fmtClock(c.start_offset_seconds)} en el vídeo` : "", c.page_number ? `pág. ${c.page_number}` : ""].filter(Boolean).join(" · "))}</time></header><p class="passage-text">${esc(clip(c.text || "", 300))}</p><footer><button type="button" class="button-mini" data-passage-episode="${esc(c.episode_id)}" data-passage-observation="${esc(c.observation_id || "")}" ${c.start_offset_seconds != null ? `data-passage-seek="${esc(c.start_offset_seconds)}"` : ""}>Ver en el episodio${c.start_offset_seconds != null ? ` ▶ ${fmtClock(c.start_offset_seconds)}` : ""}</button></footer></div></article>`).join("");
+    root.innerHTML = `<section class="answer-card ${esc(run.confidence)}">
+      <header><div><p class="kicker">RESPUESTA</p><h3>${esc(run.question)}</h3></div><span class="confidence ${esc(run.confidence)}" title="${esc(run.confidence)}">${esc(answerConfidenceLabel(run.confidence))}</span></header>
+      <div class="answer-body">${body || '<p class="empty">Sin respuesta.</p>'}</div>
+      ${run.error ? `<p class="warn">${esc(run.error)}</p>` : ""}
+      ${run.dropped_citations?.length ? `<p class="answer-note">${run.dropped_citations.length} cita(s) inventada(s) por el modelo se han eliminado: ${esc(run.dropped_citations.join(", "))}.</p>` : ""}
+      ${citations ? `<div class="answer-citations"><b>Evidencia citada</b>${citations}</div>` : ""}
+      <details class="technical-details"><summary>Cómo se ha respondido · ${(run.steps || []).length} paso(s) · ${run.model_id ? esc(run.model_id) : ""} · ${Math.round((run.took_ms || 0) / 100) / 10} s · ${run.usage?.prompt_tokens || 0}+${run.usage?.completion_tokens || 0} tokens</summary><ol class="answer-steps">${steps || "<li>Sin llamadas a herramientas.</li>"}</ol></details>
+    </section>`;
+    root.querySelectorAll("[data-passage-episode]").forEach(button => button.addEventListener("click", () => {
+      const seek = button.dataset.passageSeek;
+      openEpisode(button.dataset.passageEpisode, { observationId: button.dataset.passageObservation || null, seek: seek === undefined || seek === "" ? null : Number(seek) });
+    }));
+  }
+  function renderAskHistory(data) {
+    const root = $("#ask-history");
+    if (!root) return;
+    const items = data.answers || [];
+    root.innerHTML = items.length ? items.map(run => `<button type="button" class="history-item" data-answer-id="${esc(run.id)}"><span class="confidence ${esc(run.confidence)}">${esc(answerConfidenceLabel(run.confidence))}</span><b>${esc(run.question)}</b><small>${esc(fmtTime(run.created_at))} · ${(run.citations || []).length} cita(s)</small></button>`).join("") : '<p class="tool-desc">Todavía no hay preguntas.</p>';
+    root.querySelectorAll("[data-answer-id]").forEach(button => button.addEventListener("click", async () => {
+      renderAnswer(await api(`/api/answers/${encodeURIComponent(button.dataset.answerId)}`));
+      $("#ask-results").scrollIntoView({ behavior: "smooth", block: "start" });
+    }));
+  }
+  $("#ask-form")?.addEventListener("submit", async event => {
+    event.preventDefault();
+    const question = $("#ask-question").value.trim();
+    const root = $("#ask-results"); const submit = $("#ask-submit");
+    submit.disabled = true; submit.textContent = "Pensando…";
+    root.innerHTML = '<div class="empty roomy">El agente está consultando la memoria (busca, lee eventos vecinos, verifica citas)… Los pasos se ven también en Vigilancia.</div>';
+    try {
+      renderAnswer(await api("/api/ask", { method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({ question }) }));
+      renderAskHistory(await api("/api/answers?limit=20").catch(() => ({ answers: [] })));
+    } catch (error) { root.innerHTML = `<div class="empty roomy"><b>No se pudo responder</b><span>${esc(error.message)}</span></div>`; }
+    finally { submit.disabled = false; submit.textContent = "Preguntar"; }
+  });
 
   // Foco al abrir un episodio desde un resultado: el momento exacto.
   function applyEpisodeFocus(root, episodeId) {

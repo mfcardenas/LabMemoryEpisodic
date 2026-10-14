@@ -620,6 +620,26 @@ CREATE TABLE summaries (
 CREATE INDEX idx_summaries_current ON summaries(scope, scope_key, is_current);
 """
 
+MIGRATION_V12 = """
+-- Auditoría de las respuestas del agente: pregunta, pasos (herramientas y
+-- argumentos), citas verificadas, modelo, tokens y latencia.
+CREATE TABLE answer_runs (
+    id TEXT PRIMARY KEY,
+    question TEXT NOT NULL,
+    answer TEXT NOT NULL DEFAULT '',
+    confidence TEXT NOT NULL DEFAULT '',
+    abstained INTEGER NOT NULL DEFAULT 0,
+    citations_json TEXT NOT NULL DEFAULT '[]',
+    steps_json TEXT NOT NULL DEFAULT '[]',
+    model_id TEXT NOT NULL DEFAULT '',
+    usage_json TEXT NOT NULL DEFAULT '{}',
+    took_ms REAL NOT NULL DEFAULT 0,
+    error TEXT,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX idx_answer_runs_created ON answer_runs(created_at);
+"""
+
 MIGRATIONS: List[Tuple[int, str]] = [
     (1, MIGRATION_V1),
     (2, MIGRATION_V2),
@@ -632,6 +652,7 @@ MIGRATIONS: List[Tuple[int, str]] = [
     (9, MIGRATION_V9),
     (10, MIGRATION_V10),
     (11, MIGRATION_V11),
+    (12, MIGRATION_V12),
 ]
 
 

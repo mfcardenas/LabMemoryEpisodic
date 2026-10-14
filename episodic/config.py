@@ -212,6 +212,21 @@ class EpisodicConfig:
     # Días que entran en el resumen de un entorno.
     digest_environment_days: int = field(default_factory=lambda: _env("DIGEST_ENVIRONMENT_DAYS", 30, int))
 
+    # Agente de respuestas (Fase A2). ``agent_backend``: ollama | fake | none.
+    agent_backend: str = field(default_factory=lambda: _env("AGENT_BACKEND", "ollama"))
+    # Vacío: el mismo modelo que los resúmenes (EPIGRAPH_TEXT_MODEL).
+    agent_model: str = field(default_factory=lambda: _env("AGENT_MODEL", ""))
+    agent_reasoning: str = field(default_factory=lambda: _env("AGENT_REASONING", "low"))
+    agent_temperature: float = field(default_factory=lambda: _env("AGENT_TEMPERATURE", 0.1, float))
+    agent_num_ctx: int = field(default_factory=lambda: _env("AGENT_NUM_CTX", 16384, int))
+    agent_timeout_seconds: float = field(default_factory=lambda: _env("AGENT_TIMEOUT_SECONDS", 600.0, float))
+    # Presupuesto por pregunta: vueltas del modelo, llamadas a herramientas y segundos.
+    agent_max_steps: int = field(default_factory=lambda: _env("AGENT_MAX_STEPS", 8, int))
+    agent_max_tool_calls: int = field(default_factory=lambda: _env("AGENT_MAX_TOOL_CALLS", 12, int))
+    agent_max_seconds: float = field(default_factory=lambda: _env("AGENT_MAX_SECONDS", 120.0, float))
+    # Caracteres de cada resultado de herramienta que ve el modelo.
+    agent_tool_result_chars: int = field(default_factory=lambda: _env("AGENT_TOOL_RESULT_CHARS", 6000, int))
+
     # Transcripción del habla (Fase D). ``speech_backend``: http | fake | none.
     # ``http`` llama a un servicio compatible con la API de OpenAI
     # (``/v1/audio/transcriptions``), p. ej. Speaches en Docker.
@@ -267,6 +282,8 @@ class EpisodicConfig:
             raise ValueError(f"Backend de habla no soportado: {self.speech_backend}")
         if self.text_backend not in {"ollama", "fake", "none"}:
             raise ValueError(f"Backend de texto no soportado: {self.text_backend}")
+        if self.agent_backend not in {"ollama", "fake", "none"}:
+            raise ValueError(f"Backend del agente no soportado: {self.agent_backend}")
 
     @classmethod
     def from_env(cls, **overrides: Any) -> "EpisodicConfig":

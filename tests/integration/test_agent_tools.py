@@ -130,6 +130,26 @@ def test_document_passages_of_an_episode(memory) -> None:
     assert out.metadata["total_document_passages"] == 2
 
 
+def test_ask_answers_with_verified_citations_over_http(memory) -> None:
+    with TestClient(create_api_app(container=memory, start_watcher=False)) as client:
+        status = client.get("/api/ask/status").json()
+        assert status["enabled"] is True and status["model"] == "fake-reasoning" and "search_moments" in status["tools"]
+
+        run = client.post("/api/ask", json={"question": "¿Quién dijo que algo estaba agarrotado?"}).json()
+        assert run["confidence"] == "alta" and run["citations"][0]["episode_external_id"] == "taller_1"
+        assert run["citations"][0]["handle"] == "m1" and "[m1]" in run["answer"]
+        assert run["steps"][0]["tool"] == "search_moments" and run["steps"][0]["result_count"] >= 1
+
+        stored = client.get(f"/api/answers/{run['id']}").json()
+        assert stored["question"] == run["question"] and stored["citations"] == run["citations"]
+        assert client.get("/api/answers").json()["answers"][0]["id"] == run["id"]
+        assert client.get("/api/answers/nope").status_code == 404
+        assert client.post("/api/ask", json={"question": ""}).status_code == 422
+        # Los pasos del agente se ven en el registro de actividad (Vigilancia).
+        log = client.get("/api/activity", params={"component": "agente"}).json()["entries"]
+        assert any("search_moments" in entry["message"] for entry in log)
+
+
 def test_agent_tools_are_published_and_callable_over_http(memory) -> None:
     with TestClient(create_api_app(container=memory, start_watcher=False)) as client:
         catalog = {item["name"]: item for item in client.get("/api/tools").json()}
