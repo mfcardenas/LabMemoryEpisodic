@@ -359,7 +359,20 @@ herramienta llama a `list_observations()` sin límite (contar consultas con un
 repositorio espía). Aceptación: cada herramienta < 200 ms con 50 k eventos
 sintéticos (Fase 0.5).
 
-### Fase A2 — Agente orquestador y respuesta con citas (4–6 días)
+### Fase A2 — Agente orquestador y respuesta con citas (4–6 días) · ✅ hecha (2026-10-14/15)
+
+Hecho: `ports/reasoning.py`, `adapters/models/ollama_chat.py` (tools,
+`think`), `fake_chat.py`; `application/agents/orchestrator.py` (bucle
+acotado, marcas `m1…`, verificación de citas, abstención, reintentos ante
+llamadas mal formadas, pasos en Vigilancia); `answer_runs` (v12);
+`POST /api/ask`, `GET /api/ask/status`, `GET /api/answers`; pestaña
+**Preguntar**; `evaluate_questions.py --mode ask`. Resultados y lecciones en
+`docs/evaluacion.md` (48 % → 88 % en seis pasadas; abstención 100 %, 0
+citas inventadas, p50 3,2 s). Lecciones clave: esquemas reducidos para el
+modelo, sin umbral en `search_moments` para el agente, texto completo y
+presupuesto de resultado amplio, `think` separado. **No hecho**:
+`GET /api/ask/stream` (SSE); los pasos ya se ven en Vigilancia por el
+registro de actividad.
 
 Objetivo: `POST /api/ask` devuelve una respuesta en español con citas
 verificables y abstención honesta; todo auditado y visible.

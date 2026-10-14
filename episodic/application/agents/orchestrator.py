@@ -37,7 +37,56 @@ AGENT_TOOLS = (
     "get_document_passages",
 )
 ABSTAIN_PREFIX = "no consta en la memoria"
-_CITE = re.compile(r"\[(m\d+(?:\s*,\s*m\d+)*)\]")
+
+# Lo que ve el modelo de cada herramienta: solo los parámetros que debe decidir.
+# El resto (tamaños, umbrales, formatos) lo fija el orquestador; con el esquema
+# completo gpt-oss rellenaba todos los opcionales (per_episode=0, kinds=…,
+# start_time sin end_time) y perdía vueltas en errores de validación.
+AGENT_TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
+    # Sin filtro de ambiente: el modelo se inventaba ids («env1») y vaciaba la
+    # búsqueda; si la pregunta nombra un ambiente, la propia búsqueda lo aplica.
+    "search_moments": {
+        "type": "object",
+        "properties": {
+            "query": {"type": "string", "description": "la pregunta completa o 2–4 palabras clave; las fechas, horas y ambientes van dentro del texto («ayer por la tarde en el taller», «el 12 de octubre después de las 16:30»)"},
+        },
+        "required": ["query"],
+    },
+    "browse_memory": {
+        "type": "object",
+        "properties": {
+            "level": {"type": "string", "enum": ["environments", "days", "episodes", "events"]},
+            "environment_id": {"type": "string", "description": "necesario para days y episodes"},
+            "day": {"type": "string", "description": "AAAA-MM-DD, opcional en episodes"},
+            "episode_id": {"type": "string", "description": "necesario para events"},
+            "page": {"type": "integer"},
+        },
+        "required": ["level"],
+    },
+    "get_event": {"type": "object", "properties": {"event_id": {"type": "string"}}, "required": ["event_id"]},
+    "get_event_neighbors": {
+        "type": "object",
+        "properties": {"event_id": {"type": "string"}, "before": {"type": "integer"}, "after": {"type": "integer"}},
+        "required": ["event_id"],
+    },
+    "get_episode_summary": {"type": "object", "properties": {"episode_id": {"type": "string"}}, "required": ["episode_id"]},
+    "get_document_passages": {
+        "type": "object",
+        "properties": {"episode_id": {"type": "string"}, "query": {"type": "string", "description": "palabras para ordenar los fragmentos"}},
+        "required": ["episode_id"],
+    },
+}
+# Parámetros fijados por el orquestador, fuera del alcance del modelo.
+AGENT_TOOL_DEFAULTS: dict[str, dict[str, Any]] = {
+    # 3 por episodio: con 2, los fragmentos de documento de un episodio
+    # desplazaban al evento con el habla que respondía.
+    "search_moments": {"max_episodes": 4, "per_episode": 3, "strict": False, "max_chars": 900},
+    "browse_memory": {"page_size": 20},
+    "get_event": {"max_chars": 2500},
+    "get_event_neighbors": {"before": 2, "after": 2, "max_chars": 500},
+    "get_document_passages": {"limit": 5, "max_chars": 800},
+}
+_CITE = re.compile(r"\[\s*(m\d+(?:\s*,\s*m\d+)*)\s*\]")
 _HANDLE = re.compile(r"m\d+")
 
 SYSTEM_PROMPT = """Eres el agente de consulta de EpiGraph, una memoria episódica de vídeos, audio y documentos \
@@ -53,14 +102,15 @@ acción) antes de concluir nada. Si la pregunta es amplia («¿qué pasó ayer?�
 usa browse_memory (environments → days → episodes → events) y get_episode_summary, y luego get_event para citar.
 3. Para «antes/después» usa get_event_neighbors sobre el evento encontrado. Para manuales o documentos, \
 get_document_passages del episodio.
-4. Cada momento lleva una marca «m1», «m2»… Cita SIEMPRE con la marca entre corchetes al final de la frase, \
-exactamente así: «Se usó una tarjeta azul frente a una tablet [m2].» Nunca escribas la marca de otra forma \
-(ni «(m2)», ni «m2:», ni solo la hora). Solo puedes citar marcas que hayas recibido. Los resúmenes \
-(get_episode_summary) son texto generado: no son prueba; cita momentos.
+4. Cada momento lleva una marca «m1», «m2»… Cita SIEMPRE con la marca entre corchetes al final de la frase que \
+respalda, con la forma «<afirmación> [m2].» Nunca escribas la marca de otra forma (ni «(m2)», ni «m2:», ni solo la \
+hora). Solo puedes citar marcas que hayas recibido. Los resúmenes (get_episode_summary) son texto generado: no son \
+prueba; cita momentos.
 5. Solo si tras al menos dos búsquedas distintas no hay ningún momento que responda, contesta empezando \
 exactamente por «No consta en la memoria» y di en una frase qué buscaste. No rellenes con suposiciones.
-6. La respuesta final es solo la respuesta: en español, breve y concreta, sin razonamientos ni notas en inglés. \
-Primero la respuesta, luego el detalle con la hora local que dan las herramientas y la posición mm:ss en el vídeo."""
+6. La respuesta final es solo la respuesta: en español, breve y concreta, sin razonamientos ni notas en inglés y \
+sin repetir frases. Primero la respuesta, luego el detalle con la hora local que dan las herramientas y la posición \
+mm:ss en el vídeo. Si la pregunta pide qué se dijo, cita las palabras tal cual aparecen en «said» o en el texto."""
 
 
 class AnswerOrchestrator:
@@ -74,7 +124,7 @@ class AnswerOrchestrator:
         max_steps: int = 8,
         max_tool_calls: int = 12,
         max_seconds: float = 120.0,
-        tool_result_chars: int = 6000,
+        tool_result_chars: int = 12000,
         tool_names: tuple[str, ...] = AGENT_TOOLS,
         activity: Any = None,
     ) -> None:
@@ -99,10 +149,23 @@ class AnswerOrchestrator:
         for descriptor in self.toolbox.describe():
             if descriptor.name not in self.tool_names:
                 continue
-            schema = dict(descriptor.input_schema)
-            schema.pop("title", None)
+            schema = AGENT_TOOL_SCHEMAS.get(descriptor.name)
+            if schema is None:
+                schema = dict(descriptor.input_schema)
+                schema.pop("title", None)
             specs.append({"type": "function", "function": {"name": descriptor.name, "description": descriptor.description, "parameters": schema}})
         return specs
+
+    @staticmethod
+    def _arguments(name: str, raw: dict[str, Any]) -> dict[str, Any]:
+        """Argumentos efectivos: los que decide el modelo (solo los del esquema
+        reducido, sin nulos) sobre los fijos del orquestador."""
+        allowed = set((AGENT_TOOL_SCHEMAS.get(name) or {}).get("properties") or {})
+        chosen = {
+            key: value for key, value in (raw or {}).items()
+            if (not allowed or key in allowed) and value not in (None, "", [], {})
+        }
+        return {**AGENT_TOOL_DEFAULTS.get(name, {}), **chosen}
 
     # -- Bucle principal ----------------------------------------------------------------
 
@@ -203,7 +266,14 @@ class AnswerOrchestrator:
             payload: dict[str, Any] = {"error": record["error"], "tools": list(self.tool_names)}
         else:
             try:
-                output = self.toolbox.execute(call.name, call.arguments)
+                arguments = self._arguments(call.name, call.arguments)
+                record["arguments"] = arguments
+                environment_id = arguments.get("environment_id")
+                if environment_id and self.repository.get_environment(environment_id) is None:
+                    raise ValueError(
+                        f"ambiente desconocido: {environment_id}; usa browse_memory(level=environments) para ver los ids reales"
+                    )
+                output = self.toolbox.execute(call.name, arguments)
                 payload = self._compact(output, handles, record)
             except (ValidationError, ValueError) as exc:
                 record["error"] = str(exc)[:300]
@@ -235,7 +305,10 @@ class AnswerOrchestrator:
                 "when": self._local(moment.start_time),
                 "at": _clock(moment.start_offset_seconds) if moment.start_offset_seconds is not None else None,
                 "title": moment.title or None,
-                "text": moment.snippet or moment.text,
+                # El texto completo (acotado), no el fragmento del índice: la
+                # respuesta suele estar en el habla o el texto visible.
+                "text": moment.text,
+                "match": moment.snippet or None,
             }
             if moment.speech:
                 item["said"] = [s.get("text") for s in moment.speech]
@@ -273,7 +346,8 @@ class AnswerOrchestrator:
             # Recorta los textos largos, no la lista: las marcas deben llegar enteras.
             for item in payload.get("items") or []:
                 if "text" in item:
-                    item["text"] = item["text"][:200]
+                    item["text"] = item["text"][:300]
+                item.pop("match", None)
             for s in payload.get("summaries") or []:
                 s["narrative"] = s["narrative"][:400]
             text = json.dumps(payload, ensure_ascii=False)
@@ -310,7 +384,7 @@ class AnswerOrchestrator:
 
         cleaned = _CITE.sub(replace, text)
         cleaned = re.sub(r"\s+([.,;:])", r"\1", re.sub(r"[ \t]{2,}", " ", cleaned))
-        run.answer = cleaned.strip() or "No consta en la memoria."
+        run.answer = _dedupe_lines(cleaned.strip()) or "No consta en la memoria."
         run.citations = [handles[h].to_dict() for h in cited]
         run.dropped_citations = dropped
         run.abstained = run.answer.casefold().startswith(ABSTAIN_PREFIX) or (not cited and "no consta" in run.answer.casefold())
@@ -359,6 +433,20 @@ def _strip_leaked_reasoning(text: str) -> str:
         kept.pop(0)
     remaining = " ".join(part.strip() for part in kept if part.strip()).strip()
     return remaining if len(remaining) >= 20 else text
+
+
+def _dedupe_lines(text: str) -> str:
+    """El modelo a veces repite la misma frase en bucle: se conserva una vez."""
+    seen: set[str] = set()
+    kept: list[str] = []
+    for line in text.splitlines():
+        key = line.strip().casefold()
+        if key and key in seen:
+            continue
+        if key:
+            seen.add(key)
+        kept.append(line.rstrip())
+    return "\n".join(kept).strip()
 
 
 def _clock(seconds: Optional[float]) -> str:

@@ -218,14 +218,17 @@ class EpisodicConfig:
     agent_model: str = field(default_factory=lambda: _env("AGENT_MODEL", ""))
     agent_reasoning: str = field(default_factory=lambda: _env("AGENT_REASONING", "low"))
     agent_temperature: float = field(default_factory=lambda: _env("AGENT_TEMPERATURE", 0.1, float))
-    agent_num_ctx: int = field(default_factory=lambda: _env("AGENT_NUM_CTX", 16384, int))
+    agent_num_ctx: int = field(default_factory=lambda: _env("AGENT_NUM_CTX", 32768, int))
     agent_timeout_seconds: float = field(default_factory=lambda: _env("AGENT_TIMEOUT_SECONDS", 600.0, float))
     # Presupuesto por pregunta: vueltas del modelo, llamadas a herramientas y segundos.
     agent_max_steps: int = field(default_factory=lambda: _env("AGENT_MAX_STEPS", 8, int))
     agent_max_tool_calls: int = field(default_factory=lambda: _env("AGENT_MAX_TOOL_CALLS", 12, int))
     agent_max_seconds: float = field(default_factory=lambda: _env("AGENT_MAX_SECONDS", 120.0, float))
     # Caracteres de cada resultado de herramienta que ve el modelo.
-    agent_tool_result_chars: int = field(default_factory=lambda: _env("AGENT_TOOL_RESULT_CHARS", 6000, int))
+    # 12 000 ≈ 3 500 tokens: cabe un resultado entero de search_moments
+    # (hasta 12 momentos de 900 caracteres) sin recortar el habla ni las
+    # tablas de los documentos, donde suele estar la respuesta.
+    agent_tool_result_chars: int = field(default_factory=lambda: _env("AGENT_TOOL_RESULT_CHARS", 12000, int))
 
     # Transcripción del habla (Fase D). ``speech_backend``: http | fake | none.
     # ``http`` llama a un servicio compatible con la API de OpenAI

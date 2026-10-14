@@ -138,7 +138,7 @@ class SearchMomentsInput(IntervalToolInput):
     neighbors: int | None = Field(None, ge=0, le=5, description="eventos antes/después de cada momento; omitido: según la pregunta")
     include_summaries: bool = False
     strict: bool = Field(False, description="True: aplica el umbral del reordenador y descarta; False (agente): devuelve los mejores aunque puntúen bajo, con su puntuación, y el lector decide")
-    max_chars: int = Field(600, ge=80, le=8000, description="caracteres de texto por momento")
+    max_chars: int = Field(900, ge=80, le=8000, description="caracteres de texto por momento")
 
 
 class GetEventInput(ToolInput):

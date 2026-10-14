@@ -50,6 +50,9 @@ class StubRepository:
     def save_answer_run(self, run: AnswerRun) -> None:
         self.saved.append(run)
 
+    def get_environment(self, environment_id: str):
+        return {"id": environment_id} if environment_id == "taller" else None
+
 
 class Activity:
     def __init__(self) -> None:
@@ -63,10 +66,24 @@ def _agent(model, **kwargs) -> AnswerOrchestrator:
     return AnswerOrchestrator(StubRepository(), StubToolbox(), model, timezone=timezone.utc, activity=Activity(), **kwargs)
 
 
-def test_tool_specs_expose_only_agent_tools_in_ollama_format() -> None:
+def test_tool_specs_expose_only_agent_tools_with_reduced_schemas() -> None:
     specs = _agent(FakeReasoningModel()).tool_specs()
     assert [item["function"]["name"] for item in specs] == ["search_moments", "get_event"]
     assert specs[0]["type"] == "function" and specs[0]["function"]["parameters"]["required"] == ["query"]
+    # El modelo no decide tamaños, umbrales ni filtros de ambiente: no aparecen en su esquema.
+    assert set(specs[0]["function"]["parameters"]["properties"]) == {"query"}
+
+
+def test_model_arguments_are_sanitised_and_completed_with_defaults() -> None:
+    model = FakeReasoningModel(script=[
+        scripted_turn(calls=[("search_moments", {"query": "chispas", "environment_id": "taller", "per_episode": 0, "kinds": ["speech_segment"], "start_time": None, "max_chars": 200})]),
+        scripted_turn("Saltan chispas [m1].\nSaltan chispas [m1].\nSaltan chispas [m1]."),
+    ])
+    agent = _agent(model)
+    run = agent.ask("¿Chispas?")
+    assert agent.toolbox.calls[0][1] == {"max_episodes": 4, "per_episode": 3, "strict": False, "max_chars": 900, "query": "chispas"}
+    assert run.steps[0]["arguments"] == agent.toolbox.calls[0][1]
+    assert run.answer == "Saltan chispas [m1]."  # la frase repetida en bucle, una vez
 
 
 def test_moments_get_handles_and_citations_are_verified() -> None:
@@ -106,6 +123,17 @@ def test_answer_without_citations_is_marked_and_abstention_detected() -> None:
     assert run.abstained and run.confidence == "sin_evidencia" and run.citations == []
 
 
+def test_invented_environment_ids_are_rejected_with_guidance() -> None:
+    model = FakeReasoningModel(script=[
+        scripted_turn(calls=[("browse_memory", {"level": "days", "environment_id": "env1"})]),
+        scripted_turn("No consta en la memoria."),
+    ])
+    agent = _agent(model)
+    run = agent.ask("¿Qué pasó?")
+    assert run.steps[0]["error"].startswith("ambiente desconocido: env1")
+    assert agent.toolbox.calls == []  # no llegó a ejecutarse
+
+
 def test_budget_forces_a_final_answer_and_tool_errors_are_reported() -> None:
     model = FakeReasoningModel(script=[
         scripted_turn(calls=[("get_event", {"event_id": "nope"}), ("compare_entities", {})]),
@@ -128,6 +156,12 @@ def test_loose_citation_formats_and_leaked_reasoning_are_normalised() -> None:
     run = _agent(model).ask("¿Cuándo saltan chispas?")
     assert run.answer == "Saltan chispas al cortar [m1]. Ver 00:00 [m2]."
     assert [c["handle"] for c in run.citations] == ["m1", "m2"] and run.confidence == "alta"
+
+    spaced = _agent(FakeReasoningModel(script=[
+        scripted_turn(calls=[("search_moments", {"query": "chispas"})]),
+        scripted_turn("Chispas [ m1 ] y manual [m1, m2 ]."),
+    ])).ask("¿Chispas?")
+    assert spaced.answer == "Chispas [m1] y manual [m1, m2]." and spaced.confidence == "alta"
 
 
 def test_malformed_tool_calls_are_retried_then_answered_without_tools() -> None:

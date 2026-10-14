@@ -29,6 +29,49 @@ Plan de fases y objetivos: `plan-agentes-consulta.md`.
 | 2026-10-14 | R2 | passages | 96 % | 96 % | 96 % | 50 % | 0 | 958 | 1076 |
 | 2026-10-14 | H | passages | 96 % | 96 % | 96 % | 50 % | 0 | 935 | 1547 |
 
+| 2026-10-14 | `f4ad509` | ask | 48 % | 48 % | 48 % | 100 % | 13 | 4732 | 16482 |
+| 2026-10-14 | `a168c37` | ask | 72 % | 72 % | 72 % | 100 % | 7 | 4598 | 11976 |
+| 2026-10-15 | A2 final | ask | 88 % | 88 % | 88 % | 100 % | 3 | 3241 | 5034 |
+
+### 2026-10-14 · Fase A2: el agente (modo `ask`)
+
+En modo `ask` lo evaluado es la **cita principal de la respuesta** (no la
+lista de candidatos): es más exigente que `passages`, porque el agente debe
+leer, decidir y citar. gpt-oss:latest, `think=low`, 2–8 vueltas por pregunta,
+4–6 k tokens de media, 3–12 s por pregunta en la RTX 5080.
+
+- Primera pasada (48 %): abstención perfecta (4/4, incluidos los distractores
+  que la búsqueda sola no sabe rechazar), 0 citas inventadas, pero 13 falsas
+  abstenciones. Causas: el agente convertía la pregunta en frases cortas que
+  el umbral del reordenador descartaba; citaba en formatos distintos a
+  `[mN]` o volcaba su razonamiento en inglés; dos preguntas murieron por un
+  500 de Ollama («error parsing tool call»).
+- Correcciones: `search_moments(strict=false)` para el agente (sin umbral:
+  él lee y decide), prompt (pregunta tal cual, segunda búsqueda con palabras
+  clave antes de abstenerse, cita siempre `[mN]`), normalización de citas y
+  limpieza del razonamiento filtrado, `think=<nivel>` para separar el
+  razonamiento, reintento ante llamadas mal formadas. Resultado: 72 %.
+- Tercera pasada (72 %): el agente recibía solo el fragmento de 24 palabras
+  del índice léxico (`snippet`) en lugar del texto del evento; ahora ve el
+  texto completo acotado.
+- Cuarta pasada (**0 %**, instructiva): al dar al modelo el esquema completo
+  de las herramientas rellenaba todos los opcionales (`per_episode=0`,
+  `kinds=["speech_segment"]`, `start_time` sin `end_time`) y, con un campo
+  `environment_id`, se inventaba el id («env1») y vaciaba todas las
+  búsquedas. Decisión: el modelo ve **esquemas reducidos** (solo lo que debe
+  decidir; `search_moments` solo `query`), el orquestador fija tamaños y
+  umbrales, y un id de ambiente inexistente devuelve un error guiado.
+- Quinta pasada (72 %): con 2 momentos por episodio los fragmentos de
+  documento desplazaban al evento con el habla; y el presupuesto de 6 000
+  caracteres por resultado recortaba cada texto a 300 y cortaba justo la
+  tabla «Alimentación 12 V y 2 A» o la segunda frase del técnico.
+- Sexta pasada (**88 %**): 3 momentos por episodio, 12 000 caracteres por
+  resultado, contexto 32k. Quedan q09 y q23 (abstiene teniendo el momento) y
+  q22 (citó «[ m1]» con espacio; ya se acepta). Frente al 96 % de `passages`,
+  el agente pierde 8 puntos en recuperación pero gana la abstención con
+  distractores (100 % frente a 50 %) y responde en lenguaje natural con citas
+  verificadas, 0 inventadas, en 3 s de mediana.
+
 ### 2026-10-14 · Fase H: resúmenes jerárquicos
 
 gpt-oss:latest redactó los 9 resúmenes de episodio (11–58 s cada uno,
