@@ -120,6 +120,7 @@ class QdrantVectorIndex:
             "max_confidence": models.PayloadSchemaType.FLOAT,
             "episode_id": models.PayloadSchemaType.KEYWORD,
             "target_type": models.PayloadSchemaType.KEYWORD,
+            "kind": models.PayloadSchemaType.KEYWORD,
             "timeline_start_ms": models.PayloadSchemaType.INTEGER,
             "timeline_filter_end_ms": models.PayloadSchemaType.INTEGER,
             "timeline_unknown": models.PayloadSchemaType.BOOL,
@@ -271,6 +272,9 @@ class QdrantVectorIndex:
             must_not.append(
                 models.FieldCondition(key="target_type", match=models.MatchValue(value="passage"))
             )
+        # Clases de pasaje que no se quieren (p. ej. los resúmenes, salvo petición).
+        for kind in (filters or {}).get("exclude_kinds") or ():
+            must_not.append(models.FieldCondition(key="kind", match=models.MatchValue(value=kind)))
         return models.Filter(must=must_conditions, must_not=must_not or None)
 
     def search(

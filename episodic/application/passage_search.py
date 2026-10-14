@@ -25,6 +25,7 @@ from typing import Optional
 from episodic.application.query_understanding import QueryPlan, parse_query
 from episodic.application.temporal_index import absolute_interval_filter
 from episodic.domain.passages import (
+    SUMMARY_KIND,
     Passage,
     PassageGroup,
     PassageHit,
@@ -178,6 +179,7 @@ class PassageSearchService:
         neighbors: Optional[int] = None,
         now: Optional[datetime] = None,
         understand: bool = True,
+        include_summaries: bool = False,
     ) -> PassageSearchRun:
         """`min_score` y `agreement_rank` sustituyen a los configurados solo en
         esta consulta; `min_score=None` quita el umbral y `agreement_rank=0`
@@ -217,12 +219,18 @@ class PassageSearchService:
             plan=plan,
         )
 
+        # Los resúmenes (prosa generada) atraen al reordenador y desplazan al
+        # momento exacto: solo entran si se piden (el agente los navega aparte).
+        excluded_kinds: tuple[str, ...] = () if include_summaries else (SUMMARY_KIND,)
+
         # 1. Significado (Qdrant, filtrado antes del top-k).
         dense: list[tuple[str, float]] = []
         vector_filters: dict = {"target_type": "passage"}
         for key in ("environment_ids", "source_ids", "modalities", "observation_types"):
             if getattr(filters, key):
                 vector_filters[key] = list(getattr(filters, key))
+        if excluded_kinds:
+            vector_filters["exclude_kinds"] = list(excluded_kinds)
         vector_filters.update(absolute_interval_filter(filters.interval))
         for candidate in self.vector_index.search(
             query_vector=self.text_encoder.embed_query(search_text),
@@ -247,6 +255,7 @@ class PassageSearchService:
                         source_ids=tuple(filters.source_ids),
                         modalities=tuple(filters.modalities),
                         kinds=tuple(filters.observation_types),
+                        exclude_kinds=excluded_kinds,
                         start_ms=timeline.get("timeline_query_start_ms"),
                         end_ms=timeline.get("timeline_query_end_ms"),
                     )
@@ -282,7 +291,7 @@ class PassageSearchService:
             episode = episodes[passage.episode_id]
             if episode is None or not episode.is_visible:
                 continue
-            if not _matches(passage, episode, filters):
+            if passage.kind in excluded_kinds or not _matches(passage, episode, filters):
                 continue
             hits.append(PassageHit(passage, entry, snippets.get(passage_id, "")))
 

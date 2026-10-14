@@ -267,6 +267,8 @@ class QdrantEdgeVectorIndex:
         must_not = []
         if not (filters and filters.get("target_type")):
             must_not.append(FieldCondition(key="target_type", match=MatchValue("passage")))
+        for kind in (filters or {}).get("exclude_kinds") or ():
+            must_not.append(FieldCondition(key="kind", match=MatchValue(kind)))
         return Filter(must=must, must_not=must_not or None)
 
     def search(

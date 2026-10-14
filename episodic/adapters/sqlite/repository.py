@@ -2076,6 +2076,7 @@ class SqliteEpisodicRepository:
         source_ids: Tuple[str, ...] = (),
         modalities: Tuple[str, ...] = (),
         kinds: Tuple[str, ...] = (),
+        exclude_kinds: Tuple[str, ...] = (),
         start_ms: Optional[int] = None,
         end_ms: Optional[int] = None,
     ) -> List[Tuple[str, str, float, str]]:
@@ -2086,6 +2087,9 @@ class SqliteEpisodicRepository:
             return []
         conditions = ["passage_index MATCH ?"]
         params: List[Any] = [match]
+        if exclude_kinds:
+            conditions.append(f"p.kind NOT IN ({','.join('?' for _ in exclude_kinds)})")
+            params.extend(exclude_kinds)
         for column, values in (
             ("p.environment_id", environment_ids),
             ("p.source_id", source_ids),

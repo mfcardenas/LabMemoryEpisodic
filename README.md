@@ -187,9 +187,11 @@ cada resumen guarda modelo, versión del prompt y huella de la entrada;
 regenerar («Regenerar resumen» o `POST /api/summaries/regenerate`) crea
 `revisión + 1` y conserva la anterior (`GET /api/summaries?scope=&key=`).
 Si el modelo falla, la captura termina igual y el fallo queda en su etapa.
-El resumen vigente de cada episodio se indexa como un pasaje más
-(`episode_summary`), así que una pregunta general («¿qué se hizo en el
-taller?») puede responderse con él.
+El resumen vigente de cada episodio se indexa como pasaje `episode_summary`,
+pero la búsqueda por momentos **no lo usa salvo que se pida**
+(`include_summaries`): la prosa generada atrae al reordenador y desplaza al
+momento exacto; los resúmenes están pensados para que el agente navegue la
+memoria de arriba abajo (entorno → día → episodio → evento).
 
 **El índice se mantiene al día solo.** Cada captura se indexa al procesarse.
 SQLite guarda además la huella con la que se indexó (modelos, prefijo de

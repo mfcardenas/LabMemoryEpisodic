@@ -27,6 +27,22 @@ Plan de fases y objetivos: `plan-agentes-consulta.md`.
 | 2026-10-14 | `d08cace` | passages | 88 % | 88 % | 88 % | 50 % | 0 | 934 | 1008 |
 | 2026-10-14 | R1 | passages | 92 % | 92 % | 92 % | 50 % | 0 | 903 | 1068 |
 | 2026-10-14 | R2 | passages | 96 % | 96 % | 96 % | 50 % | 0 | 958 | 1076 |
+| 2026-10-14 | H | passages | 96 % | 96 % | 96 % | 50 % | 0 | 935 | 1547 |
+
+### 2026-10-14 · Fase H: resúmenes jerárquicos
+
+gpt-oss:latest redactó los 9 resúmenes de episodio (11–58 s cada uno,
+600–3700 tokens de entrada, 0 citas inválidas), 9 de día y 7 de entorno.
+Con los resúmenes como pasajes **dentro** de la búsqueda por momentos el
+banco bajó a 92 % y la abstención a 25 %: la prosa generada atrae al
+reordenador (q29 «¿llovía en el parque?» devolvía el resumen de otro
+episodio) y desplaza al evento exacto en la vía léxica (q02 pasó de
+lexical #3 a #4 y perdió el acuerdo entre vías). Decisión: los resúmenes se
+indexan pero la búsqueda por momentos no los usa salvo `include_summaries`;
+son para que el agente navegue de arriba abajo. Con eso, 96 % de nuevo.
+Observación para A2: el evento correcto de q02 puntúa −1,83 en el
+reordenador (umbral −1,5): el umbral absoluto y el acuerdo top 3 son frágiles;
+la verificación del agente debe sustituirlos como filtro de pertinencia.
 
 ### 2026-10-14 · Fase R2: comprensión de la consulta y vecindad
 

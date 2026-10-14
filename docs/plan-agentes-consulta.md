@@ -271,8 +271,12 @@ como pasaje `episode_summary`; `GET /api/summaries`, `POST
 /api/summaries/regenerate`; ficha del episodio con resumen, citas que
 abren el vídeo, momentos clave, «no consta» y «Regenerar». **Ojo**: la
 etiqueta `gpt-oss:20b` instalada falla en Ollama 0.35 (GGUF antiguo); se usa
-`gpt-oss:latest` (misma familia). **No hecho**: reformulación de consultas por
-LLM (`QUERY_REWRITE`), queda para A2 donde el agente ya reformula.
+`gpt-oss:latest` (misma familia). Con datos reales: 9 episodios resumidos
+(11–58 s, 0 citas inválidas), 9 días, 7 entornos. Los resúmenes **no entran**
+en la búsqueda por momentos salvo `include_summaries` (bajaban el banco a
+92 %: la prosa atrae al reordenador); son para `browse_memory` (A1).
+**No hecho**: reformulación de consultas por LLM (`QUERY_REWRITE`), queda
+para A2 donde el agente ya reformula.
 
 Objetivo: resúmenes revisables por episodio, día y entorno, indexados como
 pasajes de primer nivel, para que el agente navegue de arriba abajo sin leer

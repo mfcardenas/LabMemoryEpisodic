@@ -83,6 +83,9 @@ class PassageSearchRequest(BaseModel):
         description="Eventos anterior y siguiente que acompañan a cada resultado; omitido: los que "
         "sugiera la pregunta (2 si pregunta por antes/después)",
     )
+    include_summaries: bool = Field(
+        False, description="Incluir los resúmenes de episodio (texto generado) como pasajes candidatos"
+    )
 
     @model_validator(mode="after")
     def validate_interval(self) -> "PassageSearchRequest":

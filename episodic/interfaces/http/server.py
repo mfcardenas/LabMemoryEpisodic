@@ -952,6 +952,7 @@ def create_api_app(
                 min_score=req.rerank_min_score if "rerank_min_score" in req.model_fields_set else DEFAULT,
                 agreement_rank=req.agreement_rank,
                 neighbors=req.neighbors,
+                include_summaries=req.include_summaries,
             )
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc

@@ -109,9 +109,13 @@ def test_joint_upload_becomes_one_episode_with_all_assets(app) -> None:
     assert summary and summary["revision"] == 1 and summary["model_id"] == "fake-text"
     assert summary["highlights"][0]["event_sequence"] == first["sequence_number"]
     assert detail["summary_revisions"] == 1
-    found = client.post("/api/passage-search", json={"text_query": "resumen simulado", "rerank": False}).json()
+    # El resumen solo entra en la búsqueda si se pide: por defecto manda el momento exacto.
+    query = {"text_query": "resumen simulado", "rerank": False}
+    found = client.post("/api/passage-search", json={**query, "include_summaries": True}).json()
     kinds = {hit["kind"]: hit for group in found["groups"] for hit in group["passages"]}
     assert kinds["episode_summary"]["passage_id"] == summary["id"]
+    without = client.post("/api/passage-search", json=query).json()
+    assert all(hit["kind"] != "episode_summary" for group in without["groups"] for hit in group["passages"])
 
     listing = client.get("/api/summaries", params={"scope": "episode", "key": episode_id}).json()
     assert listing["enabled"] is True and listing["current"]["id"] == summary["id"]

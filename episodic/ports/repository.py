@@ -220,6 +220,7 @@ class EpisodicRepository(Protocol):
         source_ids: Tuple[str, ...] = (),
         modalities: Tuple[str, ...] = (),
         kinds: Tuple[str, ...] = (),
+        exclude_kinds: Tuple[str, ...] = (),
         start_ms: Optional[int] = None,
         end_ms: Optional[int] = None,
     ) -> List[Tuple[str, str, float, str]]: ...
