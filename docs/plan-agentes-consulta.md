@@ -119,7 +119,14 @@ Cada fase termina con tests verdes (`~/.conda/envs/LabMemoryEpic01/python.exe -m
 hoy 231 pasan), README actualizado y un commit. Estimaciones para una persona
 con asistencia.
 
-### Fase 0 — Cierre y banco de evaluación (1–2 días)
+### Fase 0 — Cierre y banco de evaluación (1–2 días) · ✅ hecha (2026-10-14)
+
+Hecho: commit `d08cace`; `data/eval/preguntas.jsonl` (29 preguntas, 4 de
+abstención) escrito a partir de las capturas reales; `scripts/evaluate_questions.py`
+(en proceso o `--url`); línea base en `docs/evaluacion.md` (momento@5 88 %,
+abstención 50 %; fallan texto visible, fecha y distractores, como se preveía);
+`scripts/synthesize_corpus.py` (300 eventos de humo en `episodic-data-synth`
++ colección `episodic_memory_synth`, 28 ms por consulta con vectores hash).
 
 Objetivo: confirmar el trabajo pendiente y poder **medir** cada mejora.
 
