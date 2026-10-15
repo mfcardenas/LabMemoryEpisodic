@@ -42,6 +42,15 @@ cargaba todos los episodios de cada ambiente (2 s) → una consulta agregada,
 vectores hash responde en 10–40 ms con filtro; la hidratación en lote, 5 ms.
 Construcción: 197 eventos/s con escritura por lotes (antes 60/s).
 
+**Encoders en la GPU** (2026-10-15, `eda4a42`): el perfil real de 50 k iba a
+3,6 pasajes/s en CPU (≈5 h); con `onnxruntime-gpu` (extra `[gpu]`) Nomic
+rinde 120 textos/s en la RTX 5080 (×15) y el reordenador deja de dominar la
+consulta: el banco real pasa de p50 958 ms a **58 ms** (p95 81 ms) con el
+mismo 96 %. Sin embargo, la carga sostenida (el perfil real de la prueba de
+escala) reinicia el portátil a los pocos minutos, así que la GPU pasa a ser
+opt-in (`EPIGRAPH_ENCODER_DEVICE=cuda`; por defecto `cpu`) y ese perfil
+queda sin medir en este equipo.
+
 ## Resultados
 
 | Fecha | Commit | Modo | momento@1 | momento@5 | episodio@5 | abstención | falsas abst. | p50 ms | p95 ms |
@@ -50,7 +59,7 @@ Construcción: 197 eventos/s con escritura por lotes (antes 60/s).
 | 2026-10-14 | R1 | passages | 92 % | 92 % | 92 % | 50 % | 0 | 903 | 1068 |
 | 2026-10-14 | R2 | passages | 96 % | 96 % | 96 % | 50 % | 0 | 958 | 1076 |
 | 2026-10-14 | H | passages | 96 % | 96 % | 96 % | 50 % | 0 | 935 | 1547 |
-
+| 2026-10-15 | `eda4a42` GPU | passages | 96 % | 96 % | 96 % | 50 % | 0 | 58 | 81 |
 | 2026-10-14 | `f4ad509` | ask | 48 % | 48 % | 48 % | 100 % | 13 | 4732 | 16482 |
 | 2026-10-14 | `a168c37` | ask | 72 % | 72 % | 72 % | 100 % | 7 | 4598 | 11976 |
 | 2026-10-15 | A2 final | ask | 88 % | 88 % | 88 % | 100 % | 3 | 3241 | 5034 |

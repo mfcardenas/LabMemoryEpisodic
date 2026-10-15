@@ -4,8 +4,9 @@ Implementan EpisodeTextEncoder, ImageEncoder y AlignedTextEncoder.
 - Registran EncoderInfo con modelo, revisión, dimensión y normalización.
 - Carga diferida (lazy loading) para no bloquear la inicialización del sistema.
 - Compatible con caché configurable local para ejecución sin red.
-- Dispositivo ``auto`` | ``cuda`` | ``cpu``: con ``onnxruntime-gpu`` (extra
-  ``[gpu]``) Nomic pasa de ~8 a ~120 textos/s en una RTX 5080.
+- Dispositivo ``cpu`` (por defecto) | ``cuda`` | ``auto``: con ``onnxruntime-gpu``
+  (extra ``[gpu]``) Nomic pasa de ~8 a ~120 textos/s en una RTX 5080. La GPU
+  nunca se usa sin pedirla: tener el extra instalado no cambia el dispositivo.
 """
 from __future__ import annotations
 
@@ -25,11 +26,11 @@ logger = logging.getLogger(__name__)
 _resolved_device: Optional[str] = None
 
 
-def resolve_device(device: str = "auto") -> str:
+def resolve_device(device: str = "cpu") -> str:
     """``cpu`` o ``cuda``. Con ``auto``, CUDA si onnxruntime la ofrece (y las
     librerías NVIDIA se pueden precargar); se resuelve una sola vez."""
     global _resolved_device
-    device = (device or "auto").lower()
+    device = (device or "cpu").lower()
     if device == "cpu":
         return "cpu"
     if device == "cuda":
@@ -64,7 +65,12 @@ def _preload_cuda() -> None:
 
 
 def _load_options(device: str) -> dict:
-    return {"cuda": True} if resolve_device(device) == "cuda" else {}
+    """Opciones de carga para FastEmbed. Sin indicación, FastEmbed usa CUDA en
+    cuanto onnxruntime-gpu la ofrece, así que en CPU se fija el proveedor
+    explícitamente (si no, intenta cargar cuDNN y falla con ruido)."""
+    if resolve_device(device) == "cuda":
+        return {"cuda": True}
+    return {"providers": ["CPUExecutionProvider"]}
 
 
 class FastEmbedEpisodeTextEncoder:
@@ -80,7 +86,7 @@ class FastEmbedEpisodeTextEncoder:
         document_prefix: str = "",
         query_prefix: str = "",
         batch_size: int = 1,
-        device: str = "auto",
+        device: str = "cpu",
     ) -> None:
         self._model_id = model_id
         self._revision = revision
@@ -147,7 +153,7 @@ class FastEmbedImageEncoder:
         dimension: int = 512,
         cache_dir: Optional[str] = None,
         threads: int = 2,
-        device: str = "auto",
+        device: str = "cpu",
     ) -> None:
         self._model_id = model_id
         self._revision = revision
@@ -196,7 +202,7 @@ class FastEmbedAlignedTextEncoder:
         dimension: int = 512,
         cache_dir: Optional[str] = None,
         threads: int = 2,
-        device: str = "auto",
+        device: str = "cpu",
     ) -> None:
         self._model_id = model_id
         self._revision = revision
@@ -244,7 +250,7 @@ class FastEmbedPassageReranker:
         model_id: str,
         cache_dir: Optional[str] = None,
         threads: Optional[int] = None,
-        device: str = "auto",
+        device: str = "cpu",
     ) -> None:
         self._model_id = model_id
         self._cache_dir = cache_dir

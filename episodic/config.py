@@ -109,9 +109,11 @@ class EpisodicConfig:
     )
     clip_dim: int = field(default_factory=lambda: _env("CLIP_DIM", 512, int))
     encoder_threads: int = field(default_factory=lambda: _env("ENCODER_THREADS", 2, int))
-    # auto | cuda | cpu: con el extra [gpu] (onnxruntime-gpu) Nomic, CLIP y el
-    # reordenador corren en la GPU (~15× más rápido que en CPU).
-    encoder_device: str = field(default_factory=lambda: _env("ENCODER_DEVICE", "auto"))
+    # cpu | cuda | auto. Por defecto CPU: con el extra [gpu] (onnxruntime-gpu)
+    # Nomic, CLIP y el reordenador van ~15× más rápido en la GPU, pero solo se
+    # usa si se pide (cuda, o auto para detectarla); en el portátil con la
+    # RTX 5080 la carga sostenida reinicia el equipo.
+    encoder_device: str = field(default_factory=lambda: _env("ENCODER_DEVICE", "cpu"))
     encoder_batch_size: int = field(default_factory=lambda: _env("ENCODER_BATCH_SIZE", 1, int))
 
     # Servidor HTTP local.
@@ -290,7 +292,7 @@ class EpisodicConfig:
             raise ValueError(f"Backend de texto no soportado: {self.text_backend}")
         if self.agent_backend not in {"ollama", "fake", "none"}:
             raise ValueError(f"Backend del agente no soportado: {self.agent_backend}")
-        self.encoder_device = self.encoder_device.lower()
+        self.encoder_device = (self.encoder_device or "cpu").lower()
         if self.encoder_device not in {"auto", "cuda", "cpu"}:
             raise ValueError(f"Dispositivo de encoders no soportado: {self.encoder_device}")
 

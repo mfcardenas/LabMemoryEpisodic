@@ -1,4 +1,4 @@
-"""Selección del dispositivo de los encoders: auto detecta CUDA, cpu/cuda fuerzan."""
+"""Selección del dispositivo de los encoders: CPU por defecto, cuda fuerza, auto detecta."""
 from __future__ import annotations
 
 import pytest
@@ -13,10 +13,21 @@ def _reset_cache(monkeypatch):
     monkeypatch.setattr(adapters, "_preload_cuda", lambda: None)
 
 
+def test_default_is_cpu_even_with_cuda_available(monkeypatch) -> None:
+    import onnxruntime
+
+    monkeypatch.setattr(onnxruntime, "get_available_providers", lambda: ["CUDAExecutionProvider", "CPUExecutionProvider"])
+    monkeypatch.delenv("EPIGRAPH_ENCODER_DEVICE", raising=False)
+    assert EpisodicConfig.from_env().encoder_device == "cpu"
+    assert adapters.resolve_device() == "cpu"
+    assert adapters.FastEmbedEpisodeTextEncoder().info.runtime == "fastembed-onnx-cpu"
+
+
 def test_explicit_devices_are_respected() -> None:
     assert adapters.resolve_device("cpu") == "cpu"
     assert adapters.resolve_device("CUDA") == "cuda"
-    assert adapters._load_options("cpu") == {} and adapters._load_options("cuda") == {"cuda": True}
+    assert adapters._load_options("cpu") == {"providers": ["CPUExecutionProvider"]}
+    assert adapters._load_options("cuda") == {"cuda": True}
 
 
 def test_auto_picks_cuda_only_when_onnxruntime_offers_it(monkeypatch) -> None:

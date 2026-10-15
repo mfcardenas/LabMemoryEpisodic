@@ -233,10 +233,14 @@ modelo) y `evidence`.
 
 ### Encoders en la GPU
 
-Nomic, CLIP y el reordenador corren en ONNX Runtime; con el extra `[gpu]`
-usan CUDA (`EPIGRAPH_ENCODER_DEVICE=auto` lo detecta; `cuda`/`cpu` lo fuerzan).
-En la RTX 5080, Nomic pasa de ~8 a ~120 textos/s, lo que acelera cada captura
-y la reindexación. La rueda de `onnxruntime-gpu` para CUDA 12 no está en PyPI
+Nomic, CLIP y el reordenador corren en ONNX Runtime, **en CPU por defecto**.
+Con el extra `[gpu]` pueden usar CUDA, pero solo si se pide:
+`EPIGRAPH_ENCODER_DEVICE=cuda` (o `auto`, que la detecta). En la RTX 5080,
+Nomic pasa de ~8 a ~120 textos/s, lo que acelera cada captura y la
+reindexación. Aviso: en el portátil del laboratorio la carga sostenida en la
+GPU (perfil «real» de la prueba de escala, reindexaciones largas) reinicia el
+equipo a los pocos minutos; por eso el valor por defecto es `cpu` y las
+pasadas largas se hacen en CPU o en otro equipo. La rueda de `onnxruntime-gpu` para CUDA 12 no está en PyPI
 (la de PyPI es para CUDA 13, cuyas librerías `nvidia-*-cu13` no tienen rueda
 para Windows):
 

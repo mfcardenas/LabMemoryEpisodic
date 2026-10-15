@@ -449,10 +449,15 @@ y «real» 50 k sin intervención, informes en `data/eval/escala-*.json`);
 navegación de ambientes en SQL; vía léxica AND-primero; caché de la cuenta.
 Medido a 200 k eventos / 300 k pasajes: búsqueda p50 125 ms, p95 ~420 ms
 (objetivo p95 < 1,5 s cumplido con margen); ver `docs/evaluacion.md`.
-**Pendiente**: el perfil real de 50 k (en ejecución), la pasada a 1 M
-(`scripts\scale_test.bat 1000000 50000` en otro entorno), y las medidas de
-Qdrant para 1 M (`on_disk_payload`, cuantización, tenant por ambiente), que
-solo tienen sentido con esa cifra.
+Encoders en GPU (extra `[gpu]`, `EPIGRAPH_ENCODER_DEVICE=cuda`): Nomic ×15 y
+el banco real baja de 958 a 58 ms de mediana. La GPU queda **opt-in** (por
+defecto `cpu`): en el portátil, la carga sostenida en la RTX 5080 reinicia el
+equipo a los pocos minutos (2026-10-15), así que el perfil real de 50 k en GPU
+se descarta aquí.
+**Pendiente**: el perfil real de 50 k (en CPU, ≈5 h, o en otro equipo), la
+pasada a 1 M (`scripts\scale_test.bat 1000000 50000` en otro entorno), y las
+medidas de Qdrant para 1 M (`on_disk_payload`, cuantización, tenant por
+ambiente), que solo tienen sentido con esa cifra.
 
 Objetivo: p95 de `search_moments` < 1,5 s y de `/api/ask` < 30 s con 1 M de
 eventos sintéticos (Fase 0.5) en el portátil.
