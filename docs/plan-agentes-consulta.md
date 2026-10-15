@@ -402,7 +402,8 @@ verificables y abstención honesta; todo auditado y visible.
 - **HTTP**: `POST /api/ask` (síncrono) y `GET /api/ask/stream` (SSE con cada
   paso, reutilizando el mecanismo de `activity_log`/progreso para que
   Vigilancia también lo muestre).
-- **Front**: pestaña **Preguntar** en `index.html` junto a Consultas: caja de
+- **Front**: pestaña **Preguntar** dentro de **Consultas** en `index.html`
+  (primera pestaña, junto a la búsqueda por momentos y las herramientas): caja de
   pregunta, respuesta en Markdown con citas clicables (abren el episodio en
   el segundo: reutilizar `openEpisode`/`applyEpisodeFocus` de `app.js:1191`),
   panel plegable «Cómo se ha respondido» (pasos y herramientas), chip de

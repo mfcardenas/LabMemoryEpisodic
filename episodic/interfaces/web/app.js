@@ -133,8 +133,7 @@ document.addEventListener("DOMContentLoaded", () => {
     timeline: ["CRONOLOGÍA MULTI-FUENTE", "Eje temporal continuo", "Visualización temporal por carriles: duración real de intervalos, simultaneidad y solapamientos."],
     ingest: ["RECORRIDO CANÓNICO", "Registro y custodia de activos", "El archivo original inicia la memoria; SHA-256 inmutable y procesamiento observable."],
     watch: ["ENTRADA AUTOMÁTICA", "Vigilancia y trabajos", "Lo que llega a las carpetas vigiladas se convierte en capturas: cada fichero leído, cada trabajo y su registro de ejecución."],
-    search: ["CONSULTA Y AUDITORÍA", "Búsqueda por momentos y herramientas", "Cada resultado es un momento concreto con su hora, su origen y el motivo por el que aparece; las herramientas son el catálogo que usa el agente."],
-    ask: ["AGENTE DE CONSULTA", "Pregunta a la memoria", "Respuesta en lenguaje natural con citas verificadas a momentos reales; sin evidencia, no hay afirmación."],
+    search: ["CONSULTA Y AUDITORÍA", "Preguntar, buscar por momentos y herramientas", "El agente responde con citas verificadas a momentos reales; la búsqueda devuelve momentos concretos con su hora y su motivo; las herramientas son el catálogo que usa el agente."],
     system: ["ARQUITECTURA Y ESTADO", "Proyección vectorial y runtime", "Separación estricta entre la verdad canónica (SQLite) y la proyección reconstruible (Qdrant)."],
   };
 
@@ -143,6 +142,7 @@ document.addEventListener("DOMContentLoaded", () => {
   }));
   window.addEventListener("hashchange", () => {
     const name = location.hash.slice(1);
+    if (name === "ask") { switchView("search"); activateSearchTab("ask"); return; }
     switchView(views[name] ? name : "episodes");
   });
   function switchView(name, loadData = true) {
@@ -153,11 +153,36 @@ document.addEventListener("DOMContentLoaded", () => {
     if (loadData && name === "episodes") loadEpisodes().catch(showEpisodeError);
     if (loadData && name === "timeline") loadTimeline().catch(showTimelineError);
     if (loadData && name === "ingest") Promise.all([loadAssets(), loadCaptures()]).catch(error => console.error(error));
-    if (loadData && name === "search") loadToolsCatalog().catch(error => console.error(error));
-    if (loadData && name === "ask") loadAskView().catch(error => console.error(error));
+    if (loadData && name === "search") { loadAskView().catch(error => console.error(error)); loadToolsCatalog().catch(error => console.error(error)); }
     if (name === "watch") startWatchPolling(); else stopWatchPolling();
     if (loadData && name === "system") loadSystem().catch(error => console.error(error));
   }
+
+  // Estado de las peticiones de Consultas (Preguntar, búsqueda, herramientas):
+  // una sola a la vez. Mientras dura, se muestra «Cargando…» y se bloquean
+  // los formularios y el historial; los envíos repetidos se ignoran.
+  const query = { busy: false, disabled: [] };
+  function beginQuery(label) {
+    if (query.busy) return false;
+    query.busy = true;
+    const status = $("#query-status");
+    if (status) { $("#query-status-text").textContent = label; status.hidden = false; }
+    $$("#view-search form :is(input, select, textarea, button), #view-search .history-item").forEach(el => {
+      if (el.disabled) return;
+      el.disabled = true; query.disabled.push(el);
+    });
+    $$("#view-search form").forEach(form => form.setAttribute("aria-busy", "true"));
+    return true;
+  }
+  function endQuery() {
+    query.disabled.forEach(el => { el.disabled = false; });
+    query.disabled = [];
+    $$("#view-search form").forEach(form => form.removeAttribute("aria-busy"));
+    const status = $("#query-status");
+    if (status) status.hidden = true;
+    query.busy = false;
+  }
+  const loading = text => `<div class="empty roomy loading"><span class="spinner" aria-hidden="true"></span><b>Cargando…</b><span>${text}</span></div>`;
 
   async function api(url, options) {
     const response = await fetch(url, options);
@@ -962,19 +987,17 @@ document.addEventListener("DOMContentLoaded", () => {
     if (state.timelineRawData) renderTimeline(state.timelineRawData);
   });
 
-  // Pestañas del módulo de consultas
-  $$(".search-tab-btn").forEach(btn => {
-    btn.addEventListener("click", () => {
-      const tab = btn.dataset.searchTab;
-      $$(".search-tab-btn").forEach(b => b.classList.toggle("active", b.dataset.searchTab === tab));
-      const isHybrid = (tab === "hybrid");
-      const hybridEl = $("#search-tab-hybrid-content");
-      const toolsEl = $("#search-tab-tools-content");
-      if (hybridEl) { hybridEl.classList.toggle("active", isHybrid); hybridEl.hidden = !isHybrid; }
-      if (toolsEl) { toolsEl.classList.toggle("active", !isHybrid); toolsEl.hidden = isHybrid; }
-      if (tab === "tools") loadToolsCatalog();
+  // Pestañas del módulo de consultas: Preguntar, búsqueda por momentos y herramientas.
+  function activateSearchTab(tab) {
+    $$(".search-tab-btn").forEach(b => b.classList.toggle("active", b.dataset.searchTab === tab));
+    $$(".search-tab-content").forEach(el => {
+      const active = el.id === `search-tab-${tab}-content`;
+      el.classList.toggle("active", active); el.hidden = !active;
     });
-  });
+    if (tab === "tools") loadToolsCatalog();
+    if (tab === "ask") $("#ask-question")?.focus();
+  }
+  $$(".search-tab-btn").forEach(btn => btn.addEventListener("click", () => activateSearchTab(btn.dataset.searchTab)));
 
   // Catálogo de herramientas generado desde GET /api/tools (esquema JSON de cada entrada).
   let toolCatalog = [];
@@ -1054,9 +1077,9 @@ document.addEventListener("DOMContentLoaded", () => {
       else payload[input.name] = value;
     });
 
-    submit.disabled = true;
-    submit.textContent = "Consultando...";
-    root.innerHTML = '<div class="empty roomy">Ejecutando herramienta contra la memoria canónica…</div>';
+    if (!beginQuery(`Ejecutando ${toolName}…`)) return;
+    submit.textContent = "Consultando…";
+    root.innerHTML = loading("Ejecutando la herramienta contra la memoria canónica.");
 
     try {
       const output = await api(`/api/tools/${encodeURIComponent(toolName)}`, {
@@ -1068,7 +1091,7 @@ document.addEventListener("DOMContentLoaded", () => {
     } catch (err) {
       root.innerHTML = `<div class="empty roomy"><b>Error ejecutando ${esc(toolName)}</b><span>${esc(err.message)}</span></div>`;
     } finally {
-      submit.disabled = false;
+      endQuery();
       submit.textContent = "Ejecutar herramienta";
     }
   });
@@ -1167,7 +1190,7 @@ document.addEventListener("DOMContentLoaded", () => {
     try {
       const status = await api("/api/ask/status");
       badge.textContent = status.enabled ? `${status.model} · ${status.tools.length} herramientas` : "SIN MODELO (EPIGRAPH_AGENT_BACKEND)";
-      $("#ask-submit").disabled = !status.enabled;
+      if (!query.busy) $("#ask-submit").disabled = !status.enabled;
     } catch (error) { badge.textContent = error.message; }
     renderAskHistory(await api("/api/answers?limit=20").catch(() => ({ answers: [] })));
   }
@@ -1182,7 +1205,9 @@ document.addEventListener("DOMContentLoaded", () => {
     };
     const html = esc(run.answer || "").replace(/\[(m\d+(?:\s*,\s*m\d+)*)\]/g, (all, list) => list.split(",").map(h => cite(h.trim())).join(" "));
     const body = html.split(/\n{2,}|\n/).filter(Boolean).map(line => `<p>${line.replace(/\*\*(.+?)\*\*/g, "<b>$1</b>")}</p>`).join("");
-    const steps = (run.steps || []).map(step => `<li><code>${esc(step.tool)}</code>(${esc(JSON.stringify(step.arguments))}) → ${step.error ? `<span class="warn">${esc(step.error)}</span>` : `${step.result_count ?? 0} resultado(s)`} · ${Math.round(step.took_ms || 0)} ms</li>`).join("");
+    const trace = run.trace?.length ? run.trace : (run.steps || []).map(step => ({ kind: "tool", message: `${step.tool}(${JSON.stringify(step.arguments)}) → ${step.error ? `error: ${step.error}` : `${step.result_count ?? 0} resultado(s)`}`, error: step.error }));
+    const agents = run.metadata?.agents || [{ name: "agente de consulta", model: run.model_id, turns: run.usage?.turns, tool_calls: (run.steps || []).length }];
+    const agentsText = agents.map(a => `${a.name} (${a.model || "modelo"}) · ${a.turns ?? "?"} vuelta(s) · ${a.tool_calls ?? 0} herramienta(s)`).join("; ");
     const citations = (run.citations || []).map(c => `<article class="passage-hit"><div class="passage-body"><header><span class="modality-tag ${esc(c.kind === "video_event" ? "video" : "text")}">${esc(c.handle)}</span><b>${esc(c.title || c.kind)}</b><time>${esc([c.episode_external_id || "", c.start_time ? fmtTime(c.start_time) : "", c.start_offset_seconds != null ? `${fmtClock(c.start_offset_seconds)} en el vídeo` : "", c.page_number ? `pág. ${c.page_number}` : ""].filter(Boolean).join(" · "))}</time></header><p class="passage-text">${esc(clip(c.text || "", 300))}</p><footer><button type="button" class="button-mini" data-passage-episode="${esc(c.episode_id)}" data-passage-observation="${esc(c.observation_id || "")}" ${c.start_offset_seconds != null ? `data-passage-seek="${esc(c.start_offset_seconds)}"` : ""}>Ver en el episodio${c.start_offset_seconds != null ? ` ▶ ${fmtClock(c.start_offset_seconds)}` : ""}</button></footer></div></article>`).join("");
     root.innerHTML = `<section class="answer-card ${esc(run.confidence)}">
       <header><div><p class="kicker">RESPUESTA</p><h3>${esc(run.question)}</h3></div><span class="confidence ${esc(run.confidence)}" title="${esc(run.confidence)}">${esc(answerConfidenceLabel(run.confidence))}</span></header>
@@ -1190,12 +1215,33 @@ document.addEventListener("DOMContentLoaded", () => {
       ${run.error ? `<p class="warn">${esc(run.error)}</p>` : ""}
       ${run.dropped_citations?.length ? `<p class="answer-note">${run.dropped_citations.length} cita(s) inventada(s) por el modelo se han eliminado: ${esc(run.dropped_citations.join(", "))}.</p>` : ""}
       ${citations ? `<div class="answer-citations"><b>Evidencia citada</b>${citations}</div>` : ""}
-      <details class="technical-details"><summary>Cómo se ha respondido · ${(run.steps || []).length} paso(s) · ${run.model_id ? esc(run.model_id) : ""} · ${Math.round((run.took_ms || 0) / 100) / 10} s · ${run.usage?.prompt_tokens || 0}+${run.usage?.completion_tokens || 0} tokens</summary><ol class="answer-steps">${steps || "<li>Sin llamadas a herramientas.</li>"}</ol></details>
+      <details class="technical-details answer-trace" open><summary>Traza · ${agents.length} agente(s): ${esc(agentsText)} · ${Math.round((run.took_ms || 0) / 100) / 10} s · ${run.usage?.prompt_tokens || 0}+${run.usage?.completion_tokens || 0} tokens</summary>${renderTraceList(trace)}</details>
     </section>`;
     root.querySelectorAll("[data-passage-episode]").forEach(button => button.addEventListener("click", () => {
       const seek = button.dataset.passageSeek;
       openEpisode(button.dataset.passageEpisode, { observationId: button.dataset.passageObservation || null, seek: seek === undefined || seek === "" ? null : Number(seek) });
     }));
+  }
+  const TRACE_KIND = { question: "PREGUNTA", thinking: "MODELO", turn: "DECISIÓN", tool: "HERRAMIENTA", retry: "REINTENTO", budget: "PRESUPUESTO", verify: "CITAS", error: "ERROR", answer: "RESPUESTA" };
+  function renderTraceList(trace, { pending = false } = {}) {
+    if (!trace.length) return `<ol class="trace-list">${pending ? "" : "<li class=\"trace-line\">Sin traza registrada.</li>"}</ol>`;
+    const t0 = trace[0].at ? new Date(trace[0].at).getTime() : null;
+    const lines = trace.map(item => {
+      const delta = t0 != null && item.at ? `+${((new Date(item.at).getTime() - t0) / 1000).toFixed(1)} s` : "";
+      return `<li class="trace-line ${esc(item.kind || "")}${item.error ? " has-error" : ""}"><time>${esc(delta)}</time><span class="trace-kind">${esc(TRACE_KIND[item.kind] || (item.kind || "").toUpperCase())}</span><span class="trace-msg">${esc(item.message || "")}</span></li>`;
+    });
+    if (pending) lines.push('<li class="trace-line pending"><time></time><span class="trace-kind"><span class="spinner" aria-hidden="true"></span></span><span class="trace-msg">En curso…</span></li>');
+    return `<ol class="trace-list">${lines.join("")}</ol>`;
+  }
+  function renderLiveTrace(root, question, trace, startedAt) {
+    const turns = trace.filter(item => item.kind === "turn").length;
+    const tools = trace.filter(item => item.kind === "tool").length;
+    const elapsed = ((Date.now() - startedAt) / 1000).toFixed(0);
+    root.innerHTML = `<section class="answer-card live">
+      <header><div><p class="kicker">EL AGENTE ESTÁ RESPONDIENDO</p><h3>${esc(question)}</h3></div><span class="confidence live"><span class="spinner" aria-hidden="true"></span>${elapsed} s</span></header>
+      <p class="answer-note">1 agente de consulta · ${turns} vuelta(s) del modelo · ${tools} herramienta(s) ejecutada(s). Cada línea aparece en cuanto ocurre; también en Vigilancia.</p>
+      ${renderTraceList(trace, { pending: true })}
+    </section>`;
   }
   function renderAskHistory(data) {
     const root = $("#ask-history");
@@ -1203,21 +1249,43 @@ document.addEventListener("DOMContentLoaded", () => {
     const items = data.answers || [];
     root.innerHTML = items.length ? items.map(run => `<button type="button" class="history-item" data-answer-id="${esc(run.id)}"><span class="confidence ${esc(run.confidence)}">${esc(answerConfidenceLabel(run.confidence))}</span><b>${esc(run.question)}</b><small>${esc(fmtTime(run.created_at))} · ${(run.citations || []).length} cita(s)</small></button>`).join("") : '<p class="tool-desc">Todavía no hay preguntas.</p>';
     root.querySelectorAll("[data-answer-id]").forEach(button => button.addEventListener("click", async () => {
-      renderAnswer(await api(`/api/answers/${encodeURIComponent(button.dataset.answerId)}`));
-      $("#ask-results").scrollIntoView({ behavior: "smooth", block: "start" });
+      if (!beginQuery("Cargando la respuesta guardada…")) return;
+      try {
+        renderAnswer(await api(`/api/answers/${encodeURIComponent(button.dataset.answerId)}`));
+        $("#ask-results").scrollIntoView({ behavior: "smooth", block: "start" });
+      } catch (error) { $("#ask-results").innerHTML = `<div class="empty roomy"><b>No se pudo cargar la respuesta</b><span>${esc(error.message)}</span></div>`; }
+      finally { endQuery(); }
     }));
   }
   $("#ask-form")?.addEventListener("submit", async event => {
     event.preventDefault();
     const question = $("#ask-question").value.trim();
     const root = $("#ask-results"); const submit = $("#ask-submit");
-    submit.disabled = true; submit.textContent = "Pensando…";
-    root.innerHTML = '<div class="empty roomy">El agente está consultando la memoria (busca, lee eventos vecinos, verifica citas)… Los pasos se ven también en Vigilancia.</div>';
+    if (!beginQuery("Pensando… el agente consulta la memoria")) return;
+    submit.textContent = "Pensando…";
+    const runId = (crypto.randomUUID ? crypto.randomUUID() : `web-${Date.now()}-${Math.random().toString(16).slice(2)}`);
+    const startedAt = Date.now();
+    const live = { trace: [], afterId: 0, timer: null, busy: false };
+    renderLiveTrace(root, question, live.trace, startedAt);
+    // Traza en directo: el agente escribe cada paso en /api/activity con data.run_id.
+    try { live.afterId = (await api("/api/activity?limit=1")).last_id || 0; } catch (_) { live.afterId = 0; }
+    const poll = async () => {
+      if (live.busy) return; live.busy = true;
+      try {
+        const data = await api(`/api/activity?component=agente&after_id=${live.afterId}&limit=300`);
+        const mine = data.entries.filter(entry => entry.data?.run_id === runId).sort((a, b) => a.id - b.id);
+        if (data.entries.length) live.afterId = Math.max(live.afterId, ...data.entries.map(entry => entry.id));
+        mine.forEach(entry => live.trace.push({ at: entry.at, kind: entry.data.kind, message: entry.message, error: entry.data.error }));
+        renderLiveTrace(root, question, live.trace, startedAt);
+      } catch (_) { /* el siguiente sondeo lo reintenta */ }
+      finally { live.busy = false; }
+    };
+    live.timer = setInterval(poll, 1000);
     try {
-      renderAnswer(await api("/api/ask", { method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({ question }) }));
+      renderAnswer(await api("/api/ask", { method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({ question, run_id: runId }) }));
       renderAskHistory(await api("/api/answers?limit=20").catch(() => ({ answers: [] })));
-    } catch (error) { root.innerHTML = `<div class="empty roomy"><b>No se pudo responder</b><span>${esc(error.message)}</span></div>`; }
-    finally { submit.disabled = false; submit.textContent = "Preguntar"; }
+    } catch (error) { root.innerHTML = `<div class="empty roomy"><b>No se pudo responder</b><span>${esc(error.message)}</span>${renderTraceList(live.trace)}</div>`; }
+    finally { clearInterval(live.timer); endQuery(); submit.textContent = "Preguntar"; }
   });
 
   // Foco al abrir un episodio desde un resultado: el momento exacto.
@@ -1267,13 +1335,16 @@ document.addEventListener("DOMContentLoaded", () => {
     modality_filter: $("#search-modality").value ? [$("#search-modality").value] : null,
   });
   $("#search-form")?.addEventListener("submit", async event => {
-    event.preventDefault(); const root = $("#search-results"); root.innerHTML = '<div class="empty roomy">Buscando por significado y por palabras en cada pasaje…</div>';
+    event.preventDefault();
+    if (!beginQuery("Buscando por significado y por palabras…")) return;
+    const root = $("#search-results"); root.innerHTML = loading("Buscando por significado y por palabras en cada pasaje.");
     const text = $("#search-query").value.trim();
     const json = body => ({ method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(body) });
     // El estado del índice se carga con la vista y tras reindexar, no en cada consulta.
     if (!state.indexStatus) state.indexStatus = await api("/api/index/status").catch(() => null);
     try { renderPassageSearch(await api("/api/passage-search", json({ text_query: text, ...searchFilters(), rerank: $("#input-rerank").checked, ...thresholdOverrides() }))); }
     catch (error) { root.innerHTML = `<div class="empty roomy"><b>Error de recuperación</b><span>${esc(error.message)}</span></div>`; }
+    finally { endQuery(); }
   });
 
   const passageTypeLabel = hit => ({ video_event: "Evento", speech_segment: "Habla", document_text_fragment: "Documento", text_fragment: "Texto" })[hit.kind] || observationLabel(hit.kind);

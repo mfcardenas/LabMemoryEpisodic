@@ -2036,7 +2036,7 @@ class SqliteEpisodicRepository:
             """,
             (
                 run.id, run.question, run.answer, run.confidence, 1 if run.abstained else 0,
-                _to_json(run.citations), _to_json({"steps": run.steps, "dropped": run.dropped_citations, "metadata": run.metadata}),
+                _to_json(run.citations), _to_json({"steps": run.steps, "dropped": run.dropped_citations, "metadata": run.metadata, "trace": run.trace}),
                 run.model_id, _to_json(run.usage), run.took_ms, run.error, run.created_at.isoformat(),
             ),
         )
@@ -2055,7 +2055,7 @@ class SqliteEpisodicRepository:
         return AnswerRun(
             id=row["id"], question=row["question"], answer=row["answer"], confidence=row["confidence"],
             abstained=bool(row["abstained"]), citations=_from_json(row["citations_json"], []),
-            dropped_citations=extra.get("dropped", []), steps=extra.get("steps", []), model_id=row["model_id"],
+            dropped_citations=extra.get("dropped", []), steps=extra.get("steps", []), trace=extra.get("trace", []), model_id=row["model_id"],
             usage=_from_json(row["usage_json"], {}), took_ms=float(row["took_ms"] or 0), error=row["error"],
             created_at=datetime.fromisoformat(row["created_at"]), metadata=extra.get("metadata", {}),
         )

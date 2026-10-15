@@ -748,7 +748,7 @@ def create_api_app(
         if agent is None or not agent.enabled:
             raise HTTPException(status_code=503, detail="No hay modelo de razonamiento configurado (EPIGRAPH_AGENT_BACKEND)")
         try:
-            run = agent.ask(req.question)
+            run = agent.ask(req.question, run_id=req.run_id)
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
         return run.to_dict()

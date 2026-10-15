@@ -169,7 +169,14 @@ class AnswerOrchestrator:
 
     # -- Bucle principal ----------------------------------------------------------------
 
-    def ask(self, question: str, *, now: Optional[datetime] = None, on_step: Optional[Callable[[dict], None]] = None) -> AnswerRun:
+    def ask(
+        self,
+        question: str,
+        *,
+        now: Optional[datetime] = None,
+        on_step: Optional[Callable[[dict], None]] = None,
+        run_id: Optional[str] = None,
+    ) -> AnswerRun:
         question = (question or "").strip()
         if not question:
             raise ValueError("La pregunta está vacía")
@@ -177,7 +184,7 @@ class AnswerOrchestrator:
             raise ValueError("No hay modelo de razonamiento configurado (EPIGRAPH_AGENT_BACKEND)")
         started = time.perf_counter()
         now = (now or datetime.now(_UTC)).astimezone(self.timezone)
-        run = AnswerRun(id=str(uuid.uuid4()), question=question, model_id=self.model.model_id)
+        run = AnswerRun(id=run_id or str(uuid.uuid4()), question=question, model_id=self.model.model_id)
         handles: dict[str, Citation] = {}
         usage = {"prompt_tokens": 0, "completion_tokens": 0, "turns": 0}
         messages: list[dict[str, Any]] = [
@@ -187,32 +194,46 @@ class AnswerOrchestrator:
         tools = self.tool_specs()
         tool_calls_made = 0
         final: Optional[Turn] = None
-        self._log(run, f"Pregunta: {question}")
+        self._trace(run, "question", f"Pregunta: {question}", model=self.model.model_id)
         try:
             for step in range(1, self.max_steps + 1):
                 if time.perf_counter() - started > self.max_seconds:
                     run.metadata["budget"] = "tiempo agotado"
+                    self._trace(run, "budget", f"Tiempo agotado ({self.max_seconds} s): se pide la respuesta con lo recuperado")
                     break
+                self._trace(run, "thinking", f"Vuelta {step}: el modelo {self.model.model_id} lee los resultados y decide", turn=step)
+                turn_started = time.perf_counter()
                 turn = self._chat_with_retry(messages, tools if tool_calls_made < self.max_tool_calls else None, run)
+                turn_ms = round((time.perf_counter() - turn_started) * 1000, 1)
                 usage["turns"] += 1
-                usage["prompt_tokens"] += int(turn.usage.get("prompt_eval_count") or 0)
-                usage["completion_tokens"] += int(turn.usage.get("eval_count") or 0)
+                prompt_tokens = int(turn.usage.get("prompt_eval_count") or 0)
+                completion_tokens = int(turn.usage.get("eval_count") or 0)
+                usage["prompt_tokens"] += prompt_tokens
+                usage["completion_tokens"] += completion_tokens
                 if not turn.tool_calls:
+                    self._trace(run, "turn", f"Vuelta {step}: el modelo redacta la respuesta ({turn_ms / 1000:.1f} s, {prompt_tokens}+{completion_tokens} tokens)",
+                                turn=step, took_ms=turn_ms, tool_calls=0, prompt_tokens=prompt_tokens, completion_tokens=completion_tokens)
                     final = turn
                     break
+                wanted = ", ".join(call.name for call in turn.tool_calls)
+                self._trace(run, "turn", f"Vuelta {step}: el modelo pide {len(turn.tool_calls)} herramienta(s): {wanted} ({turn_ms / 1000:.1f} s, {prompt_tokens}+{completion_tokens} tokens)",
+                            turn=step, took_ms=turn_ms, tool_calls=len(turn.tool_calls), prompt_tokens=prompt_tokens, completion_tokens=completion_tokens)
                 messages.append(turn.to_message())
                 for call in turn.tool_calls:
                     if tool_calls_made >= self.max_tool_calls:
+                        self._trace(run, "budget", f"Presupuesto de herramientas agotado ({self.max_tool_calls}): no se ejecuta {call.name}", tool=call.name)
                         messages.append(self._tool_message(call, {"error": "presupuesto de herramientas agotado: responde con lo que tienes"}))
                         continue
                     tool_calls_made += 1
-                    record = self._run_tool(call, handles, step)
+                    record = self._run_tool(call, handles, step, run)
                     run.steps.append(record["step"])
                     if on_step:
                         on_step(record["step"])
                     messages.append(self._tool_message(call, record["payload"]))
             if final is None:
                 # Presupuesto agotado: una última vuelta sin herramientas para que responda con lo que tiene.
+                if "budget" not in run.metadata:
+                    self._trace(run, "budget", f"Vueltas agotadas ({self.max_steps}): se pide la respuesta con lo recuperado")
                 messages.append({"role": "user", "content": "Se acabó el presupuesto de búsqueda. Responde ahora con lo que ya tienes, citando solo marcas recibidas, o di que no consta."})
                 final = self._chat_with_retry(messages, None, run)
                 usage["turns"] += 1
@@ -223,16 +244,30 @@ class AnswerOrchestrator:
             run.error = str(exc)
             run.confidence = "sin_evidencia"
             run.answer = f"No se pudo consultar al modelo: {exc}"
+            self._trace(run, "error", f"El modelo falló: {exc}")
         except Exception as exc:  # una herramienta rota no debe ocultar lo ya recuperado
             logger.exception("Fallo del agente")
             run.error = str(exc)
             run.answer = f"La consulta falló: {exc}"
+            self._trace(run, "error", f"La consulta falló: {exc}")
         else:
             self._finish(run, final.content, handles)
+            if run.dropped_citations:
+                self._trace(run, "verify", f"Citas verificadas: {len(run.citations)} válida(s), {len(run.dropped_citations)} inventada(s) eliminada(s): {', '.join(run.dropped_citations)}",
+                            citations=len(run.citations), dropped=list(run.dropped_citations))
+            else:
+                self._trace(run, "verify", f"Citas verificadas: {len(run.citations)} válida(s)", citations=len(run.citations), dropped=[])
         run.usage = usage
         run.took_ms = (time.perf_counter() - started) * 1000
+        # Quién ha actuado: un único agente (este orquestador) con su modelo; las
+        # herramientas son deterministas. El front lo muestra sin ambigüedad.
+        run.metadata["agents"] = [{
+            "name": "agente de consulta", "model": self.model.model_id,
+            "turns": usage["turns"], "tool_calls": tool_calls_made,
+        }]
+        self._trace(run, "answer", f"Respuesta ({run.confidence}, {len(run.citations)} cita(s), {usage['turns']} vuelta(s), {tool_calls_made} herramienta(s), {run.took_ms / 1000:.1f} s)",
+                    confidence=run.confidence, citations=len(run.citations), turns=usage["turns"], tool_calls=tool_calls_made, took_ms=round(run.took_ms, 1))
         self.repository.save_answer_run(run)
-        self._log(run, f"Respuesta ({run.confidence}, {len(run.citations)} cita(s), {run.took_ms / 1000:.1f} s)")
         return run
 
     def _chat_with_retry(self, messages: list[dict[str, Any]], tools, run: AnswerRun) -> Turn:
@@ -249,7 +284,7 @@ class AnswerOrchestrator:
                 attempts += 1
                 run.metadata.setdefault("tool_call_retries", 0)
                 run.metadata["tool_call_retries"] += 1
-                self._log(run, f"llamada a herramienta mal formada (reintento {attempts})")
+                self._trace(run, "retry", f"Llamada a herramienta mal formada; reintento {attempts}" + (" sin herramientas" if attempts == 2 else ""), attempt=attempts)
                 if attempts == 2:
                     tools = None
                     messages = messages + [{"role": "user", "content": "Tus llamadas a herramientas no se pudieron interpretar. Responde ahora con lo que ya tienes, citando marcas recibidas, o di que no consta."}]
@@ -258,7 +293,7 @@ class AnswerOrchestrator:
 
     # -- Herramientas ------------------------------------------------------------------
 
-    def _run_tool(self, call: ToolCall, handles: dict[str, Citation], step: int) -> dict[str, Any]:
+    def _run_tool(self, call: ToolCall, handles: dict[str, Citation], step: int, run: Optional[AnswerRun] = None) -> dict[str, Any]:
         started = time.perf_counter()
         record: dict[str, Any] = {"step": step, "tool": call.name, "arguments": call.arguments, "handles": []}
         if call.name not in self.tool_names:
@@ -279,7 +314,12 @@ class AnswerOrchestrator:
                 record["error"] = str(exc)[:300]
                 payload = {"error": record["error"]}
         record["took_ms"] = round((time.perf_counter() - started) * 1000, 1)
-        self._log(None, f"{call.name}({json.dumps(call.arguments, ensure_ascii=False)[:160]}) → {record.get('result_count', 0)} resultado(s)")
+        # En el mensaje, solo lo que decidió el modelo; los valores fijos del orquestador van en los datos.
+        arguments_text = json.dumps(call.arguments, ensure_ascii=False)[:160]
+        outcome = f"error: {record['error']}" if record.get("error") else f"{record.get('result_count', 0)} resultado(s)"
+        self._trace(run, "tool", f"{call.name}({arguments_text}) → {outcome} · {record['took_ms'] / 1000:.1f} s",
+                    step=step, tool=call.name, arguments=record["arguments"], result_count=record.get("result_count", 0),
+                    took_ms=record["took_ms"], error=record.get("error"), handles=list(record.get("handles", [])))
         return {"step": record, "payload": payload}
 
     def _compact(self, output: MemoryToolOutput, handles: dict[str, Citation], record: dict[str, Any]) -> dict[str, Any]:
@@ -405,11 +445,16 @@ class AnswerOrchestrator:
     def _tz_name(self) -> str:
         return getattr(self.timezone, "key", None) or str(self.timezone)
 
-    def _log(self, run: Optional[AnswerRun], message: str) -> None:
+    def _trace(self, run: Optional[AnswerRun], kind: str, message: str, **data: Any) -> None:
+        """Una línea de la traza: en la ejecución (se guarda con la respuesta) y
+        en el registro de actividad, con ``run_id`` para seguirla en directo."""
+        entry = {"at": datetime.now(_UTC).isoformat(), "kind": kind, "message": message, **data}
+        if run is not None:
+            run.trace.append(entry)
         if self.activity is None:
             return
         try:
-            self.activity.info("agente", message)
+            self.activity.info("agente", message, data={"run_id": run.id if run else None, "kind": kind, **data})
         except Exception:  # pragma: no cover
             logger.debug("No se pudo registrar la actividad del agente", exc_info=True)
 

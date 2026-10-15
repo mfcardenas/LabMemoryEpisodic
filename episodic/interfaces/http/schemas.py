@@ -48,6 +48,9 @@ class AskRequest(BaseModel):
     """Pregunta en lenguaje natural para el agente de consulta."""
 
     question: str = Field(..., min_length=1, max_length=2000)
+    # Opcional: id elegido por el cliente para seguir la traza en /api/activity
+    # (data.run_id) mientras el agente trabaja.
+    run_id: Optional[str] = Field(None, min_length=8, max_length=64, pattern=r"^[A-Za-z0-9_-]+$")
 
 
 class SummaryRegenerateRequest(BaseModel):

@@ -57,9 +57,11 @@ class StubRepository:
 class Activity:
     def __init__(self) -> None:
         self.messages: list[str] = []
+        self.entries: list[dict] = []
 
     def info(self, component, message, **data):
         self.messages.append(f"{component}: {message}")
+        self.entries.append({"component": component, "message": message, **data})
 
 
 def _agent(model, **kwargs) -> AnswerOrchestrator:
@@ -201,3 +203,29 @@ def test_disabled_agent_raises_a_clear_error() -> None:
     assert not agent.enabled
     with pytest.raises(ValueError, match="EPIGRAPH_AGENT_BACKEND"):
         agent.ask("¿Qué pasó?")
+
+
+def test_trace_records_every_turn_tool_and_verdict_with_the_run_id() -> None:
+    model = FakeReasoningModel(script=[
+        scripted_turn(calls=[("search_moments", {"query": "chispas"})]),
+        scripted_turn(calls=[("get_event", {"event_id": "ev-9"})]),
+        scripted_turn("Saltan chispas [m1] y algo más [m7]."),
+    ])
+    agent = _agent(model)
+    run = agent.ask("¿Qué pasó?", run_id="web-run-0001")
+    assert run.id == "web-run-0001"
+    kinds = [item["kind"] for item in run.trace]
+    assert kinds == ["question", "thinking", "turn", "tool", "thinking", "turn", "tool", "thinking", "turn", "verify", "answer"]
+    tools = [item for item in run.trace if item["kind"] == "tool"]
+    assert tools[0]["tool"] == "search_moments" and tools[0]["result_count"] == 2 and tools[0]["handles"] == ["m1", "m2"]
+    assert tools[1]["tool"] == "get_event" and "no encontrado" in tools[1]["error"] and "error" in tools[1]["message"]
+    turns = [item for item in run.trace if item["kind"] == "turn"]
+    assert [item["tool_calls"] for item in turns] == [1, 1, 0] and all("Vuelta" in item["message"] for item in turns)
+    verify = next(item for item in run.trace if item["kind"] == "verify")
+    assert verify["citations"] == 1 and verify["dropped"] == ["m7"]
+    assert run.trace[-1]["turns"] == 3 and run.trace[-1]["tool_calls"] == 2
+    assert run.metadata["agents"] == [{"name": "agente de consulta", "model": model.model_id, "turns": 3, "tool_calls": 2}]
+    # Cada línea llega al registro de actividad con el id de la ejecución para seguirla en directo.
+    logged = [entry for entry in agent.activity.entries if entry["component"] == "agente"]
+    assert len(logged) == len(run.trace) and all(entry["data"]["run_id"] == "web-run-0001" for entry in logged)
+    assert [entry["data"]["kind"] for entry in logged] == kinds

@@ -195,7 +195,7 @@ memoria de arriba abajo (entorno → día → episodio → evento).
 
 ### Preguntar: el agente de consulta
 
-La pestaña **Preguntar** (`POST /api/ask`) envía la pregunta a un agente
+La pestaña **Preguntar** de **Consultas** (`POST /api/ask`) envía la pregunta a un agente
 (`EPIGRAPH_AGENT_MODEL`, por defecto el mismo gpt-oss de los resúmenes) que
 solo puede usar las herramientas de memoria: busca momentos, navega
 ambientes → días → episodios → eventos, lee eventos vecinos y documentos, y

@@ -44,6 +44,9 @@ class AnswerRun(SerializableDomainModel):
     citations: list[dict[str, Any]] = field(default_factory=list)
     dropped_citations: list[str] = field(default_factory=list)
     steps: list[dict[str, Any]] = field(default_factory=list)
+    # Traza completa y ordenada: pregunta, cada vuelta del modelo, cada
+    # herramienta (con resultado y duración), reintentos, presupuesto y respuesta.
+    trace: list[dict[str, Any]] = field(default_factory=list)
     model_id: str = ""
     usage: dict[str, Any] = field(default_factory=dict)
     took_ms: float = 0.0

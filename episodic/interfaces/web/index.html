@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="description" content="EpiGraph: memoria episódica multimodal trazable">
   <title>EpiGraph · Consola de memoria</title>
-  <link rel="stylesheet" href="/static/index.css?v=pasajes-3">
+  <link rel="stylesheet" href="/static/index.css?v=consultas-4">
 </head>
 <body>
   <div class="shell">
@@ -21,8 +21,7 @@
         <button class="nav-item" data-view="ingest"><span>03</span>Ingesta</button>
         <button class="nav-item" data-view="watch"><span>04</span>Vigilancia</button>
         <button class="nav-item" data-view="search"><span>05</span>Consultas</button>
-        <button class="nav-item" data-view="ask"><span>06</span>Preguntar</button>
-        <button class="nav-item" data-view="system"><span>07</span>Sistema</button>
+        <button class="nav-item" data-view="system"><span>06</span>Sistema</button>
       </nav>
 
       <div class="rail-status">
@@ -293,11 +292,26 @@
 
       <section class="view" id="view-search">
         <div class="search-mode-tabs">
-          <button class="search-tab-btn active" data-search-tab="hybrid">Búsqueda por momentos</button>
+          <button class="search-tab-btn active" data-search-tab="ask">Preguntar</button>
+          <button class="search-tab-btn" data-search-tab="hybrid">Búsqueda por momentos</button>
           <button class="search-tab-btn" data-search-tab="tools">Herramientas de memoria</button>
         </div>
+        <div id="query-status" class="query-status" role="status" aria-live="polite" hidden><span class="spinner" aria-hidden="true"></span><span id="query-status-text">Cargando…</span></div>
 
-        <div id="search-tab-hybrid-content" class="search-tab-content active">
+        <div id="search-tab-ask-content" class="search-tab-content active">
+          <article class="panel search-panel">
+            <div class="panel-heading"><div><p class="kicker">AGENTE DE CONSULTA</p><h2>Pregunta a la memoria</h2></div><span class="truth-badge vector" id="ask-status">…</span></div>
+            <p class="search-hint">El agente busca con las herramientas de memoria y responde solo con lo que encuentra; cada afirmación lleva una cita que abre el vídeo en ese segundo. Si no hay evidencia, lo dice.</p>
+            <form id="ask-form" class="search-form">
+              <input id="ask-question" placeholder="Ej.: ¿qué pasó justo después de cortar la pieza en el taller?" required>
+              <button class="button primary" type="submit" id="ask-submit">Preguntar</button>
+            </form>
+          </article>
+          <div id="ask-results" class="search-results"><div class="empty roomy">Mientras el agente trabaja verás aquí cada vuelta del modelo y cada herramienta; la respuesta se guarda con su traza y sus citas.</div></div>
+          <details class="technical-details" id="ask-history-box"><summary>Preguntas anteriores</summary><div id="ask-history"></div></details>
+        </div>
+
+        <div id="search-tab-hybrid-content" class="search-tab-content" hidden>
           <article class="panel search-panel">
             <div class="panel-heading"><div><p class="kicker">RECUPERACIÓN HÍBRIDA</p><h2>Consultar la memoria</h2></div><span class="truth-badge vector">SIGNIFICADO + PALABRAS</span></div>
             <p class="search-hint">Busca en cada evento del vídeo (lo que se ve, quién actúa, qué objetos y textos aparecen y qué se dijo mientras tanto), en cada frase transcrita y en cada fragmento de documento. Lo que va entre comillas se busca como frase exacta; los códigos y nombres se encuentran tal cual.</p>
@@ -346,19 +360,6 @@
         </div>
       </section>
 
-      <section class="view" id="view-ask">
-        <article class="panel search-panel">
-          <div class="panel-heading"><div><p class="kicker">AGENTE DE CONSULTA</p><h2>Pregunta a la memoria</h2></div><span class="truth-badge vector" id="ask-status">…</span></div>
-          <p class="search-hint">El agente busca con las herramientas de memoria y responde solo con lo que encuentra; cada afirmación lleva una cita que abre el vídeo en ese segundo. Si no hay evidencia, lo dice.</p>
-          <form id="ask-form" class="search-form">
-            <input id="ask-question" placeholder="Ej.: ¿qué pasó justo después de cortar la pieza en el taller?" required>
-            <button class="button primary" type="submit" id="ask-submit">Preguntar</button>
-          </form>
-        </article>
-        <div id="ask-results" class="search-results"><div class="empty roomy">Las respuestas quedan guardadas con sus pasos y sus citas (auditoría).</div></div>
-        <details class="technical-details" id="ask-history-box"><summary>Preguntas anteriores</summary><div id="ask-history"></div></details>
-      </section>
-
       <section class="view" id="view-system">
         <div class="system-grid">
           <article class="panel architecture-card">
@@ -387,6 +388,6 @@
   </div>
 
   <dialog id="asset-dialog" class="detail-dialog"><button class="dialog-close" data-close-dialog aria-label="Cerrar">×</button><div id="asset-dialog-content"></div></dialog>
-  <script src="/static/app.js?v=pasajes-3"></script>
+  <script src="/static/app.js?v=consultas-4"></script>
 </body>
 </html>

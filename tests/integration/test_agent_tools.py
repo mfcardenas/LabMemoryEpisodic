@@ -148,6 +148,14 @@ def test_ask_answers_with_verified_citations_over_http(memory) -> None:
         # Los pasos del agente se ven en el registro de actividad (Vigilancia).
         log = client.get("/api/activity", params={"component": "agente"}).json()["entries"]
         assert any("search_moments" in entry["message"] for entry in log)
+        # Con run_id del cliente, la traza se sigue en directo por /api/activity y queda guardada con la respuesta.
+        traced = client.post("/api/ask", json={"question": "¿Quién dijo que algo estaba agarrotado?", "run_id": "web-0123456789"}).json()
+        assert traced["id"] == "web-0123456789" and [item["kind"] for item in traced["trace"]][:3] == ["question", "thinking", "turn"]
+        assert traced["trace"][-1]["kind"] == "answer" and traced["metadata"]["agents"][0]["tool_calls"] >= 1
+        live = [entry for entry in client.get("/api/activity", params={"component": "agente"}).json()["entries"] if entry["data"].get("run_id") == "web-0123456789"]
+        assert [entry["data"]["kind"] for entry in live] == [item["kind"] for item in traced["trace"]]
+        assert client.get("/api/answers/web-0123456789").json()["trace"] == traced["trace"]
+        assert client.post("/api/ask", json={"question": "x", "run_id": "mal id"}).status_code == 422
 
 
 def test_agent_tools_are_published_and_callable_over_http(memory) -> None:
