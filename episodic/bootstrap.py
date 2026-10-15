@@ -422,6 +422,7 @@ def create_app_container(
     else:
         text_encoder = FastEmbedEpisodeTextEncoder(
             model_id=config.nomic_model,
+            device=config.encoder_device,
             dimension=config.nomic_dim,
             cache_dir=str(config.model_cache_path),
             threads=config.encoder_threads,
@@ -431,12 +432,14 @@ def create_app_container(
         )
         image_encoder = FastEmbedImageEncoder(
             model_id=config.clip_vision_model,
+            device=config.encoder_device,
             dimension=config.clip_dim,
             cache_dir=str(config.model_cache_path),
             threads=config.encoder_threads,
         )
         aligned_encoder = FastEmbedAlignedTextEncoder(
             model_id=config.clip_text_model,
+            device=config.encoder_device,
             dimension=config.clip_dim,
             cache_dir=str(config.model_cache_path),
             threads=config.encoder_threads,
@@ -476,6 +479,7 @@ def create_app_container(
             if use_fake_encoders
             else FastEmbedPassageReranker(
                 model_id=config.rerank_model,
+                device=config.encoder_device,
                 cache_dir=str(config.model_cache_path),
                 threads=config.rerank_threads or None,
             )

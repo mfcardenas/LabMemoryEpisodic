@@ -33,6 +33,20 @@ dev = [
   "httpx==0.28.1",
   "pytest==9.1.1",
 ]
+# Encoders en la GPU (Nomic, CLIP y el reordenador, ~15× más rápido). La rueda
+# de onnxruntime-gpu para CUDA 12 vive en el índice de ORT, no en PyPI:
+#   pip install -e .[gpu] --extra-index-url https://aiinfra.pkgs.visualstudio.com/PublicPackages/_packaging/onnxruntime-cuda-12/pypi/simple/
+# Sustituye al paquete onnxruntime de CPU (mismo módulo); las librerías CUDA
+# y cuDNN llegan por pip (paquetes nvidia-*), sin instalación del sistema.
+gpu = [
+  "onnxruntime-gpu==1.27.0",
+  "nvidia-cuda-runtime-cu12==12.9.79",
+  "nvidia-cuda-nvrtc-cu12==12.9.86",
+  "nvidia-cudnn-cu12==9.27.0.42",
+  "nvidia-cublas-cu12==12.9.2.10",
+  "nvidia-cufft-cu12==11.4.1.4",
+  "nvidia-curand-cu12==10.3.10.19",
+]
 
 [project.scripts]
 epigraph = "episodic.interfaces.cli.commands:main"

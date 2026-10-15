@@ -231,6 +231,23 @@ La pestaña **Herramientas** del front genera los formularios desde ese
 catálogo. Las salidas separan `fact` (observado), `generated` (texto de
 modelo) y `evidence`.
 
+### Encoders en la GPU
+
+Nomic, CLIP y el reordenador corren en ONNX Runtime; con el extra `[gpu]`
+usan CUDA (`EPIGRAPH_ENCODER_DEVICE=auto` lo detecta; `cuda`/`cpu` lo fuerzan).
+En la RTX 5080, Nomic pasa de ~8 a ~120 textos/s, lo que acelera cada captura
+y la reindexación. La rueda de `onnxruntime-gpu` para CUDA 12 no está en PyPI
+(la de PyPI es para CUDA 13, cuyas librerías `nvidia-*-cu13` no tienen rueda
+para Windows):
+
+```bat
+pip install -e .[gpu] --extra-index-url https://aiinfra.pkgs.visualstudio.com/PublicPackages/_packaging/onnxruntime-cuda-12/pypi/simple/
+```
+
+Sustituye al `onnxruntime` de CPU (mismo módulo) y trae cuDNN y cuBLAS por
+pip; no hace falta instalar CUDA en el sistema. En GPU conviene
+`EPIGRAPH_ENCODER_BATCH_SIZE=16`.
+
 ### Prueba de escala
 
 `scripts\scale_test.bat` (o `scripts/scale_test.sh`) ejecuta sin intervención

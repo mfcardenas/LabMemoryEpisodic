@@ -109,6 +109,9 @@ class EpisodicConfig:
     )
     clip_dim: int = field(default_factory=lambda: _env("CLIP_DIM", 512, int))
     encoder_threads: int = field(default_factory=lambda: _env("ENCODER_THREADS", 2, int))
+    # auto | cuda | cpu: con el extra [gpu] (onnxruntime-gpu) Nomic, CLIP y el
+    # reordenador corren en la GPU (~15× más rápido que en CPU).
+    encoder_device: str = field(default_factory=lambda: _env("ENCODER_DEVICE", "auto"))
     encoder_batch_size: int = field(default_factory=lambda: _env("ENCODER_BATCH_SIZE", 1, int))
 
     # Servidor HTTP local.
@@ -287,6 +290,9 @@ class EpisodicConfig:
             raise ValueError(f"Backend de texto no soportado: {self.text_backend}")
         if self.agent_backend not in {"ollama", "fake", "none"}:
             raise ValueError(f"Backend del agente no soportado: {self.agent_backend}")
+        self.encoder_device = self.encoder_device.lower()
+        if self.encoder_device not in {"auto", "cuda", "cpu"}:
+            raise ValueError(f"Dispositivo de encoders no soportado: {self.encoder_device}")
 
     @classmethod
     def from_env(cls, **overrides: Any) -> "EpisodicConfig":

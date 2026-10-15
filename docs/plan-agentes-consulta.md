@@ -441,7 +441,18 @@ comparaciones). Misma capa de herramientas y mismo puerto de razonamiento.
 Aceptación: mejora medible en preguntas compuestas sin empeorar las simples
 ni superar 2× la latencia.
 
-### Fase S — Escala a millones de eventos (3–4 días, intercalable)
+### Fase S — Escala a millones de eventos (3–4 días, intercalable) · ◐ en curso (2026-10-15)
+
+Hecho: `scripts/scale_test.py` + `scale_test.bat/.sh` (perfiles «hash» 200 k
+y «real» 50 k sin intervención, informes en `data/eval/escala-*.json`);
+`upsert_many` por lotes en Qdrant/Edge (indexación ×3); estado del índice y
+navegación de ambientes en SQL; vía léxica AND-primero; caché de la cuenta.
+Medido a 200 k eventos / 300 k pasajes: búsqueda p50 125 ms, p95 ~420 ms
+(objetivo p95 < 1,5 s cumplido con margen); ver `docs/evaluacion.md`.
+**Pendiente**: el perfil real de 50 k (en ejecución), la pasada a 1 M
+(`scripts\scale_test.bat 1000000 50000` en otro entorno), y las medidas de
+Qdrant para 1 M (`on_disk_payload`, cuantización, tenant por ambiente), que
+solo tienen sentido con esa cifra.
 
 Objetivo: p95 de `search_moments` < 1,5 s y de `/api/ask` < 30 s con 1 M de
 eventos sintéticos (Fase 0.5) en el portátil.

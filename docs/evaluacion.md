@@ -29,6 +29,18 @@ reordenador) y de `search_moments`; «hash» mide solo la ruta de datos
 
 | Fecha | Commit | Perfil | Eventos | Pasajes | búsqueda | +reordenador | search_moments | construcción s |
 |---|---|---|---|---|---|---|---|---|
+| 2026-10-15 | `439f5e0` | hash | 200 000 | 300 281 | 176 / 444 | 172 / 439 | 159 / 440 | 1016 |
+| 2026-10-15 | S opt. | hash | 200 000 | 300 281 | 125 / 423 | 133 / 429 | 147 / 430 | — |
+
+Lecciones a 200 k eventos (300 k pasajes, 309 k puntos): el estado del índice
+recorría todos los episodios en Python (41 s por comprobación, y el front la
+pedía al abrir Consultas) → en SQL, 93 ms; `browse_memory(environments)`
+cargaba todos los episodios de cada ambiente (2 s) → una consulta agregada,
+57 ms; la vía léxica con OR de prefijos puntuaba cientos de miles de filas
+(170–335 ms por consulta) → primero AND, OR solo si no llena candidatos
+(p50 125 ms; el p95 sigue en el OR de términos frecuentes). Qdrant con
+vectores hash responde en 10–40 ms con filtro; la hidratación en lote, 5 ms.
+Construcción: 197 eventos/s con escritura por lotes (antes 60/s).
 
 ## Resultados
 
