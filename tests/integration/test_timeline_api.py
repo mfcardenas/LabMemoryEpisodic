@@ -169,6 +169,21 @@ def test_front_serves_the_new_timeline_and_hides_the_classic_one(client) -> None
     assert 'id="cr-markbar"' in page_marks and 'id="cr-marklayer"' in page_marks
 
 
+def test_panel_style_is_optional_and_editorial_stays_the_default(client) -> None:
+    page = client.get("/").text
+    # El estilo «Panel» se carga, pero solo actúa con data-skin="panel" (selector o ?estilo=).
+    assert "/static/tema-panel.css" in page and 'class="skin-switch"' in page
+    assert 'data-estilo="editorial"' in page and 'data-estilo="panel-claro"' in page and 'data-estilo="panel-oscuro"' in page
+    assert "<html lang=\"es\">" in page and "data-skin=" not in page.split("<head>")[0]
+    css = client.get("/static/tema-panel.css")
+    assert css.status_code == 200
+    rules = [line for line in css.text.splitlines() if "{" in line and not line.lstrip().startswith(("/*", "@media", "}"))]
+    assert rules and all("data-skin=\"panel\"" in line for line in rules)
+    app = client.get("/static/app.js").text
+    assert "epigraph.estilo" in app and "epigraph:estilo" in app
+    assert 'addEventListener("epigraph:estilo"' in client.get("/static/cronologia.js").text
+
+
 def test_density_cache_follows_new_events(client, memory) -> None:
     params = {"start": "2026-10-12T00:00:00Z", "end": "2026-10-13T00:00:00Z", "bucket": "day"}
     # Ventana UTC del 12: los tres eventos del taller y el de la oficina (22:30 UTC).

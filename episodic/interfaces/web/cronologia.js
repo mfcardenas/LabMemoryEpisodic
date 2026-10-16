@@ -838,6 +838,12 @@ function bind() {
   }).observe(root());
 }
 
+// Al cambiar de estilo, los lienzos (pulso y minimapa) se repintan con los colores nuevos.
+window.addEventListener("epigraph:estilo", () => {
+  if (!root()?.classList.contains("active") || !C.pulse) return;
+  drawPulse(); drawMini(); schedule();
+});
+
 window.EpiGraphChrono = { activate, focus };
 if (root()?.classList.contains("active")) activate();
 })();

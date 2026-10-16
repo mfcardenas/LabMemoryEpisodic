@@ -5,8 +5,19 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="description" content="EpiGraph: memoria episódica multimodal trazable">
   <title>EpiGraph · Consola de memoria</title>
-  <link rel="stylesheet" href="/static/index.css?v=cronologia-11">
-  <link rel="stylesheet" href="/static/cronologia.css?v=cronologia-11">
+  <script>
+    // Estilo visual antes de pintar (sin parpadeo): editorial por defecto; «panel» claro u oscuro es opcional.
+    (function () {
+      var v = null, d = document.documentElement;
+      try { v = new URLSearchParams(location.search).get("estilo") || localStorage.getItem("epigraph.estilo"); } catch (e) {}
+      if (v !== "panel-claro" && v !== "panel-oscuro") return;
+      d.setAttribute("data-skin", "panel");
+      d.setAttribute("data-mode", v === "panel-oscuro" ? "dark" : "light");
+    })();
+  </script>
+  <link rel="stylesheet" href="/static/index.css?v=tema-panel-2">
+  <link rel="stylesheet" href="/static/cronologia.css?v=tema-panel-2">
+  <link rel="stylesheet" href="/static/tema-panel.css?v=tema-panel-2">
 </head>
 <body>
   <div class="shell">
@@ -26,6 +37,11 @@
         <button class="nav-item" data-view="search"><span>05</span>Consultas</button>
         <button class="nav-item" data-view="system"><span>06</span>Sistema</button>
       </nav>
+
+      <div class="skin-switch" role="group" aria-label="Estilo visual">
+        <span>Estilo</span>
+        <div><button type="button" data-estilo="editorial">Editorial</button><button type="button" data-estilo="panel-claro">Claro</button><button type="button" data-estilo="panel-oscuro">Oscuro</button></div>
+      </div>
 
       <div class="rail-status">
         <div><i id="connection-light"></i><span id="connection-label">Conectando</span></div>
@@ -446,7 +462,7 @@
   </div>
 
   <dialog id="asset-dialog" class="detail-dialog"><button class="dialog-close" data-close-dialog aria-label="Cerrar">×</button><div id="asset-dialog-content"></div></dialog>
-  <script src="/static/app.js?v=cronologia-11"></script>
-  <script src="/static/cronologia.js?v=cronologia-11"></script>
+  <script src="/static/app.js?v=tema-panel-2"></script>
+  <script src="/static/cronologia.js?v=tema-panel-2"></script>
 </body>
 </html>

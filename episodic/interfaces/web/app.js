@@ -1874,6 +1874,32 @@ document.addEventListener("DOMContentLoaded", () => {
   const requestedView = views[requestedHash] ? requestedHash : null;
   const initialView = requestedView || "episodes";
   // Lo que necesita la línea temporal (cronologia.js) de esta aplicación.
+  // Estilo visual: «editorial» (por defecto) o «panel» claro/oscuro (tema-panel.css). Se recuerda en este navegador.
+  const ESTILOS = ["editorial", "panel-claro", "panel-oscuro"];
+  const FONT_PANEL = "https://fonts.googleapis.com/css2?family=Nunito+Sans:wght@400;600;700;800&display=swap";
+  function applyEstilo(value, save = true) {
+    const estilo = ESTILOS.includes(value) ? value : "editorial", doc = document.documentElement;
+    if (estilo === "editorial") { doc.removeAttribute("data-skin"); doc.removeAttribute("data-mode"); }
+    else {
+      doc.setAttribute("data-skin", "panel");
+      doc.setAttribute("data-mode", estilo === "panel-oscuro" ? "dark" : "light");
+      if (!document.getElementById("font-panel")) {
+        const link = Object.assign(document.createElement("link"), { id: "font-panel", rel: "stylesheet", href: FONT_PANEL });
+        document.head.append(link);
+      }
+    }
+    if (save) { try { localStorage.setItem("epigraph.estilo", estilo); } catch {} }
+    $$(".skin-switch [data-estilo]").forEach(button => button.setAttribute("aria-pressed", String(button.dataset.estilo === estilo)));
+    window.dispatchEvent(new CustomEvent("epigraph:estilo", { detail: estilo }));
+  }
+  $$(".skin-switch [data-estilo]").forEach(button => button.addEventListener("click", () => applyEstilo(button.dataset.estilo)));
+  {
+    const doc = document.documentElement;
+    const current = doc.dataset.skin === "panel" ? (doc.dataset.mode === "dark" ? "panel-oscuro" : "panel-claro") : "editorial";
+    const fromUrl = new URLSearchParams(location.search).get("estilo");
+    applyEstilo(current, ESTILOS.includes(fromUrl));
+  }
+
   window.EpiGraph = { api, esc, openEpisode, environmentLabel, sourceTypeLabel, state };
   switchView(initialView, true);
   Promise.all([loadHealth(), loadScope(), loadAssets()]).catch(error => console.error(error));

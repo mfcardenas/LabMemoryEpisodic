@@ -227,6 +227,16 @@ cubos se cuentan en la hora local de `EPIGRAPH_QUERY_TIMEZONE`, con los
 cambios de horario. La línea temporal clásica sigue en el código, oculta:
 `LEGACY_TIMELINE = true` en `app.js` la recupera.
 
+### Estilo visual: editorial o panel
+
+La consola tiene dos estilos. **Editorial** es el de siempre y sale por
+defecto. **Panel** es un tema de grises fríos y primario azul, con superficies
+planas y Nunito Sans, en claro u oscuro. Se cambia en la barra lateral
+(«Estilo») y el navegador lo recuerda. También vale `?estilo=panel-claro`,
+`?estilo=panel-oscuro` o `?estilo=editorial` en la URL. Todo el tema vive en
+`episodic/interfaces/web/tema-panel.css` y solo actúa con
+`<html data-skin="panel">`: quitar ese fichero deja la consola como estaba.
+
 ### Preguntar: el agente de consulta
 
 La pestaña **Preguntar** de **Consultas** (`POST /api/ask`) envía la pregunta a un agente
