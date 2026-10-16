@@ -484,7 +484,27 @@ eventos sintéticos (Fase 0.5) en el portátil.
   del banco contra el corpus sintético, informa p50/p95) y resultados en
   `docs/evaluacion.md`.
 
-### Fase T — Línea temporal a escala (2–3 días, tras S) · propuesta (2026-10-15)
+### Fase T — Línea temporal a escala (3–4 días, tras S) · ◐ en curso (2026-10-16)
+
+Hecho (2026-10-16): pantalla nueva **Línea temporal** (`cronologia.js`,
+`cronologia.css`) con pulso, pistas por fuente con tiras de fotogramas, habla
+y documentos, minimapa del día, inspector y relato; la clásica queda oculta
+(`LEGACY_TIMELINE` en `app.js`). Backend: `application/timeline.py`
+(`TimelineService`), endpoints `/api/timeline/span|density|items`, miniaturas
+`?max_side=` de fotogramas, migración V13 (índices que cubren la densidad
+con y sin ambiente, y habla/documentos por tiempo), cubos en hora local con
+tramos de cambio de horario y caché por versión de los eventos. Medido sobre
+el corpus «hash» (200 000 eventos, 270 días): densidad completa 160 ms (antes
+914 ms sin índices que la cubran; cacheada después), densidad de un día
+0,7 ms, ventana de una hora 3,4 ms, extensión 38 ms. Propuesta visual y
+estilos estudiados: artefacto «Montaje temporal de EpiGraph».
+Enlace con Consultas (2026-10-16): «Ver en la línea» en cada resultado de
+búsqueda y cada cita del agente, y para todos a la vez; la línea se abre con
+los momentos marcados (bandas, banderas, pulso, minimapa) y una barra para
+recorrerlos (`window.EpiGraphChrono.focus`).
+**Pendiente**: retirar la vista clásica y `buildFallbackTimeline` cuando se
+confirme, y medir con 1 M eventos.
+
 
 **Diagnóstico.** `GET /api/memory/timeline` (`inspection.py:207`) devuelve sin
 intervalo ni límite todas las observaciones, eventos, microepisodios,
@@ -579,7 +599,7 @@ eliminar `compatibility_mode` y `buildFallbackTimeline` de `app.js`.
 | 3 | H (digestos) → A1 | jerarquía navegable; catálogo de herramientas paginado |
 | 4 | A2 | `/api/ask` + pestaña Preguntar + auditoría; evaluación |
 | 5 | S (+ F') | 1 M eventos sintéticos, p95 medidos; Auditoría en el front |
-| 6 | T | línea temporal a escala: densidad en SQL, canvas con zoom semántico, enlace con consultas |
+| 6 | T | línea temporal a escala: pulso, pistas con fotogramas, inspector y enlace con Consultas (hecho) |
 | 7 | A3 | red de agentes solo si A2 lo justifica |
 
 Fuera de este plan (siguen pendientes): procesador DOCX (Fase D), CLIP sobre

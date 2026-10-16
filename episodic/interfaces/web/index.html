@@ -5,7 +5,8 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="description" content="EpiGraph: memoria episódica multimodal trazable">
   <title>EpiGraph · Consola de memoria</title>
-  <link rel="stylesheet" href="/static/index.css?v=linea-9">
+  <link rel="stylesheet" href="/static/index.css?v=cronologia-11">
+  <link rel="stylesheet" href="/static/cronologia.css?v=cronologia-11">
 </head>
 <body>
   <div class="shell">
@@ -17,7 +18,9 @@
 
       <nav class="nav" aria-label="Secciones">
         <button class="nav-item active" data-view="episodes"><span>01</span>Memoria</button>
-        <button class="nav-item" data-view="timeline"><span>02</span>Línea temporal</button>
+        <!-- La línea temporal clásica queda oculta (LEGACY_TIMELINE en app.js); su vista sigue abajo. -->
+        <button class="nav-item" data-view="timeline" hidden><span>02</span>Línea temporal clásica</button>
+        <button class="nav-item" data-view="cronologia"><span>02</span>Línea temporal</button>
         <button class="nav-item" data-view="ingest"><span>03</span>Ingesta</button>
         <button class="nav-item" data-view="watch"><span>04</span>Vigilancia</button>
         <button class="nav-item" data-view="search"><span>05</span>Consultas</button>
@@ -165,6 +168,61 @@
             <div id="timeline-canvas" class="timeline-canvas"><div class="empty">Cargando eje temporal…</div></div>
           </div>
           <div id="timeline-ledger" class="timeline-ledger"></div>
+        </article>
+      </section>
+
+      <section class="view" id="view-cronologia" aria-label="Línea temporal">
+        <article class="panel cr-pulse" aria-labelledby="cr-pulse-title">
+          <div class="cr-head">
+            <div><p class="kicker">DÓNDE MIRAR</p><h2 id="cr-pulse-title">Pulso</h2><p id="cr-pulse-sub">Eventos por ambiente a lo largo de toda la memoria.</p></div>
+            <p class="cr-readout" id="cr-readout">Cargando…</p>
+          </div>
+          <div class="cr-pulse-wrap" id="cr-pulse-wrap">
+            <canvas id="cr-pulse" aria-label="Mapa de calor de eventos por ambiente y tiempo"></canvas>
+            <div class="cr-view-box" id="cr-view-box" hidden></div>
+            <div class="cr-tip" id="cr-tip" hidden></div>
+          </div>
+          <p class="cr-note">Arrastra sobre el pulso para elegir el intervalo que se muestra abajo; un clic lleva a ese momento.</p>
+        </article>
+
+        <article class="panel cr-bench" aria-label="Pistas por ambiente y fuente">
+          <div class="cr-bar">
+            <div class="cr-seg" role="group" aria-label="Modo">
+              <button type="button" id="cr-mode-tracks" aria-pressed="true">Pistas</button>
+              <button type="button" id="cr-mode-story" aria-pressed="false">Relato</button>
+            </div>
+            <div class="cr-envs" id="cr-envs" role="group" aria-label="Ambientes visibles"></div>
+            <span class="cr-loading" id="cr-loading" hidden><span class="spinner" aria-hidden="true"></span>Cargando…</span>
+            <div class="cr-zoom">
+              <button type="button" id="cr-zoom-out" aria-label="Alejar">−</button>
+              <span class="cr-span" id="cr-span">—</span>
+              <button type="button" id="cr-zoom-in" aria-label="Acercar">+</button>
+              <button type="button" id="cr-fit" title="Encuadrar el día (o el intervalo del pulso)">Encajar</button>
+            </div>
+          </div>
+          <div class="cr-markbar" id="cr-markbar" hidden></div>
+          <div class="cr-body">
+            <div class="cr-stage-col">
+              <div id="cr-tracks-view">
+                <p class="cr-banner" id="cr-banner" hidden></p>
+                <div class="cr-mini" id="cr-mini" title="Contexto: arrastra la ventana para moverte">
+                  <canvas id="cr-mini-canvas"></canvas>
+                  <div class="cr-mini-win" id="cr-mini-win"></div>
+                  <span class="cr-mini-label" id="cr-mini-label"></span>
+                </div>
+                <div class="cr-stage" id="cr-stage" tabindex="0" aria-label="Pistas: rueda para acercar, arrastrar para desplazar">
+                  <div class="cr-grid" id="cr-grid"></div>
+                  <div class="cr-marklayer" id="cr-marklayer"></div>
+                  <div class="cr-row cr-ruler-row"><div class="cr-lab" id="cr-day">—</div><div class="cr-ruler" id="cr-ruler"></div></div>
+                  <div id="cr-rows"><div class="cr-empty">Cargando la línea temporal…</div></div>
+                  <div class="cr-playhead" id="cr-playhead" hidden><span></span></div>
+                </div>
+                <p class="cr-hint"><kbd>Rueda</kbd> acercar sobre el cursor · <kbd>Arrastrar</kbd> desplazar · <kbd>←</kbd> <kbd>→</kbd> moverse · <kbd>+</kbd> <kbd>−</kbd> zoom · <kbd>F</kbd> encajar · clic en un episodio para encuadrarlo · clic en un ambiente para plegarlo</p>
+              </div>
+              <div id="cr-story" class="cr-story" hidden></div>
+            </div>
+            <aside class="cr-inspector" id="cr-inspector" aria-live="polite"></aside>
+          </div>
         </article>
       </section>
 
@@ -388,6 +446,7 @@
   </div>
 
   <dialog id="asset-dialog" class="detail-dialog"><button class="dialog-close" data-close-dialog aria-label="Cerrar">×</button><div id="asset-dialog-content"></div></dialog>
-  <script src="/static/app.js?v=linea-9"></script>
+  <script src="/static/app.js?v=cronologia-11"></script>
+  <script src="/static/cronologia.js?v=cronologia-11"></script>
 </body>
 </html>

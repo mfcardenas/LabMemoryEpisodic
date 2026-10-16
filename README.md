@@ -193,6 +193,40 @@ pero la búsqueda por momentos **no lo usa salvo que se pida**
 momento exacto; los resúmenes están pensados para que el agente navegue la
 memoria de arriba abajo (entorno → día → episodio → evento).
 
+### Línea temporal: pulso, pistas e inspector
+
+La pestaña **Línea temporal** está pensada para millones de eventos: el
+servidor solo devuelve lo que cabe en pantalla.
+
+- **Pulso**: mapa de calor de eventos por ambiente y por minuto, hora o día
+  (según el rango), con el volumen total encima. Arrastrar elige el intervalo
+  que se muestra en las pistas.
+- **Pistas**: un grupo plegable por ambiente y, dentro, una pista por fuente:
+  vídeo con la tira de fotogramas clave de cada evento, habla transcrita
+  alineada en el tiempo y documentos por página. Rueda para acercar sobre el
+  cursor, arrastrar para desplazar, minimapa del día y cabezal con la hora.
+  Si el intervalo tiene más eventos de los que caben, se muestran agrupados por
+  cubo y un clic en la barra acerca el zoom.
+- **Inspector y relato**: el detalle del evento (fotogramas, acciones, actores,
+  objetos, texto visible, habla), anterior y siguiente en la misma fuente y
+  «Abrir en el episodio» en ese segundo. El modo Relato lista lo visible como
+  tarjetas por instante.
+
+- **Desde Consultas**: cada resultado de la búsqueda y cada cita de una
+  respuesta del agente tienen «Ver en la línea», y el resumen de la búsqueda y
+  la evidencia citada, «Ver en la línea temporal». La línea se abre con esos
+  momentos marcados (bandas, banderas numeradas en la regla, marcas en el
+  pulso y el minimapa, clip resaltado) y una barra para ir de uno a otro, ver
+  todos o quitar las marcas.
+
+API: `GET /api/timeline/span`, `GET /api/timeline/density` (`start`, `end`,
+`bucket=auto|minute|hour|day`, `environment_id`, `by_source`) y
+`GET /api/timeline/items` (`start`, `end`, `environment_id`, `limit`), más
+`?max_side=` en `/api/memory/events/{id}/keyframes/{i}` para miniaturas. Los
+cubos se cuentan en la hora local de `EPIGRAPH_QUERY_TIMEZONE`, con los
+cambios de horario. La línea temporal clásica sigue en el código, oculta:
+`LEGACY_TIMELINE = true` en `app.js` la recupera.
+
 ### Preguntar: el agente de consulta
 
 La pestaña **Preguntar** de **Consultas** (`POST /api/ask`) envía la pregunta a un agente

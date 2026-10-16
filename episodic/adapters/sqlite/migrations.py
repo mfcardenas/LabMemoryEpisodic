@@ -640,6 +640,15 @@ CREATE TABLE answer_runs (
 CREATE INDEX idx_answer_runs_created ON answer_runs(created_at);
 """
 
+MIGRATION_V13 = """
+-- Línea temporal a escala (Fase T): densidad y elementos en ventana por
+-- intervalo, con y sin filtro de ambiente, y habla/documentos por tiempo.
+-- Índices que cubren la densidad (sin leer la tabla) con y sin ambiente.
+CREATE INDEX idx_events_time_env ON events(start_time, environment_id, source_id);
+CREATE INDEX idx_events_env_time ON events(environment_id, start_time, source_id);
+CREATE INDEX idx_obs_type_time ON observations(observation_type, start_time);
+"""
+
 MIGRATIONS: List[Tuple[int, str]] = [
     (1, MIGRATION_V1),
     (2, MIGRATION_V2),
@@ -653,6 +662,7 @@ MIGRATIONS: List[Tuple[int, str]] = [
     (10, MIGRATION_V10),
     (11, MIGRATION_V11),
     (12, MIGRATION_V12),
+    (13, MIGRATION_V13),
 ]
 
 

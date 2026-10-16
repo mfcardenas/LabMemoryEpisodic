@@ -1324,6 +1324,120 @@ class SqliteEpisodicRepository:
         ).fetchall()
         return [self._row_to_event(r) for r in reversed(previous)], [self._row_to_event(r) for r in following]
 
+    # -- Línea temporal a escala (Fase T) ------------------------------------------------
+    # Los instantes se guardan como ISO UTC («…+00:00»), así que los rangos se
+    # comparan como texto y aprovechan los índices por start_time.
+
+    @staticmethod
+    def _env_clause(column: str, environment_ids: Optional[List[str]]) -> Tuple[str, List[Any]]:
+        if not environment_ids:
+            return "", []
+        return f" AND {column} IN ({','.join('?' for _ in environment_ids)})", list(environment_ids)
+
+    def timeline_data_version(self) -> Tuple[int, int]:
+        """Cambia cuando se añaden, borran o renumeran eventos: invalida cachés."""
+        row = self._conn.execute("SELECT coalesce(max(rowid), 0), count(*) FROM events").fetchone()
+        return int(row[0]), int(row[1])
+
+    def timeline_event_span(self) -> List[Dict[str, Any]]:
+        """Por ambiente: número de eventos y primer y último inicio."""
+        rows = self._conn.execute(
+            "SELECT environment_id, count(*) AS n, min(start_time) AS first, max(start_time) AS last "
+            "FROM events GROUP BY environment_id"
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+    def timeline_event_density(
+        self,
+        start: str,
+        end: str,
+        bucket_format: str,
+        offset_modifier: str,
+        environment_ids: Optional[List[str]] = None,
+        by_source: bool = False,
+    ) -> List[Dict[str, Any]]:
+        """Eventos por cubo de tiempo local (``strftime`` con un desplazamiento
+        fijo) y ambiente (y fuente), con inicio en ``[start, end)``."""
+        env_sql, env_params = self._env_clause("environment_id", environment_ids)
+        source_col = ", source_id" if by_source else ""
+        # Dos niveles: primero por hora (o minuto) UTC cortando el texto ISO,
+        # que solo lee el índice; luego, sobre esos pocos grupos, la hora local.
+        # Por minutos si el cubo es de minutos o el desplazamiento no es de horas enteras.
+        minutes = bucket_format.endswith("%M") or int(offset_modifier.split()[0]) % 60 != 0
+        width, suffix = (16, ":00+00:00") if minutes else (13, ":00:00+00:00")
+        rows = self._conn.execute(
+            f"SELECT strftime(?, slot || ?, ?) AS bucket, environment_id{source_col}, sum(n) AS n FROM ("
+            f"  SELECT substr(start_time, 1, {width}) AS slot, environment_id{source_col}, count(*) AS n "
+            f"  FROM events WHERE start_time >= ? AND start_time < ?{env_sql} "
+            f"  GROUP BY slot, environment_id{source_col}"
+            f") GROUP BY bucket, environment_id{source_col}",
+            [bucket_format, suffix, offset_modifier, start, end, *env_params],
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+    def timeline_count_events(self, start: str, end: str, lookback_start: str, environment_ids: Optional[List[str]] = None) -> int:
+        env_sql, env_params = self._env_clause("environment_id", environment_ids)
+        row = self._conn.execute(
+            f"SELECT count(*) FROM events WHERE start_time >= ? AND start_time < ? AND end_time > ?{env_sql}",
+            [lookback_start, end, start, *env_params],
+        ).fetchone()
+        return int(row[0])
+
+    def timeline_events(
+        self, start: str, end: str, lookback_start: str, environment_ids: Optional[List[str]] = None, limit: int = 2000
+    ) -> List[Dict[str, Any]]:
+        """Eventos que se solapan con ``[start, end)``; ``lookback_start`` acota
+        el recorrido del índice (ningún evento dura más que eso)."""
+        env_sql, env_params = self._env_clause("environment_id", environment_ids)
+        rows = self._conn.execute(
+            f"SELECT payload_json, episode_id FROM events WHERE start_time >= ? AND start_time < ? AND end_time > ?{env_sql} "
+            "ORDER BY start_time, sequence_number LIMIT ?",
+            [lookback_start, end, start, *env_params, limit],
+        ).fetchall()
+        result = []
+        for row in rows:
+            payload = _from_json(row["payload_json"]) or {}
+            if row["episode_id"]:
+                payload["episode_id"] = row["episode_id"]
+            result.append(payload)
+        return result
+
+    def timeline_observations(
+        self,
+        start: str,
+        end: str,
+        lookback_start: str,
+        observation_types: List[str],
+        environment_ids: Optional[List[str]] = None,
+        limit: int = 2000,
+    ) -> List[Dict[str, Any]]:
+        """Observaciones de esos tipos (habla, fragmentos de documento) que se
+        solapan con ``[start, end)``."""
+        env_sql, env_params = self._env_clause("environment_id", environment_ids)
+        types_sql = ",".join("?" for _ in observation_types)
+        rows = self._conn.execute(
+            f"SELECT id, observation_type, environment_id, source_id, episode_id, start_time, end_time, "
+            f"content, description, attributes_json FROM observations "
+            f"WHERE observation_type IN ({types_sql}) AND start_time >= ? AND start_time < ? "
+            f"AND coalesce(end_time, start_time) >= ?{env_sql} ORDER BY start_time LIMIT ?",
+            [*observation_types, lookback_start, end, start, *env_params, limit],
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+    def timeline_episodes(self, start: str, end: str, lookback_start: str, limit: int = 2000) -> List[Dict[str, Any]]:
+        """Episodios visibles que se solapan con ``[start, end)``."""
+        rows = self._conn.execute(
+            # «+is_visible»: que SQLite use el índice por tiempo y no el de visibilidad.
+            "SELECT id, title, external_id, start_time, end_time, environment_ids_json FROM episodes "
+            "WHERE +is_visible = 1 AND start_time >= ? AND start_time < ? AND coalesce(end_time, start_time) >= ? "
+            "ORDER BY start_time LIMIT ?",
+            (lookback_start, end, start, limit),
+        ).fetchall()
+        return [
+            {**dict(row), "environment_ids": _from_json(row["environment_ids_json"]) or []}
+            for row in rows
+        ]
+
     def count_events(self) -> int:
         return int(self._conn.execute("SELECT count(*) FROM events").fetchone()[0])
 

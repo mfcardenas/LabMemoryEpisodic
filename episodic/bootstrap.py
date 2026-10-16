@@ -27,6 +27,7 @@ from episodic.adapters.qdrant.index import QdrantVectorIndex
 from episodic.adapters.qdrant_edge.index import QdrantEdgeVectorIndex
 from episodic.adapters.sqlite.repository import SqliteEpisodicRepository
 from episodic.application.activity import ActivityLog
+from episodic.application.timeline import TimelineService
 from episodic.application.indexing import IndexingWorker
 from episodic.application.inspection import MemoryInspectionService
 from episodic.application.asset_ingestion import AssetIngestionService
@@ -301,6 +302,8 @@ class AppContainer:
     summaries: Optional[SummaryService] = None
     # Agente de respuestas (Preguntar).
     answers: Optional[AnswerOrchestrator] = None
+    # Línea temporal a escala: extensión, densidad y elementos en ventana.
+    timeline: Optional[TimelineService] = None
     watcher: Optional[InboxWatcher] = None
 
     def close(self) -> None:
@@ -572,6 +575,7 @@ def create_app_container(
         activity_log=ActivityLog(repo, config.activity_log_max_rows, config.activity_log_max_passes),
         passage_search=passage_search_svc,
         summaries=build_summary_service(config, repo),
+        timeline=TimelineService(repo, _query_timezone(config)),
         answers=build_answer_orchestrator(
             config, repo, memory_tools,
             ActivityLog(repo, config.activity_log_max_rows, config.activity_log_max_passes),

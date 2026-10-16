@@ -5,6 +5,7 @@ import logging
 import mimetypes
 import threading
 from contextlib import asynccontextmanager
+from functools import lru_cache
 import shutil
 import tempfile
 import time
@@ -14,7 +15,7 @@ from typing import Any, Dict, List, Optional
 
 from fastapi import FastAPI, File, Form, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import ValidationError
 
@@ -66,6 +67,21 @@ from episodic.interfaces.http.schemas import (
 from episodic.tools.contracts import MemoryToolOutput, ToolDescriptor
 
 logger = logging.getLogger("episodic.http")
+
+
+@lru_cache(maxsize=1024)
+def _thumbnail(path: str, mtime_ns: int, max_side: int) -> bytes:
+    """Miniatura JPEG de un fotograma clave (cacheada por ruta, fecha y tamaño)."""
+    import io
+
+    from PIL import Image
+
+    with Image.open(path) as image:
+        image = image.convert("RGB")
+        image.thumbnail((max_side, max_side))
+        buffer = io.BytesIO()
+        image.save(buffer, "JPEG", quality=72)
+    return buffer.getvalue()
 
 
 def create_api_app(
@@ -666,7 +682,7 @@ def create_api_app(
         )
 
     @app.get("/api/memory/events/{event_id}/keyframes/{index}")
-    def get_event_keyframe(event_id: str, index: int):
+    def get_event_keyframe(event_id: str, index: int, max_side: Optional[int] = Query(None, ge=32, le=1024)):
         event = container.repository.get_event(event_id)
         if event is None or not 0 <= index < len(event.keyframes):
             raise HTTPException(status_code=404, detail="Fotograma clave no encontrado")
@@ -676,7 +692,11 @@ def create_api_app(
             raise HTTPException(status_code=404, detail="Fotograma clave no encontrado") from exc
         if not path.is_file():
             raise HTTPException(status_code=404, detail="Fotograma clave no disponible")
-        return FileResponse(path, media_type="image/jpeg")
+        cache = {"Cache-Control": "private, max-age=86400"}
+        if max_side:
+            # Miniatura para las tiras de fotogramas de la línea temporal.
+            return Response(_thumbnail(str(path), path.stat().st_mtime_ns, max_side), media_type="image/jpeg", headers=cache)
+        return FileResponse(path, media_type="image/jpeg", headers=cache)
 
     @app.get("/api/memory/episodes/{episode_id}")
     def inspect_memory_episode(episode_id: str):
@@ -684,6 +704,46 @@ def create_api_app(
             return container.inspection_service.episode_detail(episode_id)
         except ValueError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    # -----------------------------------------------------------------------
+    # Línea temporal a escala (Fase T): el servidor solo devuelve lo que cabe
+    # en pantalla (densidad por cubos o elementos de la ventana visible).
+    # -----------------------------------------------------------------------
+
+    def _timeline_service():
+        service = getattr(container, "timeline", None)
+        if service is None:
+            raise HTTPException(status_code=503, detail="Línea temporal no disponible")
+        return service
+
+    @app.get("/api/timeline/span")
+    def timeline_span():
+        return _timeline_service().span()
+
+    @app.get("/api/timeline/density")
+    def timeline_density(
+        start: datetime,
+        end: datetime,
+        bucket: str = Query("auto", pattern="^(auto|minute|hour|day)$"),
+        environment_id: Optional[List[str]] = Query(None),
+        by_source: bool = False,
+    ):
+        try:
+            return _timeline_service().density(start, end, bucket, environment_id, by_source)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    @app.get("/api/timeline/items")
+    def timeline_items(
+        start: datetime,
+        end: datetime,
+        environment_id: Optional[List[str]] = Query(None),
+        limit: int = Query(1500, ge=1, le=5000),
+    ):
+        try:
+            return _timeline_service().items(start, end, environment_id, limit)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
 
     @app.get("/api/memory/timeline")
     def inspect_memory_timeline(

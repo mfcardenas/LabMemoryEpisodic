@@ -130,6 +130,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
   const views = {
     episodes: ["MEMORIA CANÓNICA", "Explorador de episodios", "Dossier auditable: observaciones extraídas, eventos, microepisodios y evidencias originales."],
+    cronologia: ["CRONOLOGÍA", "Línea temporal", "El pulso dice dónde mirar; las pistas por fuente muestran qué pasó, con fotogramas, habla y documentos; el inspector lo cuenta."],
     timeline: ["CRONOLOGÍA MULTI-FUENTE", "Eje temporal continuo", "Visualización temporal por carriles: duración real de intervalos, simultaneidad y solapamientos."],
     ingest: ["RECORRIDO CANÓNICO", "Registro y custodia de activos", "El archivo original inicia la memoria; SHA-256 inmutable y procesamiento observable."],
     watch: ["ENTRADA AUTOMÁTICA", "Vigilancia y trabajos", "Lo que llega a las carpetas vigiladas se convierte en capturas: cada fichero leído, cada trabajo y su registro de ejecución."],
@@ -137,11 +138,16 @@ document.addEventListener("DOMContentLoaded", () => {
     system: ["ARQUITECTURA Y ESTADO", "Proyección vectorial y runtime", "Separación estricta entre la verdad canónica (SQLite) y la proyección reconstruible (Qdrant)."],
   };
 
+  // La línea temporal clásica queda oculta pero intacta: poner true para recuperarla.
+  const LEGACY_TIMELINE = false;
+  const legacyButton = $('.nav-item[data-view="timeline"]');
+  if (legacyButton) legacyButton.hidden = !LEGACY_TIMELINE;
   $$(".nav-item").forEach(button => button.addEventListener("click", () => {
     location.hash = button.dataset.view;
   }));
   window.addEventListener("hashchange", () => {
     const name = location.hash.slice(1);
+    if (name === "timeline" && !LEGACY_TIMELINE) { location.hash = "cronologia"; return; }
     if (name === "ask") { switchView("search"); activateSearchTab("ask"); return; }
     switchView(views[name] ? name : "episodes");
   });
@@ -152,6 +158,7 @@ document.addEventListener("DOMContentLoaded", () => {
     $("#view-kicker").textContent = kicker; $("#view-title").textContent = title; $("#view-subtitle").textContent = subtitle;
     if (loadData && name === "episodes") loadEpisodes().catch(showEpisodeError);
     if (loadData && name === "timeline") loadTimeline().catch(showTimelineError);
+    if (name === "cronologia") window.EpiGraphChrono?.activate();
     if (loadData && name === "ingest") Promise.all([loadAssets(), loadCaptures()]).catch(error => console.error(error));
     if (loadData && name === "search") { loadAskView().catch(error => console.error(error)); loadToolsCatalog().catch(error => console.error(error)); }
     if (name === "watch") startWatchPolling(); else stopWatchPolling();
@@ -1276,19 +1283,23 @@ document.addEventListener("DOMContentLoaded", () => {
     const trace = run.trace?.length ? run.trace : (run.steps || []).map(step => ({ kind: "tool", message: `${step.tool}(${JSON.stringify(step.arguments)}) → ${step.error ? `error: ${step.error}` : `${step.result_count ?? 0} resultado(s)`}`, error: step.error }));
     const agents = run.metadata?.agents || [{ name: "agente de consulta", model: run.model_id, turns: run.usage?.turns, tool_calls: (run.steps || []).length }];
     const agentsText = agents.map(a => `${a.name} (${a.model || "modelo"}) · ${a.turns ?? "?"} vuelta(s) · ${a.tool_calls ?? 0} herramienta(s)`).join("; ");
-    const citations = (run.citations || []).map(c => `<article class="passage-hit"><div class="passage-body"><header><span class="modality-tag ${esc(c.kind === "video_event" ? "video" : "text")}">${esc(c.handle)}</span><b>${esc(c.title || c.kind)}</b><time>${esc([c.episode_external_id || "", c.start_time ? fmtTime(c.start_time) : "", c.start_offset_seconds != null ? `${fmtClock(c.start_offset_seconds)} en el vídeo` : "", c.page_number ? `pág. ${c.page_number}` : ""].filter(Boolean).join(" · "))}</time></header><p class="passage-text">${esc(clip(c.text || "", 300))}</p><footer><button type="button" class="button-mini" data-passage-episode="${esc(c.episode_id)}" data-passage-observation="${esc(c.observation_id || "")}" ${c.start_offset_seconds != null ? `data-passage-seek="${esc(c.start_offset_seconds)}"` : ""}>Ver en el episodio${c.start_offset_seconds != null ? ` ▶ ${fmtClock(c.start_offset_seconds)}` : ""}</button></footer></div></article>`).join("");
+    const citations = (run.citations || []).map((c, citeIndex) => `<article class="passage-hit"><div class="passage-body"><header><span class="modality-tag ${esc(c.kind === "video_event" ? "video" : "text")}">${esc(c.handle)}</span><b>${esc(c.title || c.kind)}</b><time>${esc([c.episode_external_id || "", c.start_time ? fmtTime(c.start_time) : "", c.start_offset_seconds != null ? `${fmtClock(c.start_offset_seconds)} en el vídeo` : "", c.page_number ? `pág. ${c.page_number}` : ""].filter(Boolean).join(" · "))}</time></header><p class="passage-text">${esc(clip(c.text || "", 300))}</p><footer><button type="button" class="button-mini" data-passage-episode="${esc(c.episode_id)}" data-passage-observation="${esc(c.observation_id || "")}" ${c.start_offset_seconds != null ? `data-passage-seek="${esc(c.start_offset_seconds)}"` : ""}>Ver en el episodio${c.start_offset_seconds != null ? ` ▶ ${fmtClock(c.start_offset_seconds)}` : ""}</button>${c.start_time ? `<button type="button" class="button-mini" data-cite-timeline="${citeIndex}" title="Marcar esta cita en la línea temporal">Ver en la línea</button>` : ""}</footer></div></article>`).join("");
     root.innerHTML = `<section class="answer-card ${esc(run.confidence)}">
       <header><div><p class="kicker">RESPUESTA</p><h3>${esc(run.question)}</h3></div><span class="confidence ${esc(run.confidence)}" title="${esc(run.confidence)}">${esc(answerConfidenceLabel(run.confidence))}</span></header>
       <div class="answer-body">${body || '<p class="empty">Sin respuesta.</p>'}</div>
       ${run.error ? `<p class="warn">${esc(run.error)}</p>` : ""}
       ${run.dropped_citations?.length ? `<p class="answer-note">${run.dropped_citations.length} cita(s) inventada(s) por el modelo se han eliminado: ${esc(run.dropped_citations.join(", "))}.</p>` : ""}
-      ${citations ? `<div class="answer-citations"><b>Evidencia citada</b>${citations}</div>` : ""}
+      ${citations ? `<div class="answer-citations"><b>Evidencia citada</b>${(run.citations || []).some(c => c.start_time) ? '<button type="button" class="button-mini" data-cite-timeline-all title="Marcar todas las citas en la línea temporal">Ver las citas en la línea temporal</button>' : ""}${citations}</div>` : ""}
       <details class="technical-details answer-trace" open><summary>Traza · ${agents.length} agente(s): ${esc(agentsText)} · ${Math.round((run.took_ms || 0) / 100) / 10} s · ${run.usage?.prompt_tokens || 0}+${run.usage?.completion_tokens || 0} tokens</summary>${renderTraceList(trace)}</details>
     </section>`;
     root.querySelectorAll("[data-passage-episode]").forEach(button => button.addEventListener("click", () => {
       const seek = button.dataset.passageSeek;
       openEpisode(button.dataset.passageEpisode, { observationId: button.dataset.passageObservation || null, seek: seek === undefined || seek === "" ? null : Number(seek) });
     }));
+    const citeTitle = `Respuesta: «${run.question}»`;
+    const citeEntries = (run.citations || []).map(c => [c, `${c.handle} · ${c.title || clip(c.text || "", 70)}`]);
+    root.querySelector("[data-cite-timeline-all]")?.addEventListener("click", () => showOnTimeline(citeTitle, citeEntries));
+    root.querySelectorAll("[data-cite-timeline]").forEach(button => button.addEventListener("click", () => showOnTimeline(citeTitle, citeEntries, Number(button.dataset.citeTimeline))));
   }
   const TRACE_KIND = { question: "PREGUNTA", thinking: "MODELO", turn: "DECISIÓN", tool: "HERRAMIENTA", retry: "REINTENTO", budget: "PRESUPUESTO", verify: "CITAS", error: "ERROR", answer: "RESPUESTA" };
   function renderTraceList(trace, { pending = false } = {}) {
@@ -1415,6 +1426,21 @@ document.addEventListener("DOMContentLoaded", () => {
     finally { endQuery(); }
   });
 
+  // Momentos de Consultas (resultados y citas) como marcas de la línea temporal.
+  const timelineMark = (item, label) => {
+    if (!item?.start_time) return null;
+    const start = Date.parse(item.start_time);
+    let end = item.end_time ? Date.parse(item.end_time) : NaN;
+    if (Number.isNaN(end) && item.start_offset_seconds != null && item.end_offset_seconds != null) end = start + (item.end_offset_seconds - item.start_offset_seconds) * 1000;
+    return { start: item.start_time, end: Number.isNaN(end) ? item.start_time : new Date(end).toISOString(), environment_id: item.environment_id || null, event_id: item.event_id || null, kind: item.kind, label };
+  };
+  function showOnTimeline(title, entries, index = -1) {
+    const marks = [], position = [];
+    entries.forEach(([item, label]) => { const mark = timelineMark(item, label); position.push(mark ? marks.length : -1); if (mark) marks.push(mark); });
+    if (!marks.length || !window.EpiGraphChrono) return;
+    window.EpiGraphChrono.focus({ title, marks, index: index >= 0 ? position[index] : -1 });
+  }
+
   const passageTypeLabel = hit => ({ video_event: "Evento", speech_segment: "Habla", document_text_fragment: "Documento", text_fragment: "Texto" })[hit.kind] || observationLabel(hit.kind);
   // El índice marca los términos encontrados con los caracteres de control 2 y 3.
   const marked = text => esc(text).replace(/\u0002/g, "<mark>").replace(/\u0003/g, "</mark>");
@@ -1438,12 +1464,14 @@ document.addEventListener("DOMContentLoaded", () => {
     const planHtml = understood.length ? `<div class="passage-plan">Entendí: ${understood.join(" · ")}</div>` : "";
     const summary = `${planHtml}<div class="passage-summary"><b>${data.passage_count} momento(s) en ${data.groups.length} episodio(s)</b>
       <span>significado: ${data.dense_candidates} candidatos</span><span>palabras: ${data.lexical_candidates}${data.lexical_query ? ` (${esc(data.lexical_query)})` : ""}</span>
-      <span class="${rerank.error ? "warn" : ""}">${esc(rerankText)}</span><span>${Math.round(data.took_ms)} ms</span></div>`;
+      <span class="${rerank.error ? "warn" : ""}">${esc(rerankText)}</span><span>${Math.round(data.took_ms)} ms</span>${data.groups.some(group => group.passages.some(hit => hit.start_time)) ? '<button type="button" class="button-mini" data-timeline-all title="Marcar todos los momentos en la línea temporal">Ver en la línea temporal</button>' : ""}</div>`;
     const neighborItem = (item, label) => `<button type="button" class="neighbor" data-passage-episode="${esc(item.episode_id)}" data-passage-observation="${esc(item.observation_id || "")}" ${item.start_offset_seconds != null ? `data-passage-seek="${esc(item.start_offset_seconds)}"` : ""}><small>${label}</small>${item.keyframes > 0 && item.event_id ? `<img loading="lazy" alt="" src="/api/memory/events/${encodeURIComponent(item.event_id)}/keyframes/0">` : ""}<span>${esc(item.title || clip(item.text, 60))}</span><time>${item.start_offset_seconds != null ? fmtClock(item.start_offset_seconds) : ""}</time></button>`;
     const neighborsHtml = hit => {
       const n = hit.neighbors; if (!n || (!n.before?.length && !n.after?.length)) return "";
       return `<div class="passage-neighbors">${(n.before || []).map(item => neighborItem(item, "antes")).join("")}<span class="neighbor-here">este momento</span>${(n.after || []).map(item => neighborItem(item, "después")).join("")}</div>`;
     };
+    const timelineHits = data.groups.flatMap(group => group.passages);
+    const timelineLabel = hit => hit.title || clip(hit.text || "", 80);
     const renderGroups = list => list.map((group, index) => {
       const episode = group.episode;
       const hits = group.passages.map(hit => {
@@ -1463,7 +1491,7 @@ document.addEventListener("DOMContentLoaded", () => {
         return `<article class="passage-hit${thumb ? " has-thumb" : ""}">${thumb}<div class="passage-body">
           <header><span class="modality-tag ${esc(hit.modality || "")}">${esc(passageTypeLabel(hit))}</span>${hit.title ? `<b>${esc(hit.title)}</b>` : ""}<time>${esc(where)}</time></header>
           <p class="passage-text">${hit.snippet ? marked(hit.snippet) : esc(clip(hit.text))}</p>
-          <footer><span class="passage-why">${why}</span><button type="button" class="button-mini" ${seekAttrs}>Ver en el episodio${seekable ? ` ▶ ${fmtClock(hit.start_offset_seconds)}` : ""}</button></footer>
+          <footer><span class="passage-why">${why}</span><button type="button" class="button-mini" ${seekAttrs}>Ver en el episodio${seekable ? ` ▶ ${fmtClock(hit.start_offset_seconds)}` : ""}</button>${hit.start_time && timelineHits.indexOf(hit) >= 0 ? `<button type="button" class="button-mini" data-timeline-index="${timelineHits.indexOf(hit)}" title="Marcar este momento en la línea temporal">Ver en la línea</button>` : ""}</footer>
           ${neighborsHtml(hit)}
           ${hit.text.length > 320 || hit.snippet ? `<details><summary>Texto completo</summary>${paragraphs(hit.text)}</details>` : ""}
         </div></article>`;
@@ -1486,6 +1514,10 @@ document.addEventListener("DOMContentLoaded", () => {
       : rerank.discarded_low_relevance ? '<div class="empty roomy">Hay candidatos, pero ninguno llega al umbral. Revísalos abajo, baja el umbral o desactiva «Reordenar».</div>'
       : '<div class="empty roomy">Ningún pasaje coincide. Prueba otras palabras o quita filtros; si acabas de cargar capturas, espera a que terminen de indexarse.</div>';
     root.innerHTML = `${indexWarning}${summary}${data.groups.length ? groups : emptyText}${discardedHtml}`;
+    const searchTitle = `Búsqueda «${$("#search-query").value.trim()}»`;
+    const searchEntries = timelineHits.map(hit => [hit, timelineLabel(hit)]);
+    root.querySelector("[data-timeline-all]")?.addEventListener("click", () => showOnTimeline(searchTitle, searchEntries));
+    root.querySelectorAll("[data-timeline-index]").forEach(button => button.addEventListener("click", () => showOnTimeline(searchTitle, searchEntries, Number(button.dataset.timelineIndex))));
     root.querySelectorAll("[data-passage-episode]").forEach(button => button.addEventListener("click", () => {
       const seek = button.dataset.passageSeek;
       openEpisode(button.dataset.passageEpisode, button.dataset.passageObservation
@@ -1838,8 +1870,11 @@ document.addEventListener("DOMContentLoaded", () => {
   });
 
   $("#refresh-all").addEventListener("click", async () => { await Promise.all([loadHealth(), loadScope(), loadAssets(), loadCaptures()]); if ($("#view-timeline").classList.contains("active")) loadTimeline(); });
-  const requestedView = views[location.hash.slice(1)] ? location.hash.slice(1) : null;
+  const requestedHash = location.hash.slice(1) === "timeline" && !LEGACY_TIMELINE ? "cronologia" : location.hash.slice(1);
+  const requestedView = views[requestedHash] ? requestedHash : null;
   const initialView = requestedView || "episodes";
+  // Lo que necesita la línea temporal (cronologia.js) de esta aplicación.
+  window.EpiGraph = { api, esc, openEpisode, environmentLabel, sourceTypeLabel, state };
   switchView(initialView, true);
   Promise.all([loadHealth(), loadScope(), loadAssets()]).catch(error => console.error(error));
 });
