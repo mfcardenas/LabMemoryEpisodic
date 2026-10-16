@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="description" content="EpiGraph: memoria episódica multimodal trazable">
   <title>EpiGraph · Consola de memoria</title>
-  <link rel="stylesheet" href="/static/index.css?v=consultas-4">
+  <link rel="stylesheet" href="/static/index.css?v=linea-9">
 </head>
 <body>
   <div class="shell">
@@ -124,15 +124,16 @@
       </section>
 
       <section class="view" id="view-timeline">
-        <article class="panel timeline-panel">
+        <!-- Controles aparte de la cronología: no se mueven con el zoom ni con el desplazamiento. -->
+        <article class="panel timeline-controls">
           <div class="panel-heading timeline-heading">
             <div>
               <p class="kicker">TIEMPO OBSERVADO</p>
               <h2>Cronología multi-fuente</h2>
             </div>
             <div class="inline-filters timeline-toolbar">
-              <select id="timeline-environment"><option value="">Todos los ambientes</option></select>
-              <select id="timeline-source"><option value="">Todas las fuentes</option></select>
+              <select id="timeline-environment" title="Un carril por ambiente; al elegir uno, un carril por fuente"><option value="">Todos los ambientes</option></select>
+              <select id="timeline-source" title="Fuentes del ambiente elegido"><option value="">Todas las fuentes</option></select>
               <label class="switch"><input type="checkbox" id="show-windows"><span></span>Ventanas técnicas</label>
               
               <div class="zoom-controls">
@@ -140,11 +141,10 @@
                 <button type="button" class="zoom-btn" id="zoom-out" title="Alejar escala (ver rango macro)">−</button>
                 <span class="zoom-level" id="zoom-level-text">1x</span>
                 <button type="button" class="zoom-btn" id="zoom-in" title="Acercar escala (ver micro-deltas)">+</button>
-                <button type="button" class="zoom-reset-btn" id="zoom-fit" title="Ajustar al rango completo">Ajustar</button>
+                <button type="button" class="zoom-reset-btn" id="zoom-fit" title="Zoom automático: el bloque mediano se lee">Auto</button>
               </div>
             </div>
           </div>
-
           <div class="timeline-subbar">
             <div class="timeline-legend">
               <span class="observation">Observación</span><span class="event">Evento</span>
@@ -159,11 +159,11 @@
               <span id="tl-metric-min-delta">Δt mín: —</span>
             </div>
           </div>
-
+        </article>
+        <article class="panel timeline-panel">
           <div class="timeline-scroll-container" id="timeline-scroll-container">
             <div id="timeline-canvas" class="timeline-canvas"><div class="empty">Cargando eje temporal…</div></div>
           </div>
-
           <div id="timeline-ledger" class="timeline-ledger"></div>
         </article>
       </section>
@@ -388,6 +388,6 @@
   </div>
 
   <dialog id="asset-dialog" class="detail-dialog"><button class="dialog-close" data-close-dialog aria-label="Cerrar">×</button><div id="asset-dialog-content"></div></dialog>
-  <script src="/static/app.js?v=consultas-4"></script>
+  <script src="/static/app.js?v=linea-9"></script>
 </body>
 </html>

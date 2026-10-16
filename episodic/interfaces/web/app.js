@@ -18,7 +18,7 @@ document.addEventListener("DOMContentLoaded", () => {
     logFilterKey: null,
   };
   const $ = selector => document.querySelector(selector);
-  const $$ = selector => [...document.querySelectorAll(selector)];
+  const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
   const esc = value => String(value ?? "").replace(/[&<>'"]/g, char => ({
     "&": "&amp;", "<": "&lt;", ">": "&gt;", "'": "&#39;", '"': "&quot;",
   })[char]);
@@ -253,12 +253,34 @@ document.addEventListener("DOMContentLoaded", () => {
       const first = select.options[0]?.outerHTML || '<option value="">Todos</option>';
       select.innerHTML = first + environments.map(item => `<option value="${esc(item.id)}">${esc(item.name || item.id)} · ${esc(item.id)}</option>`).join("");
     });
-    [$("#timeline-source"), $("#search-source")].forEach(select => {
-      if (!select) return;
-      const first = select.options[0]?.outerHTML || '<option value="">Todas</option>';
-      select.innerHTML = first + sources.map(item => `<option value="${esc(item.id)}">${esc(item.name || item.id)} · ${esc(item.source_type)}</option>`).join("");
-    });
+    SOURCE_SELECTS.forEach(([envId, srcId]) => fillSourceSelect($(srcId), $(envId)?.value));
   }
+  // Ambiente → fuentes: el selector de fuente solo ofrece las del ambiente
+  // elegido (sin ambiente, todas agrupadas por ambiente) y se vacía si la
+  // fuente elegida deja de pertenecer al ambiente.
+  const SOURCE_SELECTS = [["#timeline-environment", "#timeline-source"], ["#search-environment", "#search-source"]];
+  const sourceLabel = source => {
+    const name = source.name || source.id;
+    const prefix = `${source.environment_id}.`;
+    return name.startsWith(prefix) ? name.slice(prefix.length) : name;
+  };
+  function fillSourceSelect(select, environmentId) {
+    if (!select) return;
+    const current = select.value;
+    const first = select.options[0]?.outerHTML || '<option value="">Todas</option>';
+    const option = item => `<option value="${esc(item.id)}">${esc(sourceLabel(item))} · ${esc(sourceTypeLabel(item.source_type))}</option>`;
+    const sources = state.sources.filter(item => !environmentId || item.environment_id === environmentId);
+    if (environmentId) {
+      select.innerHTML = first + sources.map(option).join("");
+    } else {
+      const groups = new Map();
+      sources.forEach(item => { const key = item.environment_id || ""; if (!groups.has(key)) groups.set(key, []); groups.get(key).push(item); });
+      select.innerHTML = first + [...groups.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([env, items]) => `<optgroup label="${esc(environmentLabel(env) || "sin ambiente")}">${items.map(option).join("")}</optgroup>`).join("");
+    }
+    select.value = sources.some(item => item.id === current) ? current : "";
+    select.disabled = environmentId ? sources.length === 0 : false;
+  }
+  SOURCE_SELECTS.forEach(([envId, srcId]) => $(envId)?.addEventListener("change", () => fillSourceSelect($(srcId), $(envId).value)));
 
   async function loadAssets() {
     const data = await api("/api/memory/assets");
@@ -870,6 +892,44 @@ document.addEventListener("DOMContentLoaded", () => {
     $("#timeline-ledger").innerHTML = "";
   }
 
+  // Filas dentro de cada carril, de arriba abajo.
+  const TIMELINE_ROWS = ["episode", "microepisode", "event", "observation", "processing_window"];
+  const TARGET_BLOCK_PX = 56;   // ancho que debería tener el bloque mediano para leerse
+  const zoomLevels = [1, 1.5, 2, 3, 5, 8, 12, 16, 24, 32];
+
+  // Carriles: sin ambiente elegido, uno por ambiente (los episodios van en el
+  // suyo); con ambiente, uno por fuente del ambiente más «Episodios».
+  function timelineLanes(items, environmentId) {
+    if (!environmentId) {
+      const byEnv = new Map();
+      items.forEach(item => { const key = item.environment_id || ""; if (!byEnv.has(key)) byEnv.set(key, []); byEnv.get(key).push(item); });
+      return [...byEnv.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([env, laneItems]) => {
+        const sources = new Set(laneItems.map(item => item.source_id).filter(Boolean));
+        return { id: env, label: environmentLabel(env) || "Sin ambiente", small: `${laneItems.length} elemento(s) · ${sources.size} fuente(s)`, items: laneItems };
+      });
+    }
+    const bySource = new Map();
+    items.forEach(item => { const key = item.source_id || ""; if (!bySource.has(key)) bySource.set(key, []); bySource.get(key).push(item); });
+    const lanes = [...bySource.entries()].filter(([key]) => key).sort(([a], [b]) => a.localeCompare(b)).map(([sourceId, laneItems]) => {
+      const source = state.sources.find(item => item.id === sourceId);
+      return { id: sourceId, label: source ? sourceLabel(source) : sourceId, small: `${source ? sourceTypeLabel(source.source_type) : "fuente"} · ${laneItems.length} elemento(s)`, items: laneItems };
+    });
+    if (bySource.has("")) lanes.unshift({ id: "episodic", label: "Episodios", small: `${bySource.get("").length} elemento(s)`, items: bySource.get("") });
+    return lanes;
+  }
+
+  // Zoom automático: el ancho visible por el factor necesario para que el
+  // bloque mediano mida TARGET_BLOCK_PX; los botones fijan un zoom manual.
+  function autoZoom(items, range) {
+    const track = $("#timeline-scroll-container");
+    const visiblePx = Math.max(400, (track?.clientWidth || 900) - 145 - 40);
+    const durations = items.map(item => new Date(item.end_time || item.start_time) - new Date(item.start_time)).filter(ms => ms > 0).sort((a, b) => a - b);
+    if (!durations.length) return 1;
+    const median = durations[Math.floor(durations.length / 2)];
+    const needed = (TARGET_BLOCK_PX * range) / (median * visiblePx);
+    return zoomLevels.find(level => level >= needed) || zoomLevels[zoomLevels.length - 1];
+  }
+
   function renderTimeline(data) {
     if (!data) return;
     const showWindows = $("#show-windows")?.checked;
@@ -896,13 +956,12 @@ document.addEventListener("DOMContentLoaded", () => {
       min = center - minimumSpan / 2;
       max = center + minimumSpan / 2;
     } else {
-      const padding = observedSpan * .04;
+      const padding = observedSpan * .03;
       min -= padding;
       max += padding;
     }
     const range = max - min;
 
-    // Calcular cadencia y menor delta de tiempo entre evidencias/episodios
     let minDeltaMs = Infinity;
     items.forEach((item, idx) => {
       const st = new Date(item.start_time).getTime();
@@ -910,49 +969,74 @@ document.addEventListener("DOMContentLoaded", () => {
       const dur = et - st;
       if (dur > 0 && dur < minDeltaMs) minDeltaMs = dur;
       if (idx > 0) {
-        const prevSt = new Date(items[idx - 1].start_time).getTime();
-        const gap = Math.abs(st - prevSt);
+        const gap = Math.abs(st - new Date(items[idx - 1].start_time).getTime());
         if (gap > 0 && gap < minDeltaMs) minDeltaMs = gap;
       }
     });
 
-    const metricCount = $("#tl-metric-count");
-    const metricSpan = $("#tl-metric-span");
-    const metricMinDelta = $("#tl-metric-min-delta");
-    if (metricCount) metricCount.textContent = `${items.length} elementos`;
-    if (metricSpan) metricSpan.textContent = `Duración: ${fmtDeltaSeconds(observedSpan / 1000)}`;
-    if (metricMinDelta) metricMinDelta.textContent = `Δt mín: ${minDeltaMs < Infinity ? fmtDeltaSeconds(minDeltaMs / 1000) : "—"}`;
-
+    if (!state.timelineZoomManual) state.timelineZoom = autoZoom(items, range);
     const zoomFactor = state.timelineZoom || 1;
-    const gridWidthPercent = Math.max(100, zoomFactor * 100);
+    const zoomText = $("#zoom-level-text");
+    if (zoomText) zoomText.textContent = `${zoomFactor}x${state.timelineZoomManual ? "" : " auto"}`;
 
-    const numTicks = Math.min(30, Math.max(5, Math.round(5 * zoomFactor)));
+    if ($("#tl-metric-count")) $("#tl-metric-count").textContent = `${items.length} elementos`;
+    if ($("#tl-metric-span")) $("#tl-metric-span").textContent = `Duración: ${fmtDeltaSeconds(observedSpan / 1000)}`;
+    if ($("#tl-metric-min-delta")) $("#tl-metric-min-delta").textContent = `Δt mín: ${minDeltaMs < Infinity ? fmtDeltaSeconds(minDeltaMs / 1000) : "—"}`;
+
+    const gridWidthPercent = Math.max(100, zoomFactor * 100);
+    const multiDay = new Date(min).toDateString() !== new Date(max).toDateString();
+    const numTicks = Math.min(40, Math.max(6, Math.round(6 * zoomFactor)));
     const ticks = Array.from({ length: numTicks }, (_, i) => i / (numTicks - 1)).map(ratio => {
       const instant = new Date(min + range * ratio);
-      const timeStr = instant.toLocaleTimeString("es-ES", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
-      return `<span style="left:${ratio * 100}%">${timeStr}</span>`;
+      const timeStr = instant.toLocaleTimeString("es-ES", { hour: "2-digit", minute: "2-digit", second: range < 3_600_000 ? "2-digit" : undefined });
+      const dayStr = multiDay ? `<small>${instant.toLocaleDateString("es-ES", { day: "2-digit", month: "2-digit" })}</small>` : "";
+      return `<span style="left:${ratio * 100}%">${timeStr}${dayStr}</span>`;
     }).join("");
 
-    const laneHtml = (data.lanes || []).map(lane => {
-      const laneItems = items.filter(item => item.lane_id === lane.id || (lane.id === "episodic" && !data.lanes.some(candidate => candidate.id === item.lane_id)));
-      const blocks = laneItems.map(item => {
+    const environmentId = $("#timeline-environment")?.value || "";
+    const lanes = timelineLanes(items, environmentId);
+    const laneHtml = lanes.map(lane => {
+      const rows = TIMELINE_ROWS.filter(kind => lane.items.some(item => item.kind === kind));
+      const blocks = lane.items.map(item => {
         const start = new Date(item.start_time).getTime();
         const end = new Date(item.end_time || item.start_time).getTime();
         const left = ((start - min) / range) * 100;
         const duration = end - start;
-        const width = Math.max((duration / range) * 100, 0.4 / zoomFactor);
+        const width = (duration / range) * 100;
         const instantClass = duration <= 0 ? " instant" : "";
         const durText = fmtDeltaSeconds(duration / 1000);
-        return `<button class="time-block ${esc(item.kind)}${instantClass}" style="left:${left}%;width:${width}%" data-kind="${esc(item.kind)}" data-id="${esc(item.id)}" title="${esc(kindLabel(item.kind))} · ${esc(timelineTitle(item))} · Δt: ${durText} · ${esc(fmtInterval(item))}"><span>${esc(timelineTitle(item))}</span></button>`;
+        const row = rows.indexOf(item.kind);
+        return `<button class="time-block ${esc(item.kind)}${instantClass}" style="left:${left}%;width:${width}%;top:${8 + row * 34}px" data-kind="${esc(item.kind)}" data-id="${esc(item.id)}" title="${esc(kindLabel(item.kind))} · ${esc(timelineTitle(item))} · Δt: ${durText} · ${esc(fmtInterval(item))}"><span>${esc(timelineTitle(item))}</span></button>`;
       }).join("");
-      return `<div class="timeline-lane"><div class="lane-label">${esc(lane.label)}<small>${esc(lane.kind)}</small></div><div class="lane-track">${blocks}</div></div>`;
+      const rowLabels = rows.map((kind, index) => `<i class="row-tag ${esc(kind)}" style="top:${8 + index * 34}px">${esc(kindLabel(kind))}</i>`).join("");
+      return `<div class="timeline-lane" style="min-height:${rows.length * 34 + 16}px"><div class="lane-label">${esc(lane.label)}<small>${esc(lane.small)}</small>${rowLabels}</div><div class="lane-track">${blocks}</div></div>`;
     }).join("");
 
     canvas.innerHTML = `<div class="timeline-grid" style="width:${gridWidthPercent}%;"><div class="timeline-axis"><div></div><div class="axis-labels">${ticks}</div></div>${laneHtml}</div>`;
+    // Los bloques estrechos llevan la etiqueta fuera, a la derecha; solo se
+    // pinta si cabe antes del siguiente bloque de la misma fila (si no, se ve
+    // al pasar el ratón y en el tooltip), para que ningún texto quede debajo
+    // de otro bloque.
+    $$(".time-block:not(.instant)", canvas).forEach(block => { if (block.offsetWidth < 80) block.classList.add("narrow"); });
+    $$(".lane-track", canvas).forEach(track => {
+      const rows = new Map();
+      $$(".time-block", track).forEach(block => { const key = block.style.top; if (!rows.has(key)) rows.set(key, []); rows.get(key).push(block); });
+      rows.forEach(blocks => {
+        blocks.sort((a, b) => a.offsetLeft - b.offsetLeft);
+        blocks.forEach((block, index) => {
+          if (!block.classList.contains("narrow") && !block.classList.contains("instant")) return;
+          const label = block.querySelector("span");
+          const next = blocks[index + 1];
+          const room = next ? next.offsetLeft - (block.offsetLeft + block.offsetWidth) - 8 : Infinity;
+          if (label && label.scrollWidth > room) block.classList.add("no-label");
+        });
+      });
+    });
 
-    ledger.innerHTML = `<div class="timeline-ledger-head"><h3>Registro temporal</h3><span>${items.length} elementos visibles</span></div>${items.sort((a, b) => new Date(a.start_time) - new Date(b.start_time)).map(item => {
+    const laneOf = item => lanes.find(lane => lane.items.includes(item));
+    ledger.innerHTML = `<div class="timeline-ledger-head"><h3>Registro temporal</h3><span>${items.length} elementos visibles · ${lanes.length} carril(es)</span></div>${items.slice().sort((a, b) => new Date(a.start_time) - new Date(b.start_time)).map(item => {
       const durSec = itemDurationSeconds(item);
-      return `<button class="timeline-record" data-kind="${esc(item.kind)}" data-id="${esc(item.id)}"><span class="record-kind ${esc(item.kind)}">${esc(kindLabel(item.kind))}</span><b>${esc(timelineTitle(item))}</b><time>${esc(fmtInterval(item))} (Δt ${fmtDeltaSeconds(durSec)})</time><small>${(item.evidence_reference_ids || []).length} evidencia(s)</small></button>`;
+      return `<button class="timeline-record" data-kind="${esc(item.kind)}" data-id="${esc(item.id)}"><span class="record-kind ${esc(item.kind)}">${esc(kindLabel(item.kind))}</span><b>${esc(timelineTitle(item))}</b><time>${esc(fmtInterval(item))} (Δt ${fmtDeltaSeconds(durSec)})</time><small>${esc(laneOf(item)?.label || "")}</small></button>`;
     }).join("")}`;
 
     $$(".time-block, .timeline-record").forEach(element => element.addEventListener("click", () => {
@@ -963,29 +1047,13 @@ document.addEventListener("DOMContentLoaded", () => {
 
   [$("#timeline-environment"), $("#timeline-source"), $("#show-windows")].forEach(control => control?.addEventListener("change", loadTimeline));
 
-  const zoomLevels = [1, 1.5, 2, 3, 5, 8, 12, 16];
-  $("#zoom-in")?.addEventListener("click", () => {
-    const curr = state.timelineZoom || 1;
-    const next = zoomLevels.find(z => z > curr) || 16;
-    state.timelineZoom = next;
-    const zoomText = $("#zoom-level-text");
-    if (zoomText) zoomText.textContent = `${next}x`;
+  function setZoom(level, manual) {
+    state.timelineZoom = level; state.timelineZoomManual = manual;
     if (state.timelineRawData) renderTimeline(state.timelineRawData);
-  });
-  $("#zoom-out")?.addEventListener("click", () => {
-    const curr = state.timelineZoom || 1;
-    const prev = [...zoomLevels].reverse().find(z => z < curr) || 1;
-    state.timelineZoom = prev;
-    const zoomText = $("#zoom-level-text");
-    if (zoomText) zoomText.textContent = `${prev}x`;
-    if (state.timelineRawData) renderTimeline(state.timelineRawData);
-  });
-  $("#zoom-fit")?.addEventListener("click", () => {
-    state.timelineZoom = 1;
-    const zoomText = $("#zoom-level-text");
-    if (zoomText) zoomText.textContent = "1x";
-    if (state.timelineRawData) renderTimeline(state.timelineRawData);
-  });
+  }
+  $("#zoom-in")?.addEventListener("click", () => setZoom(zoomLevels.find(z => z > (state.timelineZoom || 1)) || zoomLevels[zoomLevels.length - 1], true));
+  $("#zoom-out")?.addEventListener("click", () => setZoom([...zoomLevels].reverse().find(z => z < (state.timelineZoom || 1)) || 1, true));
+  $("#zoom-fit")?.addEventListener("click", () => setZoom(1, false));
 
   // Pestañas del módulo de consultas: Preguntar, búsqueda por momentos y herramientas.
   function activateSearchTab(tab) {

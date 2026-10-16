@@ -484,6 +484,85 @@ eventos sintéticos (Fase 0.5) en el portátil.
   del banco contra el corpus sintético, informa p50/p95) y resultados en
   `docs/evaluacion.md`.
 
+### Fase T — Línea temporal a escala (2–3 días, tras S) · propuesta (2026-10-15)
+
+**Diagnóstico.** `GET /api/memory/timeline` (`inspection.py:207`) devuelve sin
+intervalo ni límite todas las observaciones, eventos, microepisodios,
+episodios y ventanas técnicas del ambiente, y `renderTimeline` (`app.js`)
+crea un botón por elemento sobre un eje en porcentaje. El «zoom» (`zoomLevels`)
+solo estira el ancho del grid: no cambia la escala de tiempo ni lo que se
+carga. Con el corpus «hash» de la Fase S (8 901 episodios, 200 000 eventos,
+300 281 observaciones en 270 días) serían ~500 000 nodos DOM y un JSON de
+cientos de MB; con millones no llega al navegador. No es un problema de
+estilo sino de arquitectura: hay que decidir en el servidor qué se pinta.
+
+**Principio: zoom semántico con agregación en el servidor.** La escala es el
+intervalo visible (no un factor CSS), el nivel de zoom decide qué entidad se
+pinta y el servidor devuelve solo lo que cabe en pantalla (nunca más de unos
+miles de filas por petición).
+
+| Nivel | Intervalo visible | Qué se pinta | Fuente |
+|---|---|---|---|
+| Meses | > 60 días | calendario de densidad: días × ambientes, intensidad = eventos | densidad por día |
+| Días | 2–60 días | barras de densidad por hora, un carril por ambiente | densidad por hora |
+| Horas | 20 min – 2 días | episodios como tramos; microepisodios dentro | elementos en ventana (episodios) |
+| Minutos | < 20 min | eventos y observaciones como marcas; ventanas técnicas opcionales; clic abre el episodio en ese segundo | elementos en ventana (eventos, observaciones) |
+
+**Backend (SQL, sin Qdrant).**
+
+- `GET /api/timeline/density?from&to&bucket=hour|day|week&environment_id&source_id`:
+  cuenta eventos (y episodios) por cubo de tiempo y carril con un `GROUP BY`
+  sobre `strftime` de `start_time`; usa `idx_events_time`,
+  `idx_events_environment` e `idx_episodes_time` (ya existen). Devuelve
+  `{buckets: [{start, lane, events, episodes}], span: {first, last}}`. Tope
+  de 2 000 cubos: si el intervalo pide más, el servidor sube de `bucket`.
+- `GET /api/timeline/items?from&to&kinds&environment_id&source_id&limit`:
+  elementos cuyo intervalo corta `[from, to]`, ordenados, con tope (p. ej.
+  3 000). Si la cuenta supera el tope responde `clusters` (inicio, fin,
+  cuenta, tipo) agrupando por cubo en lugar de `items`, para que el front
+  nunca reciba más de lo que puede pintar. Las ventanas técnicas solo con
+  `kinds=processing_window`.
+- Densidad por día cacheada en memoria por ambiente e invalidada en cada
+  captura procesada (el mismo mecanismo que la caché de `count_events`).
+- `/api/memory/timeline` se mantiene para la pestaña Auditoría (F') con
+  `limit` obligatorio; `buildFallbackTimeline` se elimina.
+
+**Front (canvas, no DOM).**
+
+- Tira de resumen arriba con la densidad global de toda la memoria y un
+  selector de rango (brush), como en un editor de audio; debajo, la vista
+  del nivel que corresponda al intervalo elegido.
+- Rueda = acercar sobre el cursor; arrastrar = desplazar; «Ir a fecha»;
+  teclado (←/→, +/−). Cada cambio de intervalo pide densidad o elementos
+  según el nivel, con cancelación de la petición anterior.
+- Un elemento gráfico por marca visible; etiquetas solo donde hay sitio
+  (colisión), tooltip al pasar y panel lateral de detalle. El «Registro
+  temporal» pasa a ser una lista paginada del rango visible.
+- Enlace con Consultas: los momentos de una búsqueda y las citas de una
+  respuesta del agente se marcan sobre la línea y el minimapa («dónde y
+  cuándo ocurre lo preguntado»); desde un resultado, «ver en la línea».
+
+**Estilo.** Hoy manda el color por tipo (cinco clases y leyenda); a escala es
+ruido. Pasa a mandar la densidad (intensidad de tinta sobre el papel del
+front), episodios como tramos finos, eventos como trazos verticales, y el
+color reservado para la selección y para lo que respondió una consulta. Más
+cerca de un sismógrafo que de un Gantt. Carriles por ambiente en los niveles
+macro y por fuente en los micro.
+
+**Tramos y aceptación.**
+
+1. Densidad y elementos en ventana en SQL, con tests sobre el corpus «hash»:
+   densidad por día de 270 días < 100 ms; elementos de una hora < 50 ms;
+   ninguna respuesta > 3 000 filas.
+2. Canvas con minimapa, zoom semántico y los cuatro niveles; 60 fps al
+   desplazar con 200 k eventos; sin nodos DOM por elemento.
+3. Enlace con búsqueda y Preguntar (marcas de resultados y citas).
+4. Pasada de estilo y retirada de `renderTimeline`/`buildFallbackTimeline`.
+
+Aceptación: con el corpus «hash» (y con 1 M cuando exista) la pestaña abre en
+< 1 s, cualquier zoom responde en < 300 ms y desde una cita del agente se
+llega al evento en la línea con dos clics.
+
 ### Fase F' — Front mínimo necesario (incluido en R1/H/A2)
 
 No se abre una fase de front separada: cada fase lleva su parte. Pendiente
@@ -500,7 +579,8 @@ eliminar `compatibility_mode` y `buildFallbackTimeline` de `app.js`.
 | 3 | H (digestos) → A1 | jerarquía navegable; catálogo de herramientas paginado |
 | 4 | A2 | `/api/ask` + pestaña Preguntar + auditoría; evaluación |
 | 5 | S (+ F') | 1 M eventos sintéticos, p95 medidos; Auditoría en el front |
-| 6 | A3 | red de agentes solo si A2 lo justifica |
+| 6 | T | línea temporal a escala: densidad en SQL, canvas con zoom semántico, enlace con consultas |
+| 7 | A3 | red de agentes solo si A2 lo justifica |
 
 Fuera de este plan (siguen pendientes): procesador DOCX (Fase D), CLIP sobre
 fotogramas clave (búsqueda por imagen), grabación continua, robot.
@@ -537,6 +617,8 @@ fotogramas clave (búsqueda por imagen), grabación continua, robot.
    español «¿qué hizo después de aplicar el lubricante?» y recibir respuesta
    con cita que abre el vídeo en el segundo correcto; con 1 M eventos
    sintéticos, p95 < 1,5 s en momentos y < 30 s en respuesta.
+5. Fase T: con el corpus «hash» la línea temporal abre en < 1 s, cada zoom
+   responde en < 300 ms y ninguna petición devuelve más de 3 000 filas.
 
 ## 8. Notas para el modelo que continúe (ahorro de tiempo y tokens)
 
