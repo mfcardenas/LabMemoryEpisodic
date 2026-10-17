@@ -1,0 +1,3 @@
+# Los lanzadores conservan el fin de línea de su sistema.
+*.sh  text eol=lf
+*.bat text eol=crlf

@@ -55,7 +55,8 @@ def test_edge_persists_timeline_rebuilds_and_reopens(tmp_path: Path) -> None:
     try:
         container.ingest_service.ingest_manifest(Path("data/atlas/manifest.json"))
         _index_all(container)
-        assert container.vector_index.count() == 20
+        # 10 episodios + 10 imágenes + 15 pasajes (observaciones con texto).
+        assert container.vector_index.count() == 35
 
         queries = json.loads(Path("data/atlas/queries.json").read_text(encoding="utf-8"))
         q3 = next(query for query in queries if query["id"] == "q3_simultaneous_events")
@@ -73,15 +74,15 @@ def test_edge_persists_timeline_rebuilds_and_reopens(tmp_path: Path) -> None:
         generation_before = container.vector_index.generation_name
         rebuilt = container.lifecycle_service.rebuild_index(container.indexing_worker)
         generation_after = container.vector_index.generation_name
-        assert rebuilt == 20
+        assert rebuilt == 30  # 20 representaciones + 10 conjuntos de pasajes
         assert generation_after != generation_before
-        assert container.vector_index.count() == 20
+        assert container.vector_index.count() == 35
 
         container.indexing_worker.text_encoder = FailingTextEncoder()
         with pytest.raises(RuntimeError, match="Falló la representación"):
             container.lifecycle_service.rebuild_index(container.indexing_worker)
         assert container.vector_index.generation_name == generation_after
-        assert container.vector_index.count() == 20
+        assert container.vector_index.count() == 35
         assert {
             path.name for path in container.vector_index.generations_dir.iterdir()
         } == {generation_after}
@@ -90,7 +91,7 @@ def test_edge_persists_timeline_rebuilds_and_reopens(tmp_path: Path) -> None:
 
     reopened = create_app_container(config, use_fake_encoders=True)
     try:
-        assert reopened.vector_index.count() == 20
+        assert reopened.vector_index.count() == 35
         assert reopened.vector_index.generation_name == generation_after
     finally:
         reopened.close()

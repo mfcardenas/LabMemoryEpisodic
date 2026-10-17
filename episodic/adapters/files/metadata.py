@@ -6,6 +6,7 @@ import mimetypes
 import struct
 import wave
 from dataclasses import dataclass, field
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, BinaryIO
 
@@ -76,6 +77,9 @@ class LocalFileInspector:
             duration_seconds = _read_mp4_duration(path)
             if duration_seconds is None:
                 metadata["duration_status"] = "unavailable"
+            creation_time = _read_mp4_creation_time(path)
+            if creation_time is not None:
+                metadata["creation_time"] = creation_time.isoformat()
 
         if mime_type == "application/json":
             metadata["structured_text"] = True
@@ -163,6 +167,39 @@ def _read_mp4_duration(path: Path) -> float | None:
     if durations:
         return max(durations)
     return None
+
+
+_MP4_EPOCH = datetime(1904, 1, 1, tzinfo=timezone.utc)
+
+
+def _read_mp4_creation_time(path: Path) -> datetime | None:
+    """Lee ``mvhd.creation_time`` (UTC desde 1904); 0 significa no declarado."""
+    with path.open("rb") as stream:
+        for atom_type, payload_start, payload_size in _iter_atoms(stream, path.stat().st_size):
+            if atom_type != b"moov" or payload_size > 64 * 1024 * 1024:
+                continue
+            stream.seek(payload_start)
+            moov = stream.read(payload_size)
+            for child_type, child_start, child_size in _iter_memory_atoms(moov):
+                if child_type == b"mvhd":
+                    return _creation_time_from_mvhd(moov[child_start:child_start + child_size])
+            return None
+    return None
+
+
+def _creation_time_from_mvhd(payload: bytes) -> datetime | None:
+    if len(payload) < 8:
+        return None
+    if payload[0] == 1 and len(payload) >= 12:
+        seconds = struct.unpack(">Q", payload[4:12])[0]
+    else:
+        seconds = struct.unpack(">I", payload[4:8])[0]
+    if seconds == 0:
+        return None
+    try:
+        return _MP4_EPOCH + timedelta(seconds=seconds)
+    except OverflowError:
+        return None
 
 
 def _collect_mp4_durations(data: bytes) -> list[float]:

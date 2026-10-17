@@ -7,6 +7,7 @@ from episodic.processors.base import BaseObservationProcessor, ObservationDraft,
 
 class VideoProcessor(BaseObservationProcessor):
     name = "video-processor"
+    label = "ventana de vídeo"  # nombre en el registro de ejecución
     model_version = "phase4-video-window-v1"
     supported_modalities = frozenset({EvidenceMediaType.VIDEO})
 

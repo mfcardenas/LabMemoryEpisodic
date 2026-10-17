@@ -34,6 +34,17 @@ class ImageEncoder(Protocol):
     def embed_images(self, image_paths: List[str]) -> List[List[float]]: ...
 
 
+class PassageReranker(Protocol):
+    """Reordenador pregunta–pasaje (cross-encoder): puntúa cada pareja.
+
+    Las puntuaciones solo sirven para ordenar los pasajes de una misma
+    consulta; no son probabilidades ni comparables entre consultas.
+    """
+    @property
+    def model_id(self) -> str: ...
+    def rerank(self, query: str, passages: List[str]) -> List[float]: ...
+
+
 class AlignedTextEncoder(Protocol):
     """Encoder de texto alineado con el espacio visual (CLIP text tower).
 

@@ -153,6 +153,13 @@ class MemoryInspectionService:
                 item.to_dict() for item in observations if item.id not in grouped_observation_ids
             ],
             "events": [item.to_dict() for item in events],
+            # Texto generado por el modelo, con su revisión; None si no lo hay.
+            "summary": (
+                current.to_dict()
+                if (current := self.repository.get_current_summary("episode", episode.id)) is not None
+                else None
+            ),
+            "summary_revisions": len(self.repository.list_summary_revisions("episode", episode.id)),
             "evidence_references": [item.to_dict() for item in references],
             "assets": [
                 {
@@ -358,14 +365,18 @@ class MemoryInspectionService:
         )
 
     def _timeline_episode(self, item: Episode) -> dict[str, Any]:
-        return self._base_timeline(
-            item_id=item.id,
-            kind="episode",
-            title=item.title,
-            start_time=item.start_time,
-            end_time=item.end_time,
-            source_id=None,
-            environment_id=item.environment_ids[0] if len(item.environment_ids) == 1 else None,
-            confidence=item.confidence,
-            evidence_reference_ids=list(item.metadata.get("evidence_reference_ids", [])),
-        )
+        return {
+            **self._base_timeline(
+                item_id=item.id,
+                kind="episode",
+                title=item.title,
+                start_time=item.start_time,
+                end_time=item.end_time,
+                source_id=None,
+                environment_id=item.environment_ids[0] if len(item.environment_ids) == 1 else None,
+                confidence=item.confidence,
+                evidence_reference_ids=list(item.metadata.get("evidence_reference_ids", [])),
+            ),
+            # Nombre de la captura en su herramienta de origen (<entorno>_<epoch>).
+            "external_id": item.external_id,
+        }

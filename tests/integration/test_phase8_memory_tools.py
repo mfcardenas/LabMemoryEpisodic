@@ -34,6 +34,9 @@ def test_tool_registry_has_eleven_typed_read_only_contracts(phase8_runtime) -> N
         "get_entity_timeline", "get_last_confirmed_observation",
         "expand_relations", "get_supporting_evidence", "find_contradictions",
         "compare_entities", "search_documents", "get_environment_topology",
+        # Fase A1: herramientas para agentes.
+        "search_moments", "get_event", "get_event_neighbors",
+        "get_episode_summary", "browse_memory", "get_document_passages", "find_episodes",
     }
     assert all(item.read_only for item in descriptors)
     assert all(item.input_schema["type"] == "object" for item in descriptors)
@@ -235,7 +238,7 @@ def test_tool_http_api_validates_and_executes_without_llm(tmp_path) -> None:
             "/api/tools/get_episode", json={"episode_id": "x", "extra": True}
         )
     assert catalog.status_code == 200
-    assert len(catalog.json()) == 11
+    assert len(catalog.json()) == 18
     assert result.status_code == 200
     assert result.json()["result_ids"] == ["observation_drill_south"]
     assert invalid.status_code == 422

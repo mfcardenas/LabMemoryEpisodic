@@ -119,6 +119,8 @@ class QdrantVectorIndex:
             "validation_states": models.PayloadSchemaType.KEYWORD,
             "max_confidence": models.PayloadSchemaType.FLOAT,
             "episode_id": models.PayloadSchemaType.KEYWORD,
+            "target_type": models.PayloadSchemaType.KEYWORD,
+            "kind": models.PayloadSchemaType.KEYWORD,
             "timeline_start_ms": models.PayloadSchemaType.INTEGER,
             "timeline_filter_end_ms": models.PayloadSchemaType.INTEGER,
             "timeline_unknown": models.PayloadSchemaType.BOOL,
@@ -160,6 +162,20 @@ class QdrantVectorIndex:
             collection_name=self.collection_name,
             points=[point],
         )
+
+    def upsert_many(self, points: List[tuple]) -> None:
+        """Varios puntos en una petición: (point_id, target_id, vectors, payload).
+        Un viaje HTTP por lote en vez de uno por punto (×20 al indexar)."""
+        if not points:
+            return
+        structs = []
+        for point_id, target_id, vectors, payload in points:
+            point_payload = dict(payload)
+            point_payload["target_id"] = target_id
+            point_payload["raw_point_id"] = point_id
+            point_payload.setdefault("is_visible", True)
+            structs.append(models.PointStruct(id=_sanitize_point_id(point_id), vector=vectors, payload=point_payload))
+        self.client.upsert(collection_name=self.collection_name, points=structs)
 
     def delete_points(self, point_ids: List[str]) -> None:
         """Elimina puntos por su lista de IDs."""
@@ -263,7 +279,17 @@ class QdrantVectorIndex:
                     ]
                 )
 
-        return models.Filter(must=must_conditions)
+        # Los pasajes comparten el vector "text" con los episodios: solo
+        # aparecen cuando se piden expresamente (target_type="passage").
+        must_not: List[models.Condition] = []
+        if not (filters and filters.get("target_type")):
+            must_not.append(
+                models.FieldCondition(key="target_type", match=models.MatchValue(value="passage"))
+            )
+        # Clases de pasaje que no se quieren (p. ej. los resúmenes, salvo petición).
+        for kind in (filters or {}).get("exclude_kinds") or ():
+            must_not.append(models.FieldCondition(key="kind", match=models.MatchValue(value=kind)))
+        return models.Filter(must=must_conditions, must_not=must_not or None)
 
     def search(
         self,
@@ -481,3 +507,37 @@ class QdrantVectorIndex:
             return res.count
         except Exception:
             return 0
+
+
+def logical_collection_members(client: QdrantClient, collection_name: str) -> tuple[list[str], bool]:
+    """Colecciones físicas que pertenecen a la colección lógica y si su alias existe.
+
+    Son la propia colección (esquema anterior a los alias), sus generaciones
+    ``__gen_*``, las ``__staging_*`` que quedaran a medias y la que apunte el
+    alias. Ninguna otra colección del servidor se considera.
+    """
+    alias_targets = [
+        item.collection_name for item in client.get_aliases().aliases if item.alias_name == collection_name
+    ]
+    prefixes = (f"{collection_name}__gen_", f"{collection_name}__staging_")
+    members = [
+        item.name
+        for item in client.get_collections().collections
+        if item.name == collection_name or item.name.startswith(prefixes)
+    ]
+    members += [name for name in alias_targets if name not in members]
+    return sorted(members), bool(alias_targets)
+
+
+def drop_logical_collection(client: QdrantClient, collection_name: str) -> list[str]:
+    """Borra el alias y todas las colecciones físicas de la colección lógica."""
+    members, has_alias = logical_collection_members(client, collection_name)
+    if has_alias:
+        client.update_collection_aliases(
+            change_aliases_operations=[
+                models.DeleteAliasOperation(delete_alias=models.DeleteAlias(alias_name=collection_name))
+            ]
+        )
+    for name in members:
+        client.delete_collection(name)
+    return members

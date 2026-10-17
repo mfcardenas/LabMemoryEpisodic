@@ -9,6 +9,7 @@ from episodic.processors.base import BaseObservationProcessor, ObservationDraft,
 
 class ImageProcessor(BaseObservationProcessor):
     name = "image-processor"
+    label = "imagen"  # nombre en el registro de ejecución
     model_version = "phase4-pillow-v1"
     supported_modalities = frozenset({EvidenceMediaType.IMAGE})
 

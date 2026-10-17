@@ -22,7 +22,7 @@ def test_cli_uses_explicit_qdrant_collection() -> None:
     config = _config_from_args(args)
 
     assert config.data_dir == "temporary-data"
-    assert config.vector_backend == "edge"
+    assert config.vector_backend == "http"
     assert config.qdrant_host == "qdrant.test"
     assert config.qdrant_port == 7333
     assert config.qdrant_collection == "isolated_test_collection"

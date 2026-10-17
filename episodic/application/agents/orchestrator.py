@@ -1,0 +1,801 @@
+"""Agente orquestador: pregunta → herramientas → respuesta con citas verificadas.
+
+Bucle acotado (vueltas, llamadas y segundos): el modelo decide qué
+herramienta llamar; cada momento que devuelven recibe una marca corta
+(``m1``, ``m2``…) y el modelo cita con esas marcas. Antes de devolver la
+respuesta, cada marca se resuelve contra lo que realmente se recuperó: las
+que no existen se eliminan y quedan anotadas. Sin citas no hay afirmación:
+el agente debe decir «No consta en la memoria».
+"""
+from __future__ import annotations
+
+import json
+import logging
+import re
+import threading
+import time
+import uuid
+from dataclasses import dataclass, field
+from datetime import datetime, timezone, tzinfo
+from typing import Any, Callable, Optional
+
+from pydantic import ValidationError
+
+from episodic.domain.answers import AnswerRun, Citation
+from episodic.ports.reasoning import ReasoningError, ReasoningModel, ToolCall, Turn
+from episodic.ports.repository import EpisodicRepository
+from episodic.tools.contracts import MemoryToolOutput
+from episodic.tools.memory import MemoryToolbox
+
+logger = logging.getLogger(__name__)
+_UTC = timezone.utc
+
+AGENT_TOOLS = (
+    "search_moments",
+    "browse_memory",
+    "get_event",
+    "get_event_neighbors",
+    "get_episode_summary",
+    "get_document_passages",
+)
+ABSTAIN_PREFIX = "no consta en la memoria"
+
+# Lo que ve el modelo de cada herramienta: solo los parámetros que debe decidir.
+# El resto (tamaños, umbrales, formatos) lo fija el orquestador; con el esquema
+# completo gpt-oss rellenaba todos los opcionales (per_episode=0, kinds=…,
+# start_time sin end_time) y perdía vueltas en errores de validación.
+AGENT_TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
+    # Sin filtro de ambiente: el modelo se inventaba ids («env1») y vaciaba la
+    # búsqueda; si la pregunta nombra un ambiente, la propia búsqueda lo aplica.
+    "search_moments": {
+        "type": "object",
+        "properties": {
+            "query": {"type": "string", "description": "la pregunta completa o 2–4 palabras clave; las fechas, horas y ambientes van dentro del texto («ayer por la tarde en el taller», «el 12 de octubre después de las 16:30»)"},
+        },
+        "required": ["query"],
+    },
+    "browse_memory": {
+        "type": "object",
+        "properties": {
+            "level": {"type": "string", "enum": ["environments", "days", "episodes", "events"]},
+            "environment_id": {"type": "string", "description": "necesario para days y episodes"},
+            "day": {"type": "string", "description": "AAAA-MM-DD, opcional en episodes"},
+            "episode_id": {"type": "string", "description": "necesario para events"},
+            "page": {"type": "integer"},
+        },
+        "required": ["level"],
+    },
+    "get_event": {"type": "object", "properties": {"event_id": {"type": "string"}}, "required": ["event_id"]},
+    "get_event_neighbors": {
+        "type": "object",
+        "properties": {"event_id": {"type": "string"}, "before": {"type": "integer"}, "after": {"type": "integer"}},
+        "required": ["event_id"],
+    },
+    "get_episode_summary": {"type": "object", "properties": {"episode_id": {"type": "string"}}, "required": ["episode_id"]},
+    "get_document_passages": {
+        "type": "object",
+        "properties": {"episode_id": {"type": "string"}, "query": {"type": "string", "description": "palabras para ordenar los fragmentos"}},
+        "required": ["episode_id"],
+    },
+}
+# Parámetros fijados por el orquestador, fuera del alcance del modelo.
+AGENT_TOOL_DEFAULTS: dict[str, dict[str, Any]] = {
+    # 3 por episodio: con 2, los fragmentos de documento de un episodio
+    # desplazaban al evento con el habla que respondía.
+    "search_moments": {"max_episodes": 4, "per_episode": 3, "strict": False, "max_chars": 900},
+    "browse_memory": {"page_size": 20},
+    "get_event": {"max_chars": 2500},
+    "get_event_neighbors": {"before": 2, "after": 2, "max_chars": 500},
+    "get_document_passages": {"limit": 5, "max_chars": 800},
+}
+_CITE = re.compile(r"\[\s*(m\d+(?:\s*,\s*m\d+)*)\s*\]")
+_HANDLE = re.compile(r"m\d+")
+
+SYSTEM_PROMPT = """Eres el agente de consulta de EpiGraph, una memoria episódica de vídeos, audio y documentos \
+capturados en distintos ambientes. Respondes SOLO con lo que devuelven las herramientas; nunca inventas hechos, \
+horas, nombres ni intenciones.
+
+Cómo trabajar:
+1. Empieza SIEMPRE por search_moments con la pregunta completa tal cual la escribió el usuario (la herramienta \
+entiende fechas, horas e intención). No la conviertas en una frase entrecomillada ni en palabras sueltas.
+2. Los momentos llegan ordenados por relevancia con su puntuación; léelos: pueden responder aunque la puntuación \
+sea baja. Si ninguno responde, busca una segunda vez con 2–4 palabras clave distintas (sinónimos, el objeto, la \
+acción) antes de concluir nada. Si la pregunta es amplia («¿qué pasó ayer?», «¿qué suele hacerse en el taller?») \
+usa browse_memory (environments → days → episodes → events) y get_episode_summary, y luego get_event para citar.
+3. Para «antes/después» usa get_event_neighbors sobre el evento encontrado. Para manuales o documentos, \
+get_document_passages del episodio.
+4. Cada momento lleva una marca «m1», «m2»… Cita SIEMPRE con la marca entre corchetes al final de la frase que \
+respalda, con la forma «<afirmación> [m2].» Nunca escribas la marca de otra forma (ni «(m2)», ni «m2:», ni solo la \
+hora). Solo puedes citar marcas que hayas recibido. Los resúmenes (get_episode_summary) son texto generado: no son \
+prueba; cita momentos.
+5. Solo si tras al menos dos búsquedas distintas no hay ningún momento que responda, contesta empezando \
+exactamente por «No consta en la memoria» y di en una frase qué buscaste. No rellenes con suposiciones.
+6. La respuesta final es solo la respuesta: en español, breve y concreta, sin razonamientos ni notas en inglés y \
+sin repetir frases. Primero la respuesta, luego el detalle con la hora local que dan las herramientas y la posición \
+mm:ss en el vídeo. Si la pregunta pide qué se dijo, cita las palabras tal cual aparecen en «said» o en el texto."""
+
+
+LOCATOR_PROMPT = """Eres un localizador dentro de la red de agentes de EpiGraph, una memoria episódica de vídeos, \
+audio y documentos. Resuelves UNA subpregunta dentro del alcance indicado y entregas hallazgos a otro agente, que \
+redactará la respuesta. Usas SOLO lo que devuelven las herramientas o los momentos de partida; nunca inventas.
+
+Cómo trabajar:
+1. Si te dan momentos de partida, léelos primero: a menudo bastan.
+2. Si falta algo, usa las herramientas. search_moments ya está acotada a tu alcance. Para «antes/después» usa \
+get_event_neighbors y para el detalle get_event, pasando la marca del momento como event_id (por ejemplo \
+event_id="m3"). Para documentos, get_document_passages con episode_id igual a la marca de un momento del episodio.
+3. Entrega de 1 a 5 frases cortas en español, cada una con su marca entre corchetes al final: «<hecho> [m2].» Solo \
+marcas recibidas. Incluye la hora o la posición mm:ss cuando la tengas. Nada de introducciones ni conclusiones.
+4. Si en tu alcance no aparece lo que se busca, responde exactamente «No consta en este alcance» y, en una frase, \
+qué buscaste."""
+
+
+class CitationRegistry:
+    """Marcas citables (m1, m2…) de una respuesta; comunes y seguras entre hilos,
+    para que los localizadores de la red no repitan ni pisen marcas."""
+
+    def __init__(self) -> None:
+        self._by_handle: dict[str, Citation] = {}
+        self._by_passage: dict[str, str] = {}
+        self._evidence: dict[str, dict[str, Any]] = {}
+        self._lock = threading.Lock()
+
+    def note(self, handle: str, item: dict[str, Any]) -> None:
+        """Lo que vio el modelo de este momento (texto, habla, texto visible, vecinos):
+        es la evidencia con la que el narrador y el verificador trabajan después."""
+        with self._lock:
+            known = self._evidence.setdefault(handle, {})
+            for key, value in item.items():
+                if value not in (None, "", []) and key != "handle":
+                    known[key] = value
+
+    def evidence(self, handle: str, limit: int = 700) -> str:
+        """El texto que sostiene una marca, en una línea acotada."""
+        item = self._evidence.get(handle) or {}
+        citation = self._by_handle.get(handle)
+        parts = [item.get("title") or (citation.title if citation else ""), item.get("text") or (citation.text if citation else "")]
+        if item.get("said"):
+            parts.append("Dijo: " + " / ".join(str(s) for s in item["said"] if s))
+        if item.get("visible_text"):
+            parts.append("Texto visible: " + ", ".join(str(s) for s in item["visible_text"]))
+        if item.get("page"):
+            parts.append(f"(página {item['page']})")
+        text = " · ".join(part for part in parts if part)
+        return text if len(text) <= limit else text[: limit - 1].rstrip() + "…"
+
+    def register(self, moment: Any) -> str:
+        with self._lock:
+            handle = self._by_passage.get(moment.id)
+            if handle is not None:
+                return handle
+            handle = f"m{len(self._by_handle) + 1}"
+            self._by_handle[handle] = Citation(
+                handle=handle, passage_id=moment.id, kind=moment.kind, episode_id=moment.episode_id,
+                episode_external_id=moment.episode_external_id, episode_title=moment.episode_title,
+                event_id=moment.event_id, observation_id=moment.observation_id,
+                start_time=moment.start_time.isoformat() if moment.start_time else None,
+                start_offset_seconds=moment.start_offset_seconds, end_offset_seconds=moment.end_offset_seconds,
+                page_number=moment.page_number, title=moment.title, text=moment.text[:400],
+            )
+            self._by_passage[moment.id] = handle
+            return handle
+
+    def __contains__(self, handle: object) -> bool:
+        return handle in self._by_handle
+
+    def __getitem__(self, handle: str) -> Citation:
+        return self._by_handle[handle]
+
+    def get(self, handle: str) -> Optional[Citation]:
+        return self._by_handle.get(handle)
+
+    def __len__(self) -> int:
+        return len(self._by_handle)
+
+    def items(self) -> list[tuple[str, Citation]]:
+        with self._lock:
+            return list(self._by_handle.items())
+
+
+@dataclass
+class Conversation:
+    content: str
+    usage: dict[str, int]
+    tool_calls: int
+    error: Optional[str] = None
+
+
+@dataclass
+class Located:
+    """Lo que entrega un localizador: hallazgos con marcas, no la respuesta final."""
+
+    agent: str
+    question: str
+    text: str = ""
+    handles: list[str] = field(default_factory=list)
+    dropped: list[str] = field(default_factory=list)
+    findings: list[dict[str, Any]] = field(default_factory=list)
+    abstained: bool = True
+    usage: dict[str, int] = field(default_factory=dict)
+    tool_calls: int = 0
+    took_ms: float = 0.0
+    error: Optional[str] = None
+
+
+class AnswerOrchestrator:
+    def __init__(
+        self,
+        repository: EpisodicRepository,
+        toolbox: MemoryToolbox,
+        model: Optional[ReasoningModel],
+        *,
+        timezone: Optional[tzinfo] = None,
+        max_steps: int = 8,
+        max_tool_calls: int = 12,
+        max_seconds: float = 120.0,
+        tool_result_chars: int = 12000,
+        tool_names: tuple[str, ...] = AGENT_TOOLS,
+        activity: Any = None,
+    ) -> None:
+        self.repository = repository
+        self.toolbox = toolbox
+        self.model = model
+        self.timezone = timezone or _UTC
+        self.max_steps = max_steps
+        self.max_tool_calls = max_tool_calls
+        self.max_seconds = max_seconds
+        self.tool_result_chars = tool_result_chars
+        self.tool_names = tool_names
+        self.activity = activity
+
+    @property
+    def enabled(self) -> bool:
+        return self.model is not None
+
+    def tool_specs(self, tool_names: Optional[tuple[str, ...]] = None) -> list[dict[str, Any]]:
+        """Las herramientas en el formato de ``tools`` de Ollama."""
+        allowed = tool_names or self.tool_names
+        specs = []
+        for descriptor in self.toolbox.describe():
+            if descriptor.name not in allowed:
+                continue
+            schema = AGENT_TOOL_SCHEMAS.get(descriptor.name)
+            if schema is None:
+                schema = dict(descriptor.input_schema)
+                schema.pop("title", None)
+            specs.append({"type": "function", "function": {"name": descriptor.name, "description": descriptor.description, "parameters": schema}})
+        return specs
+
+    @staticmethod
+    def _arguments(name: str, raw: dict[str, Any]) -> dict[str, Any]:
+        """Argumentos efectivos: los que decide el modelo (solo los del esquema
+        reducido, sin nulos) sobre los fijos del orquestador."""
+        allowed = set((AGENT_TOOL_SCHEMAS.get(name) or {}).get("properties") or {})
+        chosen = {
+            key: value for key, value in (raw or {}).items()
+            if (not allowed or key in allowed) and value not in (None, "", [], {})
+        }
+        return {**AGENT_TOOL_DEFAULTS.get(name, {}), **chosen}
+
+    # -- Bucle principal ----------------------------------------------------------------
+
+    def ask(
+        self,
+        question: str,
+        *,
+        now: Optional[datetime] = None,
+        on_step: Optional[Callable[[dict], None]] = None,
+        run_id: Optional[str] = None,
+        run: Optional[AnswerRun] = None,
+    ) -> AnswerRun:
+        """Responde con un solo agente. Con ``run`` (la red delega una pregunta
+        simple) continúa esa ejecución: conserva su traza y sus agentes."""
+        question = (question or "").strip()
+        if not question:
+            raise ValueError("La pregunta está vacía")
+        if self.model is None:
+            raise ValueError("No hay modelo de razonamiento configurado (EPIGRAPH_AGENT_BACKEND)")
+        started = time.perf_counter()
+        now = (now or datetime.now(_UTC)).astimezone(self.timezone)
+        run = run or AnswerRun(id=run_id or str(uuid.uuid4()), question=question, model_id=self.model.model_id)
+        previous_ms = run.took_ms
+        handles = CitationRegistry()
+        messages: list[dict[str, Any]] = [
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user", "content": f"{question}\n\n(Ahora es {now:%Y-%m-%d %H:%M} {self._tz_name()}.)"},
+        ]
+        if not any(item.get("kind") == "question" for item in run.trace):
+            self._trace(run, "question", f"Pregunta: {question}", model=self.model.model_id)
+        talk = self._converse(
+            run, messages, handles,
+            max_steps=self.max_steps, max_tool_calls=self.max_tool_calls,
+            deadline=started + self.max_seconds, on_step=on_step,
+        )
+        if talk.error is None:
+            self._finish(run, talk.content, handles)
+            self._trace_verified(run)
+        own_ms = (time.perf_counter() - started) * 1000
+        run.usage = {key: run.usage.get(key, 0) + value for key, value in talk.usage.items()}
+        run.took_ms = previous_ms + own_ms
+        # Quién ha actuado: este agente con su modelo (más el planificador si la
+        # red le delegó la pregunta); las herramientas son deterministas.
+        run.metadata.setdefault("mode", "simple")
+        run.metadata["agents"] = [*run.metadata.get("agents", []), {
+            "name": "agente de consulta", "role": "agente", "model": self.model.model_id,
+            "turns": talk.usage["turns"], "tool_calls": talk.tool_calls,
+            "took_ms": round(own_ms, 1),
+        }]
+        self._trace(run, "answer", f"Respuesta ({run.confidence}, {len(run.citations)} cita(s), {talk.usage['turns']} vuelta(s), {talk.tool_calls} herramienta(s), {run.took_ms / 1000:.1f} s)",
+                    confidence=run.confidence, citations=len(run.citations), turns=talk.usage["turns"], tool_calls=talk.tool_calls, took_ms=round(run.took_ms, 1))
+        self.repository.save_answer_run(run)
+        return run
+
+    def locate(
+        self,
+        question: str,
+        *,
+        run: AnswerRun,
+        handles: "CitationRegistry",
+        agent: str,
+        now: Optional[datetime] = None,
+        context: Optional[list[dict[str, Any]]] = None,
+        scope: Optional[dict[str, dict[str, Any]]] = None,
+        scope_note: str = "",
+        tool_names: Optional[tuple[str, ...]] = None,
+        max_steps: int = 4,
+        max_tool_calls: int = 4,
+        deadline: Optional[float] = None,
+    ) -> "Located":
+        """Un localizador de la red: una subpregunta, en un alcance, con
+        presupuesto corto. Devuelve hallazgos (frases con marcas), no prosa final.
+        Comparte ``handles`` con el resto de la red: las marcas son únicas."""
+        started = time.perf_counter()
+        now = (now or datetime.now(_UTC)).astimezone(self.timezone)
+        parts = [f"Subpregunta: {question}"]
+        if scope_note:
+            parts.append(f"Alcance: {scope_note}")
+        if context:
+            parts.append("Momentos de partida (ya recuperados, con su marca):\n" + json.dumps(context, ensure_ascii=False))
+        parts.append(f"(Ahora es {now:%Y-%m-%d %H:%M} {self._tz_name()}.)")
+        messages: list[dict[str, Any]] = [
+            {"role": "system", "content": LOCATOR_PROMPT},
+            {"role": "user", "content": "\n\n".join(parts)},
+        ]
+        talk = self._converse(
+            run, messages, handles,
+            max_steps=max_steps, max_tool_calls=max_tool_calls,
+            deadline=min(deadline or float("inf"), started + self.max_seconds),
+            agent=agent, scope=scope or {}, tool_names=tool_names,
+        )
+        located = Located(agent=agent, question=question, usage=talk.usage, tool_calls=talk.tool_calls, error=talk.error)
+        if talk.error is None:
+            text, cited, dropped = _normalize_citations(_strip_leaked_reasoning((talk.content or "").strip()), handles)
+            located.text = _dedupe_lines(text)
+            located.handles = cited
+            located.dropped = dropped
+            located.abstained = located.text.casefold().startswith("no consta") or not cited
+            located.findings = findings_from(located.text, handles)
+        located.took_ms = round((time.perf_counter() - started) * 1000, 1)
+        state = "error" if located.error else ("sin hallazgos" if located.abstained else f"{len(located.findings)} hallazgo(s)")
+        self._trace(run, "found", f"{agent}: {state} · {talk.usage['turns']} vuelta(s), {talk.tool_calls} herramienta(s), {located.took_ms / 1000:.1f} s",
+                    agent=agent, findings=len(located.findings), handles=list(located.handles), took_ms=located.took_ms, error=located.error)
+        return located
+
+    def _converse(
+        self,
+        run: AnswerRun,
+        messages: list[dict[str, Any]],
+        handles: "CitationRegistry",
+        *,
+        max_steps: int,
+        max_tool_calls: int,
+        deadline: float,
+        on_step: Optional[Callable[[dict], None]] = None,
+        agent: Optional[str] = None,
+        scope: Optional[dict[str, dict[str, Any]]] = None,
+        tool_names: Optional[tuple[str, ...]] = None,
+    ) -> "Conversation":
+        """El bucle acotado: el modelo pide herramientas hasta que responde o se
+        acaba el presupuesto (vueltas, llamadas o tiempo); entonces se le pide la
+        respuesta con lo que tiene. Lo usan el agente único y los localizadores."""
+        usage = {"prompt_tokens": 0, "completion_tokens": 0, "turns": 0}
+        tools = self.tool_specs(tool_names)
+        tool_calls_made = 0
+        final: Optional[Turn] = None
+        tag = {"agent": agent} if agent else {}
+        who = f"{agent}: " if agent else ""
+        budget_note: Optional[str] = None
+        try:
+            for step in range(1, max_steps + 1):
+                if time.perf_counter() > deadline:
+                    budget_note = "tiempo agotado"
+                    self._trace(run, "budget", f"{who}tiempo agotado: se pide la respuesta con lo recuperado" if agent
+                                else f"Tiempo agotado ({self.max_seconds} s): se pide la respuesta con lo recuperado", **tag)
+                    break
+                self._trace(run, "thinking", f"{who}vuelta {step}: el modelo {self.model.model_id} lee los resultados y decide" if agent
+                            else f"Vuelta {step}: el modelo {self.model.model_id} lee los resultados y decide", turn=step, **tag)
+                turn_started = time.perf_counter()
+                turn = self._chat_with_retry(messages, tools if tool_calls_made < max_tool_calls else None, run, agent)
+                turn_ms = round((time.perf_counter() - turn_started) * 1000, 1)
+                usage["turns"] += 1
+                prompt_tokens = int(turn.usage.get("prompt_eval_count") or 0)
+                completion_tokens = int(turn.usage.get("eval_count") or 0)
+                usage["prompt_tokens"] += prompt_tokens
+                usage["completion_tokens"] += completion_tokens
+                label = f"{who}vuelta {step}" if agent else f"Vuelta {step}"
+                if not turn.tool_calls:
+                    self._trace(run, "turn", f"{label}: el modelo redacta la respuesta ({turn_ms / 1000:.1f} s, {prompt_tokens}+{completion_tokens} tokens)",
+                                turn=step, took_ms=turn_ms, tool_calls=0, prompt_tokens=prompt_tokens, completion_tokens=completion_tokens, **tag)
+                    final = turn
+                    break
+                wanted = ", ".join(call.name for call in turn.tool_calls)
+                self._trace(run, "turn", f"{label}: el modelo pide {len(turn.tool_calls)} herramienta(s): {wanted} ({turn_ms / 1000:.1f} s, {prompt_tokens}+{completion_tokens} tokens)",
+                            turn=step, took_ms=turn_ms, tool_calls=len(turn.tool_calls), prompt_tokens=prompt_tokens, completion_tokens=completion_tokens, **tag)
+                messages.append(turn.to_message())
+                for call in turn.tool_calls:
+                    if tool_calls_made >= max_tool_calls:
+                        self._trace(run, "budget", f"{who}presupuesto de herramientas agotado ({max_tool_calls}): no se ejecuta {call.name}" if agent
+                                    else f"Presupuesto de herramientas agotado ({max_tool_calls}): no se ejecuta {call.name}", tool=call.name, **tag)
+                        messages.append(self._tool_message(call, {"error": "presupuesto de herramientas agotado: responde con lo que tienes"}))
+                        continue
+                    tool_calls_made += 1
+                    record = self._run_tool(call, handles, step, run, agent=agent, scope=scope, tool_names=tool_names)
+                    run.steps.append(record["step"])
+                    if on_step:
+                        on_step(record["step"])
+                    messages.append(self._tool_message(call, record["payload"]))
+            if final is None:
+                # Presupuesto agotado: una última vuelta sin herramientas para que responda con lo que tiene.
+                if budget_note is None:
+                    self._trace(run, "budget", f"{who}vueltas agotadas ({max_steps}): se pide la respuesta con lo recuperado" if agent
+                                else f"Vueltas agotadas ({max_steps}): se pide la respuesta con lo recuperado", **tag)
+                messages.append({"role": "user", "content": "Se acabó el presupuesto de búsqueda. Responde ahora con lo que ya tienes, citando solo marcas recibidas, o di que no consta."})
+                final = self._chat_with_retry(messages, None, run, agent)
+                usage["turns"] += 1
+                usage["prompt_tokens"] += int(final.usage.get("prompt_eval_count") or 0)
+                usage["completion_tokens"] += int(final.usage.get("eval_count") or 0)
+                budget_note = budget_note or "vueltas agotadas"
+                if agent is None:
+                    run.metadata["budget"] = budget_note
+        except ReasoningError as exc:
+            if agent is None:
+                run.error = str(exc)
+                run.confidence = "sin_evidencia"
+                run.answer = f"No se pudo consultar al modelo: {exc}"
+            self._trace(run, "error", f"{who}el modelo falló: {exc}" if agent else f"El modelo falló: {exc}", **tag)
+            return Conversation("", usage, tool_calls_made, error=str(exc))
+        except Exception as exc:  # una herramienta rota no debe ocultar lo ya recuperado
+            logger.exception("Fallo del agente")
+            if agent is None:
+                run.error = str(exc)
+                run.answer = f"La consulta falló: {exc}"
+            self._trace(run, "error", f"{who}la consulta falló: {exc}" if agent else f"La consulta falló: {exc}", **tag)
+            return Conversation("", usage, tool_calls_made, error=str(exc))
+        return Conversation(final.content, usage, tool_calls_made)
+
+    def _trace_verified(self, run: AnswerRun) -> None:
+        if run.dropped_citations:
+            self._trace(run, "verify", f"Citas verificadas: {len(run.citations)} válida(s), {len(run.dropped_citations)} inventada(s) eliminada(s): {', '.join(run.dropped_citations)}",
+                        citations=len(run.citations), dropped=list(run.dropped_citations))
+        else:
+            self._trace(run, "verify", f"Citas verificadas: {len(run.citations)} válida(s)", citations=len(run.citations), dropped=[])
+
+    def _chat_with_retry(self, messages: list[dict[str, Any]], tools, run: AnswerRun, agent: Optional[str] = None) -> Turn:
+        """gpt-oss a veces emite una llamada a herramienta mal formada y Ollama
+        responde 500 («error parsing tool call»); se reintenta con un aviso y,
+        si persiste, se pide la respuesta sin herramientas."""
+        attempts = 0
+        restarted = False
+        while True:
+            try:
+                return self.model.chat(messages, tools)
+            except ReasoningError as exc:
+                if not restarted and _RUNNER_DIED.search(str(exc)):
+                    # El proceso del modelo murió al cargar (p. ej. «llama-server process has
+                    # terminated … CUDA error»): Ollama lo relanza en la siguiente llamada.
+                    restarted = True
+                    self._trace(run, "retry", (f"{agent}: e" if agent else "E") + "l proceso del modelo se cayó; se reintenta una vez",
+                                **({"agent": agent} if agent else {}))
+                    time.sleep(2)
+                    continue
+                if "parsing tool call" not in str(exc) or attempts >= 2:
+                    raise
+                attempts += 1
+                run.metadata.setdefault("tool_call_retries", 0)
+                run.metadata["tool_call_retries"] += 1
+                self._trace(run, "retry", (f"{agent}: l" if agent else "L") + f"lamada a herramienta mal formada; reintento {attempts}" + (" sin herramientas" if attempts == 2 else ""),
+                            attempt=attempts, **({"agent": agent} if agent else {}))
+                if attempts == 2:
+                    tools = None
+                    messages = messages + [{"role": "user", "content": "Tus llamadas a herramientas no se pudieron interpretar. Responde ahora con lo que ya tienes, citando marcas recibidas, o di que no consta."}]
+                else:
+                    messages = messages + [{"role": "user", "content": "La última llamada a herramienta no se pudo interpretar: repítela con argumentos JSON válidos (claves y valores entre comillas dobles)."}]
+
+    # -- Herramientas ------------------------------------------------------------------
+
+    def _run_tool(
+        self,
+        call: ToolCall,
+        handles: "CitationRegistry",
+        step: int,
+        run: Optional[AnswerRun] = None,
+        *,
+        agent: Optional[str] = None,
+        scope: Optional[dict[str, dict[str, Any]]] = None,
+        tool_names: Optional[tuple[str, ...]] = None,
+    ) -> dict[str, Any]:
+        started = time.perf_counter()
+        allowed = tool_names or self.tool_names
+        record: dict[str, Any] = {"step": step, "tool": call.name, "arguments": call.arguments, "handles": []}
+        if agent:
+            record["agent"] = agent
+        if call.name not in allowed:
+            record["error"] = f"herramienta no permitida: {call.name}"
+            payload: dict[str, Any] = {"error": record["error"], "tools": list(allowed)}
+        else:
+            try:
+                arguments = _resolve_handles(self._arguments(call.name, call.arguments), handles)
+                # El alcance de un localizador manda sobre lo que pida el modelo.
+                arguments.update((scope or {}).get(call.name, {}))
+                record["arguments"] = arguments
+                environment_id = arguments.get("environment_id")
+                if environment_id and self.repository.get_environment(environment_id) is None:
+                    raise ValueError(
+                        f"ambiente desconocido: {environment_id}; usa browse_memory(level=environments) para ver los ids reales"
+                    )
+                output = self.toolbox.execute(call.name, arguments)
+                payload = self._compact(output, handles, record)
+            except (ValidationError, ValueError) as exc:
+                record["error"] = str(exc)[:300]
+                payload = {"error": record["error"]}
+        record["took_ms"] = round((time.perf_counter() - started) * 1000, 1)
+        # En el mensaje, solo lo que decidió el modelo; los valores fijos del orquestador van en los datos.
+        arguments_text = json.dumps(call.arguments, ensure_ascii=False)[:160]
+        outcome = f"error: {record['error']}" if record.get("error") else f"{record.get('result_count', 0)} resultado(s)"
+        self._trace(run, "tool", (f"{agent}: " if agent else "") + f"{call.name}({arguments_text}) → {outcome} · {record['took_ms'] / 1000:.1f} s",
+                    step=step, tool=call.name, arguments=_jsonable(record["arguments"]), result_count=record.get("result_count", 0),
+                    took_ms=record["took_ms"], error=record.get("error"), handles=list(record.get("handles", [])),
+                    **({"agent": agent} if agent else {}))
+        record["arguments"] = _jsonable(record["arguments"])
+        return {"step": record, "payload": payload}
+
+    def _compact(self, output: MemoryToolOutput, handles: "CitationRegistry", record: dict[str, Any]) -> dict[str, Any]:
+        """Lo que ve el modelo: corto, con marcas citables y horas locales."""
+        items = self.moment_items(output.moments, handles, record)
+        payload: dict[str, Any] = {"tool": output.tool, "items": items}
+        return self._compact_rest(output, payload, record)
+
+    def moment_items(self, moments: list[Any], handles: "CitationRegistry", record: Optional[dict[str, Any]] = None) -> list[dict[str, Any]]:
+        """Los momentos como los ve el modelo, cada uno con su marca (registrada aquí)."""
+        items: list[dict[str, Any]] = []
+        for moment in moments:
+            handle = handles.register(moment)
+            if record is not None:
+                record["handles"].append(handle)
+            item = {
+                "handle": handle,
+                "kind": moment.kind,
+                "episode": moment.episode_external_id or moment.episode_id,
+                "when": self._local(moment.start_time),
+                "at": _clock(moment.start_offset_seconds) if moment.start_offset_seconds is not None else None,
+                "title": moment.title or None,
+                # El texto completo (acotado), no el fragmento del índice: la
+                # respuesta suele estar en el habla o el texto visible.
+                "text": moment.text,
+                "match": moment.snippet or None,
+            }
+            if moment.speech:
+                item["said"] = [s.get("text") for s in moment.speech]
+            if moment.visible_text:
+                item["visible_text"] = moment.visible_text
+            if moment.before or moment.after:
+                item["before"] = [b.title for b in moment.before]
+                item["after"] = [a.title for a in moment.after]
+            if moment.page_number:
+                item["page"] = moment.page_number
+            item = {k: v for k, v in item.items() if v not in (None, [], "")}
+            handles.note(handle, item)
+            items.append(item)
+        return items
+
+    def _compact_rest(self, output: MemoryToolOutput, payload: dict[str, Any], record: dict[str, Any]) -> dict[str, Any]:
+        if output.summaries:
+            payload["summaries"] = [
+                {"episode_id": s.scope_key, "title": s.title, "summary": s.summary, "narrative": s.narrative[:1500],
+                 "highlights": s.highlights[:6], "note": "texto generado: cita momentos, no este resumen"}
+                for s in output.summaries
+            ]
+        if output.browse:
+            payload["items"] = [
+                {k: v for k, v in {"level": b.level, "id": b.id, "label": b.label, "external_id": b.external_id,
+                                   "when": self._local(b.start_time), "count": b.count, "summary": b.summary_text,
+                                   "at": _clock(b.offset_seconds) if b.offset_seconds is not None else None}.items() if v not in (None, "")}
+                for b in output.browse
+            ]
+            payload["paging"] = {k: output.metadata.get(k) for k in ("page", "total", "has_more")}
+        if output.tool == "search_moments":
+            meta = output.metadata
+            payload["understood"] = (meta.get("plan") or {}).get("time_expression")
+            if meta.get("discarded_episodes"):
+                payload["discarded_low_relevance_episodes"] = meta["discarded_episodes"][:5]
+        record["result_count"] = len(payload.get("items") or []) + len(payload.get("summaries") or [])
+        text = json.dumps(payload, ensure_ascii=False)
+        if len(text) > self.tool_result_chars:
+            # Recorta los textos largos, no la lista: las marcas deben llegar enteras.
+            for item in payload.get("items") or []:
+                if "text" in item:
+                    item["text"] = item["text"][:300]
+                item.pop("match", None)
+            for s in payload.get("summaries") or []:
+                s["narrative"] = s["narrative"][:400]
+            text = json.dumps(payload, ensure_ascii=False)
+            if len(text) > self.tool_result_chars:
+                payload["items"] = (payload.get("items") or [])[: max(3, len(payload.get("items") or []) // 2)]
+                payload["truncated"] = True
+        return payload
+
+    @staticmethod
+    def _tool_message(call: ToolCall, payload: dict[str, Any]) -> dict[str, Any]:
+        return {"role": "tool", "tool_name": call.name, "tool_call_id": call.id, "content": json.dumps(payload, ensure_ascii=False)}
+
+    # -- Verificación ----------------------------------------------------------------------
+
+    def _finish(self, run: AnswerRun, content: str, handles: "CitationRegistry") -> None:
+        cleaned, cited, dropped = _normalize_citations(_strip_leaked_reasoning((content or "").strip()), handles)
+        run.answer = _dedupe_lines(cleaned.strip()) or "No consta en la memoria."
+        run.citations = [handles[h].to_dict() for h in cited]
+        run.dropped_citations = dropped
+        run.abstained = run.answer.casefold().startswith(ABSTAIN_PREFIX) or (not cited and "no consta" in run.answer.casefold())
+        if run.abstained:
+            run.confidence = "sin_evidencia"
+        elif cited and not dropped:
+            run.confidence = "alta"
+        elif cited:
+            run.confidence = "media"
+        else:
+            run.confidence = "baja"  # afirma sin citar: se devuelve, pero marcado
+
+    # -- Utilidades -------------------------------------------------------------------------
+
+    def _local(self, value: Optional[datetime]) -> Optional[str]:
+        return value.astimezone(self.timezone).strftime("%Y-%m-%d %H:%M") if value else None
+
+    def _tz_name(self) -> str:
+        return getattr(self.timezone, "key", None) or str(self.timezone)
+
+    def _trace(self, run: Optional[AnswerRun], kind: str, message: str, **data: Any) -> None:
+        """Una línea de la traza: en la ejecución (se guarda con la respuesta) y
+        en el registro de actividad, con ``run_id`` para seguirla en directo."""
+        entry = {"at": datetime.now(_UTC).isoformat(), "kind": kind, "message": message, **data}
+        if run is not None:
+            run.trace.append(entry)
+        if self.activity is None:
+            return
+        try:
+            self.activity.info("agente", message, data={"run_id": run.id if run else None, "kind": kind, **data})
+        except Exception:  # pragma: no cover
+            logger.debug("No se pudo registrar la actividad del agente", exc_info=True)
+
+
+def _normalize_citations(text: str, handles: "CitationRegistry") -> tuple[str, list[str], list[str]]:
+    """Marcas a la forma [mN]; se quitan las que no existen. Devuelve el texto,
+    las marcas citadas (en orden) y las inventadas."""
+    if not _CITE.search(text):
+        # Marcas escritas de otra forma («(m2)», «m2:», «m2»): se normalizan a [m2].
+        text = re.sub(r"\(\s*(m\d+(?:\s*,\s*m\d+)*)\s*\)", r"[\1]", text)
+        text = re.sub(r"(?<![\w\[])(m\d+)(?![\w\]])", r"[\1]", text)
+    cited: list[str] = []
+    dropped: list[str] = []
+
+    def replace(match: re.Match) -> str:
+        kept = []
+        for handle in _HANDLE.findall(match.group(1)):
+            if handle in handles:
+                if handle not in cited:
+                    cited.append(handle)
+                kept.append(handle)
+            else:
+                dropped.append(handle)
+        return f"[{', '.join(kept)}]" if kept else ""
+
+    cleaned = _CITE.sub(replace, text)
+    cleaned = re.sub(r"\s+([.,;:])", r"\1", re.sub(r"[ \t]{2,}", " ", cleaned))
+    return cleaned.strip(), cited, dropped
+
+
+_SENTENCE = re.compile(r"(?<=[.!?])\s+(?=[^\s\[])|\n+")
+_ONLY_CITES = re.compile(r"^(?:\[\s*m\d+(?:\s*,\s*m\d+)*\s*\][\s.,;]*)+$")
+_RUNNER_DIED = re.compile(r"process has terminated|llama runner|CUDA error|connection (?:reset|aborted)", re.IGNORECASE)
+
+
+def split_sentences(text: str) -> list[str]:
+    """Frases de una respuesta (y líneas de listas), sin vacías. Una marca suelta
+    tras el punto («… pantalla. [m5]») se une a su frase."""
+    sentences: list[str] = []
+    for part in _SENTENCE.split(text or ""):
+        part = part.strip(" -•*\t")
+        if not part:
+            continue
+        if _ONLY_CITES.match(part) and sentences:
+            sentences[-1] = f"{sentences[-1]} {part}"
+        else:
+            sentences.append(part)
+    return sentences
+
+
+def findings_from(text: str, handles: "CitationRegistry") -> list[dict[str, Any]]:
+    """Hallazgos de un localizador: las frases que llevan alguna marca válida (sin repetir)."""
+    findings: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for sentence in split_sentences(text):
+        found = [h for h in _HANDLE.findall(" ".join(_CITE.findall(sentence))) if h in handles]
+        key = sentence.casefold()
+        if found and key not in seen and not _ONLY_CITES.match(sentence):
+            seen.add(key)
+            findings.append({"text": sentence, "handles": list(dict.fromkeys(found))})
+    return findings
+
+
+# Argumentos que identifican un evento o un episodio: el modelo puede pasar la marca.
+_ID_FROM_HANDLE = {"event_id": "event_id", "episode_id": "episode_id"}
+
+
+def _resolve_handles(arguments: dict[str, Any], handles: "CitationRegistry") -> dict[str, Any]:
+    resolved = dict(arguments)
+    for key, attribute in _ID_FROM_HANDLE.items():
+        value = resolved.get(key)
+        if isinstance(value, str):
+            citation = handles.get(value.strip().strip("[]"))
+            if citation is not None and getattr(citation, attribute):
+                resolved[key] = getattr(citation, attribute)
+    return resolved
+
+
+def _jsonable(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {k: _jsonable(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_jsonable(v) for v in value]
+    if isinstance(value, datetime):
+        return value.isoformat()
+    return value
+
+
+_LEAK_START = re.compile(
+    r"^(?:We |I |I'll |The user |Need |Needs |Let's |Let me |Now |Provide |Use |Then |So |Answer |Must |Should |Check )"
+)
+
+
+def _strip_leaked_reasoning(text: str) -> str:
+    """gpt-oss a veces vuelca su razonamiento en inglés antes de la respuesta
+    («We have moments m1… Need answer: … Use citations.Alguien…»). Se quitan
+    las frases iniciales que parecen ese razonamiento."""
+    if not _LEAK_START.match(text):
+        return text
+    # Corte por frase: tras . ! ? con espacio, o pegado a una mayúscula («citations.Alguien»).
+    sentences = re.split(r"(?<=[.!?])(?:\s+|(?=[A-ZÁÉÍÓÚÑ¿¡]))", text)
+    kept = list(sentences)
+    # Se descartan las frases de razonamiento y sus continuaciones en minúscula.
+    while kept and (_LEAK_START.match(kept[0]) or kept[0][:1].islower()):
+        kept.pop(0)
+    remaining = " ".join(part.strip() for part in kept if part.strip()).strip()
+    return remaining if len(remaining) >= 20 else text
+
+
+def _dedupe_lines(text: str) -> str:
+    """El modelo a veces repite la misma frase en bucle: se conserva una vez."""
+    seen: set[str] = set()
+    kept: list[str] = []
+    for line in text.splitlines():
+        key = line.strip().casefold()
+        if key and key in seen:
+            continue
+        if key:
+            seen.add(key)
+        kept.append(line.rstrip())
+    return "\n".join(kept).strip()
+
+
+def _clock(seconds: Optional[float]) -> str:
+    total = int(seconds or 0)
+    return f"{total // 60:02d}:{total % 60:02d}"

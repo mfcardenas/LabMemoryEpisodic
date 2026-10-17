@@ -13,32 +13,38 @@ Implementa los subcomandos:
 - window
 - observe
 - compose
+- capture
+- speech-check
+- watch
 """
 from __future__ import annotations
 
 import argparse
 import logging
 import sys
+from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
 
-from episodic.bootstrap import create_app_container, create_ingestion_container
+from episodic.bootstrap import create_app_container, create_ingestion_container, submit_reindex
 from episodic.application.episode_composition import (
     DeterministicEpisodeComposer,
     EpisodeRuleConfig,
 )
-from episodic.config import EpisodicConfig
+from episodic.config import EpisodicConfig, load_env_file
+from episodic.domain.projects import DEFAULT_PROJECT_ID
 from episodic.domain.times import Interval, TimeSpec
 from episodic.domain.types import SearchIntent
 from episodic.domain.types import SourceType
 from episodic.logging_config import configure_logging
 
 # Asegurar UTF-8 en consola de Windows
-if sys.stdout.encoding.lower() != "utf-8":
-    try:
-        sys.stdout.reconfigure(encoding="utf-8")
-    except Exception:
-        pass
+for _stream in (sys.stdout, sys.stderr):
+    if _stream.encoding.lower() != "utf-8":
+        try:
+            _stream.reconfigure(encoding="utf-8")
+        except Exception:
+            pass
 
 logger = logging.getLogger("episodic.cli")
 
@@ -71,7 +77,7 @@ def _config_from_args(args: argparse.Namespace, **overrides: object) -> Episodic
     """Construye una configuración explícita y compartida para cada comando."""
     values: dict[str, object] = {
         "data_dir": args.data,
-        "vector_backend": getattr(args, "vector_backend", "edge"),
+        "vector_backend": getattr(args, "vector_backend", "http"),
         "qdrant_host": args.qdrant_host,
         "qdrant_port": args.qdrant_port,
         "qdrant_collection": args.qdrant_collection,
@@ -79,7 +85,51 @@ def _config_from_args(args: argparse.Namespace, **overrides: object) -> Episodic
         "log_file": getattr(args, "log_file", None),
     }
     values.update(overrides)
-    return EpisodicConfig.from_env(**values)
+    config = EpisodicConfig.from_env(**values)
+    project_id = getattr(args, "project", None)
+    if project_id and project_id != DEFAULT_PROJECT_ID:
+        # Los datos, la colección y la vigilancia del proyecto sustituyen a los por defecto.
+        from episodic.adapters.sqlite.projects import SqliteProjectRegistry
+
+        registry = SqliteProjectRegistry(config.projects_registry_path)
+        try:
+            project = registry.get_project(project_id)
+        finally:
+            registry.close()
+        if project is None:
+            raise SystemExit(f"No existe el proyecto «{project_id}» (vea: python -m episodic projects)")
+        config = replace(
+            config,
+            data_dir=project.data_dir,
+            qdrant_collection=project.qdrant_collection,
+            watch_config=project.watch_config,
+        )
+    return config
+
+
+def cmd_projects(args: argparse.Namespace) -> None:
+    """Lista los proyectos: id, tipo, estado, cifras y dónde viven sus datos."""
+    from episodic.adapters.sqlite.projects import SqliteProjectRegistry
+    from episodic.application.projects import ProjectLayout, ProjectService
+
+    config = _config_from_args(argparse.Namespace(**{**vars(args), "project": None}))
+    registry = SqliteProjectRegistry(config.projects_registry_path)
+    try:
+        service = ProjectService(
+            registry,
+            ProjectLayout(config.projects_path, config.data_path, config.qdrant_collection, config.watch_config_path),
+        )
+        service.ensure_default()
+        for project in service.list():
+            stats = service.stats(project)
+            state = "activo" if project.active else "en pausa"
+            print(
+                f"{project.id:<24} {project.kind.value:<7} {state:<9} "
+                f"{stats['episodes']:>6} episodios {stats['environments']:>4} ambientes  {project.name}"
+            )
+            print(f"{'':<24} datos: {project.data_dir} · Qdrant: {project.qdrant_collection}")
+    finally:
+        registry.close()
 
 
 def cmd_init(args: argparse.Namespace) -> None:
@@ -90,6 +140,39 @@ def cmd_init(args: argparse.Namespace) -> None:
     print(f"Sistema episódico inicializado en: {config.data_path}")
     print(f"Base de datos SQLite: {config.sqlite_path}")
     print(f"Directorio de medios: {config.media_dir}")
+
+
+def cmd_reset_data(args: argparse.Namespace) -> None:
+    """Borra los datos de EpiGraph para repetir una carga desde cero."""
+    from episodic.maintenance import ResetError, apply_reset, plan_reset
+
+    config = _config_from_args(args)
+    try:
+        plan, client = plan_reset(config)
+        if plan.empty:
+            print("No hay datos de EpiGraph que borrar.")
+        else:
+            print("Se borrará:")
+            print("\n".join(plan.describe()))
+            if not args.yes:
+                if not sys.stdin.isatty():
+                    raise ResetError("Sin terminal para confirmar: repita con --yes.")
+                if input("Escriba 'borrar' para continuar: ").strip().lower() != "borrar":
+                    print("Cancelado; no se ha borrado nada.")
+                    sys.exit(1)
+            apply_reset(plan, config, client)
+            print("Limpieza terminada.")
+    except ResetError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        sys.exit(1)
+
+    # Las cargas las pone la persona: solo se informa de lo que hay.
+    for name, count in plan.inbox_pending.items():
+        if count:
+            print(f"[{name}] {count} elemento(s) en la carpeta vigilada: se procesarán al arrancar.")
+    for name, (archive, count) in plan.archived.items():
+        if count:
+            print(f"[{name}] {count} carpeta(s) en {archive}: para reprocesarlas, muévalas a la carpeta vigilada.")
 
 
 def cmd_import(args: argparse.Namespace) -> None:
@@ -234,9 +317,156 @@ def cmd_rebuild(args: argparse.Namespace) -> None:
     container = create_app_container(config, use_fake_encoders=args.fake_encoders)
     try:
         print("Reconstruyendo proyección vectorial desde SQLite...")
-        total = container.lifecycle_service.rebuild_index(container.indexing_worker)
+        total = container.index_maintenance.rebuild()
         print(f"Reconstrucción completada. Total de representaciones indexadas: {total}")
         print(f"Puntos en Qdrant: {container.vector_index.count()}")
+    finally:
+        container.close()
+
+
+def cmd_capture(args: argparse.Namespace) -> None:
+    """Sube varios archivos como una captura y espera a que exista su episodio."""
+    from episodic.application.captures import CAPTURE_JOB_KIND, CAPTURE_STAGES, CaptureFile
+
+    config = _config_from_args(args)
+    container = create_app_container(config, use_fake_encoders=args.fake_encoders)
+    try:
+        capture = container.capture_service.register(
+            [CaptureFile(Path(item), Path(item).name) for item in args.files],
+            environment_id=args.environment,
+            title=args.title,
+            captured_at=args.captured_at,
+            window_duration_seconds=args.window,
+            overlap_seconds=args.overlap,
+            audio_offset_seconds=args.audio_offset,
+            origin={"kind": "cli"},
+        )
+        print(f"Captura: {capture.id} ({len(capture.asset_ids)} archivo(s))")
+        print(f"Hora: {capture.captured_at.isoformat()} [{capture.captured_at_origin.value}]")
+        runner = container.job_runner
+        job = runner.submit(CAPTURE_JOB_KIND, capture.id, CAPTURE_STAGES)
+        runner.run_next()
+        job = container.repository.get_job(job.id)
+        for stage in job.stages:
+            print(f"  {stage.label:<22} {stage.state.value:<10} {stage.detail}")
+        if job.state.value != "completed":
+            raise SystemExit(f"El procesamiento falló: {job.error}")
+        print(f"Episodio: {job.result['episode_id']}")
+    finally:
+        container.close()
+
+
+def cmd_speech_check(args: argparse.Namespace) -> None:
+    """Comprueba el servicio de transcripción configurado y, opcionalmente, lo prueba."""
+    import time
+
+    from episodic.bootstrap import build_speech_transcriber
+    from episodic.ports.speech import SpeechTranscriberError
+
+    config = _config_from_args(args)
+    print(f"Backend: {config.speech_backend}")
+    transcriber = build_speech_transcriber(config)
+    if transcriber is None:
+        print("La transcripción está desactivada (EPIGRAPH_SPEECH_BACKEND=none).")
+        return
+    print(f"Modelo:  {transcriber.model_id}")
+    print(f"Idioma:  {config.speech_language or 'autodetección'}")
+    try:
+        if config.speech_backend == "http":
+            print(f"URL:     {config.speech_url}")
+            models = transcriber.list_models()
+            if transcriber.model_id not in models:
+                if not args.download:
+                    raise SystemExit(
+                        f"El modelo no está en el servicio (disponibles: {models or 'ninguno'}). "
+                        "Use --download para descargarlo."
+                    )
+                print("Descargando el modelo…")
+                print(transcriber.download_model())
+            print("Servicio: disponible, modelo instalado")
+        if args.file:
+            from episodic.adapters.audio.extract import PyAVAudioExtractor
+
+            audio = PyAVAudioExtractor(config.speech_sample_rate_hz).extract(args.file)
+            if audio is None:
+                raise SystemExit(f"{args.file} no tiene pista de audio")
+            started = time.perf_counter()
+            transcript = transcriber.transcribe(
+                audio.wav, f"{Path(args.file).stem}.wav", config.speech_language or None
+            )
+            elapsed = time.perf_counter() - started
+            print(
+                f"Transcripción de {audio.duration_seconds:.1f} s en {elapsed:.2f} s "
+                f"(idioma {transcript.language or '?'}):"
+            )
+            for segment in transcript.segments:
+                print(f"  {segment.start_seconds:7.2f}–{segment.end_seconds:7.2f}  {segment.text}")
+    except SpeechTranscriberError as exc:
+        raise SystemExit(f"Error: {exc}") from exc
+
+
+def cmd_watch(args: argparse.Namespace) -> None:
+    """Vigila las carpetas configuradas y procesa lo que llega, sin servidor web."""
+    import time
+
+    from episodic.application.watch_config import WatchConfigError
+
+    overrides = {"watch_config": args.config} if args.config else {}
+    config = _config_from_args(args, **overrides)
+    if config.watch_config_path is None:
+        raise SystemExit("Indique el fichero de vigilancia con --config o EPIGRAPH_WATCH_CONFIG")
+    try:
+        container = create_app_container(config, use_fake_encoders=args.fake_encoders)
+    except WatchConfigError as exc:
+        raise SystemExit(f"Configuración de vigilancia no válida: {exc}") from exc
+    watcher, runner = container.watcher, container.job_runner
+    print(f"Configuración: {config.watch_config_path}")
+    for source in watcher.settings.sources:
+        state = "" if source.enabled else " (desactivada)"
+        print(f"  {source.name}: {source.path} → {source.environment_id} [{source.grouping}]{state}")
+    runner.start()
+    job = container.index_maintenance.ensure_current(lambda trigger: submit_reindex(container, trigger))
+    if job is not None:
+        print("El índice no refleja la configuración vigente: se reindexa en la cola de trabajos.")
+    try:
+        if not args.once:
+            watcher.start()
+            print(f"Vigilando cada {watcher.settings.interval_seconds:g} s. Ctrl+C para salir.")
+            while True:
+                time.sleep(1)
+        deadline = time.monotonic() + args.timeout
+        job_ids: list[str] = []
+        waiting = False
+        while True:
+            report = watcher.tick()
+            if not watcher.has_lease:
+                # Otro proceso vigila; si murió sin liberarla, su concesión caduca sola.
+                if time.monotonic() > deadline:
+                    raise SystemExit("Otro proceso sigue vigilando estas carpetas; inténtelo cuando termine")
+                if not waiting:
+                    print("Otro proceso vigila estas carpetas; se espera a que termine o caduque su concesión…")
+                    waiting = True
+                time.sleep(min(watcher.settings.interval_seconds, 2.0))
+                continue
+            if report is not None:
+                job_ids.extend(report.job_ids)
+                for capture_id in report.capture_ids:
+                    capture = container.repository.get_capture(capture_id)
+                    print(f"Captura: {capture.title} ({len(capture.asset_ids)} archivo(s))")
+            if not watcher.has_open_files():
+                break
+            if time.monotonic() > deadline:
+                print("Tiempo agotado: quedan ficheros sin completar o grupos sin cerrar.")
+                break
+            time.sleep(min(watcher.settings.interval_seconds, 1.0))
+        for job_id in job_ids:
+            job = runner.wait(job_id, timeout=max(1.0, deadline - time.monotonic()))
+            outcome = "episodio " + job.result.get("episode_id", "") if job.state.value == "completed" else f"falló: {job.error}"
+            print(f"  {job_id}: {outcome}")
+        if not job_ids:
+            print("No había capturas nuevas que procesar.")
+    except KeyboardInterrupt:
+        print("Deteniendo…")
     finally:
         container.close()
 
@@ -375,16 +605,26 @@ def cmd_compose_episodes(args: argparse.Namespace) -> None:
 def cmd_serve(args: argparse.Namespace) -> None:
     """Inicia el servidor HTTP y la UI Web local."""
     import uvicorn
-    from episodic.interfaces.http.server import create_api_app
+    from episodic.interfaces.http.projects import create_projects_app
 
+    # El servidor aloja todos los proyectos; --project no aplica aquí.
     config = _config_from_args(
-        args,
+        argparse.Namespace(**{**vars(args), "project": None}),
         host=args.host,
         port=args.port,
     )
-    app = create_api_app(config, use_fake_encoders=args.fake_encoders)
+    app = create_projects_app(
+        config, use_fake_encoders=args.fake_encoders, start_watchers=not args.no_watch
+    )
     print(f"\nIniciando servidor de Memoria Episódica en http://{args.host}:{args.port}")
-    print(f"Dashboard Web disponible en: http://{args.host}:{args.port}/\n")
+    print(f"Dashboard Web disponible en: http://{args.host}:{args.port}/")
+    print(f"Proyectos: {config.projects_path} (cada uno en http://{args.host}:{args.port}/p/<id>/)")
+    if config.watch_config_path is None:
+        print("Vigilancia de carpetas: desactivada (EPIGRAPH_WATCH_CONFIG vacío)\n")
+    elif args.no_watch:
+        print("Vigilancia de carpetas: desactivada (--no-watch)\n")
+    else:
+        print(f"Vigilancia de carpetas: {config.watch_config_path}\n")
     uvicorn.run(
         app,
         host=config.host,
@@ -404,10 +644,15 @@ def _add_common_arguments(
 
     parser.add_argument("--data", default=default(config.data_dir), help="Directorio raíz de datos")
     parser.add_argument(
+        "--project",
+        default=default(None),
+        help="Proyecto sobre el que actuar (sus datos, colección y vigilancia); por defecto, el principal",
+    )
+    parser.add_argument(
         "--vector-backend",
         choices=("edge", "http"),
         default=default(config.vector_backend),
-        help="Backend vectorial: Edge embebido (predeterminado) o servidor HTTP",
+        help="Backend vectorial: servidor Qdrant por HTTP (predeterminado) o Edge embebido en local",
     )
     parser.add_argument(
         "--fake-encoders",
@@ -436,6 +681,7 @@ def _add_common_arguments(
 
 
 def main() -> None:
+    load_env_file()
     environment_config = EpisodicConfig.from_env()
     common_parser = argparse.ArgumentParser(add_help=False)
     _add_common_arguments(common_parser, environment_config)
@@ -453,6 +699,15 @@ def main() -> None:
     # init
     p_init = subparsers.add_parser("init", parents=[subcommand_common], help="Inicializa el repositorio SQLite y directorios")
     p_init.set_defaults(func=cmd_init)
+
+    # reset-data
+    p_reset = subparsers.add_parser(
+        "reset-data",
+        parents=[subcommand_common],
+        help="Borra SQLite, medios y la colección de Qdrant de EpiGraph (no la carpeta vigilada)",
+    )
+    p_reset.add_argument("--yes", action="store_true", help="No pedir confirmación")
+    p_reset.set_defaults(func=cmd_reset_data)
 
     # import
     p_import = subparsers.add_parser("import", parents=[subcommand_common], help="Importa un manifiesto estructurado de episodios")
@@ -567,11 +822,83 @@ def main() -> None:
     )
     p_compose.set_defaults(func=cmd_compose_episodes)
 
+    # capture (Fase B)
+    p_capture = subparsers.add_parser(
+        "capture",
+        parents=[subcommand_common],
+        help="Sube vídeo, audio y documentos tomados juntos como un único episodio",
+    )
+    p_capture.add_argument("files", nargs="+", help="Archivos de la captura")
+    p_capture.add_argument("--environment", required=True, help="ID del ambiente")
+    p_capture.add_argument("--title", help="Título del episodio")
+    p_capture.add_argument(
+        "--captured-at",
+        type=_parse_aware_datetime,
+        help="Instante de captura ISO-8601 con zona horaria",
+    )
+    p_capture.add_argument("--window", type=float, default=60.0, help="Duración de ventana (s)")
+    p_capture.add_argument("--overlap", type=float, default=5.0, help="Solapamiento (s)")
+    p_capture.add_argument(
+        "--audio-offset",
+        type=float,
+        default=0.0,
+        help="Segundos que se suman a un audio grabado aparte para alinearlo con el vídeo",
+    )
+    p_capture.set_defaults(func=cmd_capture)
+
+    # speech-check (Fase D)
+    p_speech = subparsers.add_parser(
+        "speech-check",
+        parents=[subcommand_common],
+        help="Comprueba el servicio de transcripción configurado (EPIGRAPH_SPEECH_*)",
+    )
+    p_speech.add_argument("--file", help="Audio o vídeo con el que probar la transcripción")
+    p_speech.add_argument(
+        "--download",
+        action="store_true",
+        help="Descarga el modelo en el servicio si no está (Speaches)",
+    )
+    p_speech.set_defaults(func=cmd_speech_check)
+
+    # projects
+    p_projects = subparsers.add_parser(
+        "projects", parents=[subcommand_common], help="Lista los proyectos y dónde viven sus datos"
+    )
+    p_projects.set_defaults(func=cmd_projects)
+
     # serve
     p_serve = subparsers.add_parser("serve", parents=[subcommand_common], help="Inicia la API HTTP y la interfaz web")
     p_serve.add_argument("--host", default=environment_config.host, help="Host de escucha")
     p_serve.add_argument("--port", type=int, default=environment_config.port, help="Puerto de escucha")
+    p_serve.add_argument(
+        "--no-watch",
+        action="store_true",
+        help="No vigilar las carpetas de EPIGRAPH_WATCH_CONFIG en este proceso",
+    )
     p_serve.set_defaults(func=cmd_serve)
+
+    # watch (entrada automática)
+    p_watch = subparsers.add_parser(
+        "watch",
+        parents=[subcommand_common],
+        help="Vigila carpetas y convierte lo que llega en capturas (sin servidor web)",
+    )
+    p_watch.add_argument(
+        "--config",
+        help="Fichero TOML de vigilancia (por defecto EPIGRAPH_WATCH_CONFIG)",
+    )
+    p_watch.add_argument(
+        "--once",
+        action="store_true",
+        help="Procesa lo que haya en las carpetas, espera a sus trabajos y termina",
+    )
+    p_watch.add_argument(
+        "--timeout",
+        type=float,
+        default=3600.0,
+        help="Con --once: segundos máximos de espera (por defecto 3600)",
+    )
+    p_watch.set_defaults(func=cmd_watch)
 
     args = parser.parse_args()
     runtime_config = _config_from_args(args)

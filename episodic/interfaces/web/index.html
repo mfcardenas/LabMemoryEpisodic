@@ -5,7 +5,19 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="description" content="EpiGraph: memoria episódica multimodal trazable">
   <title>EpiGraph · Consola de memoria</title>
-  <link rel="stylesheet" href="/static/index.css?v=pceg1-9">
+  <script>
+    // Estilo visual antes de pintar (sin parpadeo): editorial por defecto; «panel» claro u oscuro es opcional.
+    (function () {
+      var v = null, d = document.documentElement;
+      try { v = new URLSearchParams(location.search).get("estilo") || localStorage.getItem("epigraph.estilo"); } catch (e) {}
+      if (v !== "panel-claro" && v !== "panel-oscuro") return;
+      d.setAttribute("data-skin", "panel");
+      d.setAttribute("data-mode", v === "panel-oscuro" ? "dark" : "light");
+    })();
+  </script>
+  <link rel="stylesheet" href="/static/index.css?v=consola-1">
+  <link rel="stylesheet" href="/static/cronologia.css?v=consola-1">
+  <link rel="stylesheet" href="/static/tema-panel.css?v=consola-1">
 </head>
 <body>
   <div class="shell">
@@ -15,13 +27,27 @@
         <span><b>EpiGraph</b><small>MEMORIA AUDITABLE</small></span>
       </a>
 
+      <div class="project-switch" hidden>
+        <label for="project-select">Proyecto</label>
+        <select id="project-select"></select>
+      </div>
+
       <nav class="nav" aria-label="Secciones">
         <button class="nav-item active" data-view="episodes"><span>01</span>Memoria</button>
-        <button class="nav-item" data-view="timeline"><span>02</span>Línea temporal</button>
+        <!-- La línea temporal clásica queda oculta (LEGACY_TIMELINE en app.js); su vista sigue abajo. -->
+        <button class="nav-item" data-view="timeline" hidden><span>02</span>Línea temporal clásica</button>
+        <button class="nav-item" data-view="cronologia"><span>02</span>Línea temporal</button>
         <button class="nav-item" data-view="ingest"><span>03</span>Ingesta</button>
-        <button class="nav-item" data-view="search"><span>04</span>Consultas</button>
-        <button class="nav-item" data-view="system"><span>05</span>Sistema</button>
+        <button class="nav-item" data-view="watch"><span>04</span>Vigilancia</button>
+        <button class="nav-item" data-view="search"><span>05</span>Consultas</button>
+        <button class="nav-item" data-view="system"><span>06</span>Sistema</button>
+        <button class="nav-item" data-view="projects"><span>07</span>Proyectos</button>
       </nav>
+
+      <div class="skin-switch" role="group" aria-label="Estilo visual">
+        <span>Estilo</span>
+        <div><button type="button" data-estilo="editorial">Editorial</button><button type="button" data-estilo="panel-claro">Claro</button><button type="button" data-estilo="panel-oscuro">Oscuro</button></div>
+      </div>
 
       <div class="rail-status">
         <div><i id="connection-light"></i><span id="connection-label">Conectando</span></div>
@@ -123,15 +149,16 @@
       </section>
 
       <section class="view" id="view-timeline">
-        <article class="panel timeline-panel">
+        <!-- Controles aparte de la cronología: no se mueven con el zoom ni con el desplazamiento. -->
+        <article class="panel timeline-controls">
           <div class="panel-heading timeline-heading">
             <div>
               <p class="kicker">TIEMPO OBSERVADO</p>
               <h2>Cronología multi-fuente</h2>
             </div>
             <div class="inline-filters timeline-toolbar">
-              <select id="timeline-environment"><option value="">Todos los ambientes</option></select>
-              <select id="timeline-source"><option value="">Todas las fuentes</option></select>
+              <select id="timeline-environment" title="Un carril por ambiente; al elegir uno, un carril por fuente"><option value="">Todos los ambientes</option></select>
+              <select id="timeline-source" title="Fuentes del ambiente elegido"><option value="">Todas las fuentes</option></select>
               <label class="switch"><input type="checkbox" id="show-windows"><span></span>Ventanas técnicas</label>
               
               <div class="zoom-controls">
@@ -139,11 +166,10 @@
                 <button type="button" class="zoom-btn" id="zoom-out" title="Alejar escala (ver rango macro)">−</button>
                 <span class="zoom-level" id="zoom-level-text">1x</span>
                 <button type="button" class="zoom-btn" id="zoom-in" title="Acercar escala (ver micro-deltas)">+</button>
-                <button type="button" class="zoom-reset-btn" id="zoom-fit" title="Ajustar al rango completo">Ajustar</button>
+                <button type="button" class="zoom-reset-btn" id="zoom-fit" title="Zoom automático: el bloque mediano se lee">Auto</button>
               </div>
             </div>
           </div>
-
           <div class="timeline-subbar">
             <div class="timeline-legend">
               <span class="observation">Observación</span><span class="event">Evento</span>
@@ -158,12 +184,67 @@
               <span id="tl-metric-min-delta">Δt mín: —</span>
             </div>
           </div>
-
+        </article>
+        <article class="panel timeline-panel">
           <div class="timeline-scroll-container" id="timeline-scroll-container">
             <div id="timeline-canvas" class="timeline-canvas"><div class="empty">Cargando eje temporal…</div></div>
           </div>
-
           <div id="timeline-ledger" class="timeline-ledger"></div>
+        </article>
+      </section>
+
+      <section class="view" id="view-cronologia" aria-label="Línea temporal">
+        <article class="panel cr-pulse" aria-labelledby="cr-pulse-title">
+          <div class="cr-head">
+            <div><p class="kicker">DÓNDE MIRAR</p><h2 id="cr-pulse-title">Pulso</h2><p id="cr-pulse-sub">Eventos por ambiente a lo largo de toda la memoria.</p></div>
+            <p class="cr-readout" id="cr-readout">Cargando…</p>
+          </div>
+          <div class="cr-pulse-wrap" id="cr-pulse-wrap">
+            <canvas id="cr-pulse" aria-label="Mapa de calor de eventos por ambiente y tiempo"></canvas>
+            <div class="cr-view-box" id="cr-view-box" hidden></div>
+            <div class="cr-tip" id="cr-tip" hidden></div>
+          </div>
+          <p class="cr-note">Arrastra sobre el pulso para elegir el intervalo que se muestra abajo; un clic lleva a ese momento.</p>
+        </article>
+
+        <article class="panel cr-bench" aria-label="Pistas por ambiente y fuente">
+          <div class="cr-bar">
+            <div class="cr-seg" role="group" aria-label="Modo">
+              <button type="button" id="cr-mode-tracks" aria-pressed="true">Pistas</button>
+              <button type="button" id="cr-mode-story" aria-pressed="false">Relato</button>
+            </div>
+            <div class="cr-envs" id="cr-envs" role="group" aria-label="Ambientes visibles"></div>
+            <span class="cr-loading" id="cr-loading" hidden><span class="spinner" aria-hidden="true"></span>Cargando…</span>
+            <div class="cr-zoom">
+              <button type="button" id="cr-zoom-out" aria-label="Alejar">−</button>
+              <span class="cr-span" id="cr-span">—</span>
+              <button type="button" id="cr-zoom-in" aria-label="Acercar">+</button>
+              <button type="button" id="cr-fit" title="Encuadrar el día (o el intervalo del pulso)">Encajar</button>
+            </div>
+          </div>
+          <div class="cr-markbar" id="cr-markbar" hidden></div>
+          <div class="cr-body">
+            <div class="cr-stage-col">
+              <div id="cr-tracks-view">
+                <p class="cr-banner" id="cr-banner" hidden></p>
+                <div class="cr-mini" id="cr-mini" title="Contexto: arrastra la ventana para moverte">
+                  <canvas id="cr-mini-canvas"></canvas>
+                  <div class="cr-mini-win" id="cr-mini-win"></div>
+                  <span class="cr-mini-label" id="cr-mini-label"></span>
+                </div>
+                <div class="cr-stage" id="cr-stage" tabindex="0" aria-label="Pistas: rueda para acercar, arrastrar para desplazar">
+                  <div class="cr-grid" id="cr-grid"></div>
+                  <div class="cr-marklayer" id="cr-marklayer"></div>
+                  <div class="cr-row cr-ruler-row"><div class="cr-lab" id="cr-day">—</div><div class="cr-ruler" id="cr-ruler"></div></div>
+                  <div id="cr-rows"><div class="cr-empty">Cargando la línea temporal…</div></div>
+                  <div class="cr-playhead" id="cr-playhead" hidden><span></span></div>
+                </div>
+                <p class="cr-hint"><kbd>Rueda</kbd> acercar sobre el cursor · <kbd>Arrastrar</kbd> desplazar · <kbd>←</kbd> <kbd>→</kbd> moverse · <kbd>+</kbd> <kbd>−</kbd> zoom · <kbd>F</kbd> encajar · clic en un episodio para encuadrarlo · clic en un ambiente para plegarlo</p>
+              </div>
+              <div id="cr-story" class="cr-story" hidden></div>
+            </div>
+            <aside class="cr-inspector" id="cr-inspector" aria-live="polite"></aside>
+          </div>
         </article>
       </section>
 
@@ -171,31 +252,32 @@
         <div class="split hero-split">
           <article class="panel ingest-panel">
             <div class="panel-heading">
-              <div><p class="kicker">NUEVO ACTIVO</p><h2>Entrada y custodia</h2></div>
+              <div><p class="kicker">NUEVA CAPTURA</p><h2>Subir lo que se grabó junto</h2></div>
               <span class="truth-badge">ORIGINAL</span>
             </div>
             <form id="ingest-form">
               <label class="drop-zone" for="asset-file">
-                <input id="asset-file" name="file" type="file" required
+                <input id="asset-file" name="files" type="file" required multiple
                   accept="video/*,audio/*,image/*,.pdf,.txt,.md,.csv,.json">
                 <span class="drop-glyph">↓</span>
-                <b id="file-label">Seleccionar vídeo, audio, imagen o documento</b>
-                <small>Se copiará al almacén inmutable y se verificará mediante SHA‑256.</small>
+                <b id="file-label">Seleccionar los archivos de la captura</b>
+                <small>Vídeo, audio y documentos tomados juntos forman un único episodio. Los originales se conservan por SHA‑256.</small>
               </label>
               <div class="form-grid">
+                <label class="span-2">Título<input name="title" placeholder="Ej.: Desmontaje de pieza agarrotada"></label>
                 <label>Ambiente<input name="environment_id" value="laboratorio_01" required></label>
-                <label>Fuente<input name="source_id" value="fuente_01" required></label>
-                <label>Capturado en<input name="captured_at" type="datetime-local" step="1"></label>
+                <label>Capturado en<input name="captured_at" type="datetime-local" step="1" title="Si se deja vacío se usa la hora del vídeo o, en su defecto, la de subida"></label>
                 <label>Delta de tiempo / Ventana (s)<input name="window_duration_seconds" type="number" value="60" min="0.1" step="0.1"></label>
                 <label>Solapamiento temporal (s)<input name="overlap_seconds" type="number" value="5" min="0" step="0.1"></label>
+                <label>Desfase del audio aparte (s)<input name="audio_offset_seconds" type="number" value="0" step="0.1" title="Segundos que se suman a un audio grabado por separado para alinearlo con el vídeo. Negativo si el audio empezó antes."></label>
               </div>
               <div class="process-note">
                 <span>FLUJO</span>
                 <p>Activo → ventanas → observaciones → microepisodios → episodios → Qdrant</p>
               </div>
-              <button class="button primary" type="submit" id="ingest-submit">Conservar y procesar</button>
+              <button class="button primary" type="submit" id="ingest-submit">Subir captura y procesar</button>
             </form>
-            <div class="operation-log" id="workflow-result" hidden></div>
+            <div class="job-progress" id="workflow-result" hidden></div>
           </article>
 
           <article class="panel doctrine">
@@ -213,39 +295,136 @@
         </div>
 
         <article class="panel ledger-panel">
+          <div class="panel-heading"><div><p class="kicker">CAPTURAS</p><h2>Capturas recientes</h2></div><span id="capture-count" class="counter">0</span></div>
+          <div class="capture-ledger" id="capture-ledger"><div class="empty">Cargando capturas…</div></div>
+        </article>
+
+        <article class="panel ledger-panel">
           <div class="panel-heading"><div><p class="kicker">FUENTES PRIMARIAS</p><h2>Activos registrados en custodia</h2></div><span id="asset-count" class="counter">0</span></div>
           <div class="asset-ledger" id="asset-ledger"><div class="empty">Cargando activos…</div></div>
         </article>
       </section>
 
-      <section class="view" id="view-search">
-        <div class="search-mode-tabs">
-          <button class="search-tab-btn active" data-search-tab="hybrid">Búsqueda Híbrida (Qdrant + SQLite)</button>
-          <button class="search-tab-btn" data-search-tab="tools">Herramientas de Memoria (Fase 8)</button>
+      <section class="view" id="view-watch">
+        <article class="panel watch-status-panel">
+          <div class="panel-heading">
+            <div><p class="kicker">ENTRADA AUTOMÁTICA</p><h2>Carpetas vigiladas</h2></div>
+            <div class="watch-actions">
+              <span class="watch-state" id="watch-state"><i></i><b>Cargando…</b></span>
+              <button class="button-mini" id="watch-scan-now" type="button" disabled>Barrer ahora</button>
+            </div>
+          </div>
+          <p class="watch-summary" id="watch-summary"></p>
+          <div class="watch-sources" id="watch-sources"><div class="empty">Cargando…</div></div>
+        </article>
+
+        <div class="watch-grid">
+          <article class="panel">
+            <div class="panel-heading">
+              <div><p class="kicker">COLA DE TRABAJOS</p><h2>Trabajos</h2></div>
+              <span class="counter" id="watch-jobs-active">—</span>
+            </div>
+            <div class="index-status" id="index-status">
+              <span id="index-status-text">Índice: comprobando…</span>
+              <button class="button-mini" id="index-reindex" type="button" title="Reconstruye vectores y pasajes en una generación nueva; la búsqueda sigue funcionando mientras tanto">Reindexar</button>
+            </div>
+            <div class="watch-jobs" id="watch-jobs"><div class="empty">Cargando…</div></div>
+          </article>
+          <article class="panel">
+            <div class="panel-heading">
+              <div><p class="kicker">LECTURA DE FICHEROS</p><h2>Ficheros leídos</h2></div>
+              <select id="watch-file-state" aria-label="Estado de los ficheros">
+                <option value="">Todos los estados</option>
+                <option value="pending">Copiándose</option>
+                <option value="ready">Listos, esperando cierre</option>
+                <option value="captured">Capturados</option>
+                <option value="duplicate">Duplicados</option>
+                <option value="ignored">Ignorados</option>
+                <option value="failed">Fallidos</option>
+                <option value="vanished">Desaparecidos</option>
+              </select>
+            </div>
+            <div class="watch-files" id="watch-files"><div class="empty">Cargando…</div></div>
+          </article>
         </div>
 
-        <div id="search-tab-hybrid-content" class="search-tab-content active">
+        <article class="panel watch-log-panel">
+          <div class="panel-heading">
+            <div><p class="kicker">REGISTRO DE EJECUCIÓN</p><h2>Log del vigilante y de los trabajos</h2></div>
+            <div class="inline-filters">
+              <select id="log-component" aria-label="Componente">
+                <option value="">Todo</option>
+                <option value="watch">Vigilante</option>
+                <option value="jobs">Trabajos</option>
+              </select>
+              <select id="log-level" aria-label="Nivel">
+                <option value="">Todo, con cada pase</option>
+                <option value="info,warning,error">Sin los pases del vigilante</option>
+                <option value="warning,error">Avisos y errores</option>
+                <option value="error">Solo errores</option>
+              </select>
+              <label class="switch"><input type="checkbox" id="log-follow" checked><span></span>Seguir</label>
+            </div>
+          </div>
+          <div class="activity-log" id="activity-log" role="log" aria-live="polite"><div class="log-empty">Cargando…</div></div>
+        </article>
+      </section>
+
+      <section class="view" id="view-search">
+        <div class="search-mode-tabs">
+          <button class="search-tab-btn active" data-search-tab="ask">Preguntar</button>
+          <button class="search-tab-btn" data-search-tab="hybrid">Búsqueda por momentos</button>
+          <button class="search-tab-btn" data-search-tab="tools">Herramientas de memoria</button>
+        </div>
+        <div id="query-status" class="query-status" role="status" aria-live="polite" hidden><span class="spinner" aria-hidden="true"></span><span id="query-status-text">Cargando…</span></div>
+
+        <div id="search-tab-ask-content" class="search-tab-content active">
           <article class="panel search-panel">
-            <div class="panel-heading"><div><p class="kicker">RECUPERACIÓN HÍBRIDA</p><h2>Consultar la memoria</h2></div><span class="truth-badge vector">QDRANT + SQLITE</span></div>
+            <div class="panel-heading"><div><p class="kicker">AGENTE DE CONSULTA</p><h2>Pregunta a la memoria</h2></div><div class="ask-heading-tools"><button type="button" class="button-mini" id="agent-console-open" title="Ver lo que hacen los agentes, línea a línea">Consola de agentes</button><span class="truth-badge vector" id="ask-status">…</span></div></div>
+            <p class="search-hint">El agente busca con las herramientas de memoria y responde solo con lo que encuentra; cada afirmación lleva una cita que abre el vídeo en ese segundo. Si no hay evidencia, lo dice. En modo automático, las preguntas que cruzan varios episodios («¿en qué capturas…?», «¿cuántas veces…?», «¿qué tienen en común…?») pasan a la red de agentes: un planificador, un localizador por episodio en paralelo, un narrador y un verificador.</p>
+            <form id="ask-form" class="search-form ask-form">
+              <input id="ask-question" placeholder="Ej.: ¿en qué capturas aparece una tarjeta y qué se hace con ella en cada una?" required>
+              <select id="ask-mode" aria-label="Modo de respuesta" title="Quién responde">
+                <option value="auto">Automático</option>
+                <option value="simple">Un agente</option>
+                <option value="red">Red de agentes</option>
+              </select>
+              <button class="button primary" type="submit" id="ask-submit">Preguntar</button>
+            </form>
+          </article>
+          <div id="ask-results" class="search-results"><div class="empty roomy">Mientras el agente trabaja verás aquí cada vuelta del modelo y cada herramienta; la respuesta se guarda con su traza y sus citas.</div></div>
+          <details class="technical-details" id="ask-history-box"><summary>Preguntas anteriores</summary><div id="ask-history"></div></details>
+        </div>
+
+        <div id="search-tab-hybrid-content" class="search-tab-content" hidden>
+          <article class="panel search-panel">
+            <div class="panel-heading"><div><p class="kicker">RECUPERACIÓN HÍBRIDA</p><h2>Consultar la memoria</h2></div><span class="truth-badge vector">SIGNIFICADO + PALABRAS</span></div>
+            <p class="search-hint">Busca en cada evento del vídeo (lo que se ve, quién actúa, qué objetos y textos aparecen y qué se dijo mientras tanto), en cada frase transcrita y en cada fragmento de documento. Lo que va entre comillas se busca como frase exacta; los códigos y nombres se encuentran tal cual.</p>
             <form id="search-form" class="search-form">
-              <input id="search-query" placeholder="Ej.: pipeta rosada, taladro azul, inspección en taller…" required>
+              <input id="search-query" placeholder="Ej.: chispas al cortar, &quot;llave dinamométrica&quot;, sensor F-102…" required>
               <button class="button primary" type="submit">Buscar</button>
               <div class="search-options">
                 <label>Ambiente<select id="search-environment"><option value="">Todos</option></select></label>
                 <label>Fuente<select id="search-source"><option value="">Todas</option></select></label>
                 <label>Modalidad<select id="search-modality"><option value="">Todas</option><option>video</option><option>audio</option><option>image</option><option>document</option><option>text</option></select></label>
-                <label class="switch"><input type="checkbox" id="input-require-unique"><span></span>Resolución única</label>
+                <label class="switch" title="Un cross-encoder vuelve a puntuar los mejores pasajes frente a la pregunta"><input type="checkbox" id="input-rerank" checked><span></span>Reordenar</label>
+              </div>
+              <div class="search-options search-thresholds">
+                <label title="Puntuación mínima del reordenador; vacío: sin umbral. Valor por defecto: EPIGRAPH_RERANK_MIN_SCORE">Umbral de relevancia<input type="number" id="input-min-score" step="0.1" placeholder="sin umbral"></label>
+                <label title="Se conserva bajo el umbral si significado y palabras lo ponen ambos entre sus N primeros; 0: nunca. Valor por defecto: EPIGRAPH_PASSAGE_AGREEMENT_RANK">Acuerdo de vías (top N)<input type="number" id="input-agreement" min="0" step="1"></label>
+                <button type="button" class="button-mini" id="reset-thresholds" title="Volver a los valores de .env">Valores de .env</button>
+                <small id="passage-settings" class="search-settings"></small>
               </div>
             </form>
           </article>
-          <div id="search-results" class="search-results"><div class="empty roomy">La similitud propone candidatos; SQLite devuelve los registros y sus evidencias.</div></div>
+          <div id="search-results" class="search-results"><div class="empty roomy">Cada resultado es un momento concreto con su hora, su origen y el motivo por el que aparece.</div></div>
         </div>
 
         <div id="search-tab-tools-content" class="search-tab-content" hidden>
           <article class="panel tools-panel">
             <div class="panel-heading">
               <div><p class="kicker">CATÁLOGO TIPADO</p><h2>Herramientas deterministas de consulta</h2></div>
-              <span class="truth-badge">FASE 8 · 11 HERRAMIENTAS</span>
+              <span class="truth-badge">SOLO LECTURA · CATÁLOGO DE /api/tools</span>
             </div>
             <div class="tools-interface">
               <div class="tools-selector-bar">
@@ -290,10 +469,70 @@
           <p>No se habilitará orquestación agéntica hasta que este recorrido pueda verificarse con recursos reales y evidencias accesibles.</p>
         </article>
       </section>
+      <section class="view" id="view-projects" aria-label="Proyectos">
+        <div class="split projects-layout">
+          <article class="panel">
+            <div class="panel-heading">
+              <div><p class="kicker">ESPACIOS DE DATOS</p><h2>Proyectos</h2></div>
+              <span class="counter" id="projects-count">—</span>
+            </div>
+            <p class="projects-intro">Cada proyecto guarda sus ambientes y evidencias por separado: su base de datos, sus medios y su colección en Qdrant. Un mismo ambiente puede existir en dos proyectos sin mezclarse. Solo los proyectos activos vigilan carpetas y procesan; todos comparten un único turno de trabajo pesado.</p>
+            <div id="project-list" class="project-list"></div>
+          </article>
+          <article class="panel">
+            <div class="panel-heading">
+              <div><p class="kicker" id="project-form-kicker">NUEVO</p><h2 id="project-form-title">Crear proyecto</h2></div>
+            </div>
+            <form id="project-form" class="project-form" autocomplete="off">
+              <label>Nombre<input id="project-name" required maxlength="120" placeholder="Ej.: Banco de preguntas compuestas"></label>
+              <label>Descripción<input id="project-description" maxlength="2000" placeholder="Para qué sirve este proyecto"></label>
+              <label>Tipo<select id="project-kind"><option value="prueba">Prueba</option><option value="real">Real</option></select></label>
+              <label>Carpetas vigiladas <small>(opcional)</small><textarea id="project-folders" rows="3" spellcheck="false" placeholder="D:\EpiGraph\pruebas-a3"></textarea></label>
+              <p class="project-form-note" id="project-folders-note"></p>
+              <label class="switch"><input type="checkbox" id="project-active" checked><span></span>Activo: vigila sus carpetas y procesa su cola</label>
+              <div class="project-form-actions">
+                <button class="button primary" type="submit" id="project-submit">Crear proyecto</button>
+                <button class="button" type="button" id="project-form-cancel" hidden>Cancelar</button>
+              </div>
+              <p id="project-form-message" class="warn" hidden></p>
+            </form>
+          </article>
+        </div>
+      </section>
     </main>
   </div>
 
   <dialog id="asset-dialog" class="detail-dialog"><button class="dialog-close" data-close-dialog aria-label="Cerrar">×</button><div id="asset-dialog-content"></div></dialog>
-  <script src="/static/app.js?v=pceg1-10"></script>
+
+  <!-- Consola de agentes: ventana flotante tipo log (agentes.js). -->
+  <aside id="agent-console" class="agent-console" data-state="closed" hidden aria-label="Consola de agentes">
+    <header class="ac-head">
+      <span class="ac-title"><i></i>Consola de agentes</span>
+      <span class="ac-status" role="status" aria-live="polite"></span>
+      <select class="ac-runs" aria-label="Ejecuciones recientes"><option value="">Ejecuciones recientes…</option></select>
+      <button type="button" data-ac="copy" title="Copiar el log">⧉</button>
+      <button type="button" data-ac="min" title="Minimizar">–</button>
+      <button type="button" data-ac="max" title="Ampliar o reducir">▢</button>
+      <button type="button" data-ac="close" title="Cerrar">×</button>
+    </header>
+    <p class="ac-question"></p>
+    <div class="ac-roster"></div>
+    <div class="ac-log" role="log" aria-live="off"></div>
+    <footer class="ac-foot">
+      <div class="ac-filters" role="group" aria-label="Filtrar el log">
+        <button type="button" data-filter="all">Todo</button>
+        <button type="button" data-filter="decisions">Decisiones</button>
+        <button type="button" data-filter="tools">Herramientas</button>
+        <button type="button" data-filter="problems">Problemas</button>
+      </div>
+      <button type="button" class="ac-agent-clear" hidden>Ver todos los agentes</button>
+      <label class="ac-follow-label"><input type="checkbox" class="ac-follow" checked> seguir</label>
+    </footer>
+  </aside>
+  <button type="button" id="agent-console-pill" class="agent-pill" hidden>Agentes</button>
+  <script src="/static/app.js?v=consola-1"></script>
+  <script src="/static/cronologia.js?v=consola-1"></script>
+  <script src="/static/proyectos.js?v=consola-1"></script>
+  <script src="/static/agentes.js?v=consola-1"></script>
 </body>
 </html>

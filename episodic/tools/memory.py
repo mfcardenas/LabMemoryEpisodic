@@ -23,7 +23,15 @@ from episodic.domain.types import (
     ValidationState,
 )
 from episodic.ports.repository import EpisodicRepository
+from episodic.tools.agent_tools import AgentMemoryTools
 from episodic.tools.contracts import (
+    BrowseMemoryInput,
+    FindEpisodesInput,
+    GetDocumentPassagesInput,
+    GetEpisodeSummaryInput,
+    GetEventInput,
+    GetEventNeighborsInput,
+    SearchMomentsInput,
     CompareEntitiesInput,
     DocumentToolRecord,
     EntityComparisonRecord,
@@ -66,11 +74,45 @@ class MemoryToolbox:
         repository: EpisodicRepository,
         hybrid_retrieval: HybridRetrievalService,
         logical_graph: LogicalGraphService,
+        passage_search=None,
+        timezone=None,
     ) -> None:
         self.repository = repository
         self.hybrid_retrieval = hybrid_retrieval
         self.logical_graph = logical_graph
+        self.agent_tools = AgentMemoryTools(repository, passage_search, timezone)
         self._definitions: dict[str, _ToolDefinition] = {
+            # -- Para agentes (Fase A1): compactas, paginadas, sin barridos --
+            "search_moments": _ToolDefinition(
+                SearchMomentsInput, self.agent_tools.search_moments,
+                "Busca los momentos (eventos del vídeo, habla, fragmentos de documento) que responden a una "
+                "pregunta; entiende el tiempo y la intención, devuelve posición en el vídeo y citas.",
+            ),
+            "find_episodes": _ToolDefinition(
+                FindEpisodesInput, self.agent_tools.find_episodes,
+                "Episodios en los que aparece algo, con su mejor momento cada uno, el ambiente y la hora; "
+                "cubre muchos episodios a la vez (cada episodio llega al reordenador) para recorrerlos después.",
+            ),
+            "get_event": _ToolDefinition(
+                GetEventInput, self.agent_tools.get_event,
+                "Devuelve un evento completo: descripción, acciones, actores, objetos, texto visible y habla.",
+            ),
+            "get_event_neighbors": _ToolDefinition(
+                GetEventNeighborsInput, self.agent_tools.get_event_neighbors,
+                "Devuelve los eventos anteriores y posteriores a uno dado, en orden cronológico.",
+            ),
+            "get_episode_summary": _ToolDefinition(
+                GetEpisodeSummaryInput, self.agent_tools.get_episode_summary,
+                "Resumen generado de un episodio (título, resumen, narrativa con citas, momentos clave).",
+            ),
+            "browse_memory": _ToolDefinition(
+                BrowseMemoryInput, self.agent_tools.browse_memory,
+                "Navega la memoria de arriba abajo: ambientes → días → episodios → eventos, con resúmenes.",
+            ),
+            "get_document_passages": _ToolDefinition(
+                GetDocumentPassagesInput, self.agent_tools.get_document_passages,
+                "Fragmentos de los documentos adjuntos a un episodio, opcionalmente ordenados por una consulta.",
+            ),
             "search_observations": _ToolDefinition(
                 SearchObservationsInput, self.search_observations,
                 "Busca observaciones canonicas con filtros y relevancia semantica.",

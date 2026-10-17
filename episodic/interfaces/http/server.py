@@ -2,23 +2,52 @@
 from __future__ import annotations
 
 import logging
+import mimetypes
+from contextlib import asynccontextmanager
+from functools import lru_cache
 import shutil
 import tempfile
+import time
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from fastapi import FastAPI, File, Form, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import ValidationError
 
-from episodic.bootstrap import AppContainer, create_app_container
+from episodic.application.captures import (
+    CAPTURE_JOB_KIND,
+    CAPTURE_STAGES,
+    CaptureConflictError,
+    CaptureFile,
+)
+from episodic.application.index_maintenance import REINDEX_JOB_KIND, TRIGGER_MANUAL
+from episodic.application.summaries import SUMMARY_JOB_KIND, SUMMARY_STAGES
+from episodic.application.passage_search import DEFAULT
+from episodic.application.watch import (
+    ACTIVITY_COMPONENT as WATCH_COMPONENT,
+    LEASE_NAME,
+    draft_group_manifest,
+    retry_failed_group,
+    write_manifest,
+)
+from episodic.bootstrap import (
+    AppContainer,
+    create_app_container,
+    start_services,
+    stop_services,
+    submit_reindex,
+)
 from episodic.config import EpisodicConfig
+from episodic.domain.captures import JobState
+from episodic.domain.watch import ActivityLevel, InboxFileState
 from episodic.domain.times import Interval, TimeSpec
 from episodic.domain.retrieval import HybridSearchFilters
 from episodic.domain.types import (
+    EvidenceMediaType,
     EvidenceState,
     ProvenanceKind,
     SearchIntent,
@@ -27,34 +56,76 @@ from episodic.domain.types import (
 )
 from episodic.interfaces.http.schemas import (
     AnnotationCreateRequest,
+    AskRequest,
     HealthResponse,
     HybridQueryRunResponse,
     IndexingSummaryResponse,
+    PassageSearchRequest,
     ProjectComponentStatus,
     ProjectStatusResponse,
     QueryRunResponse,
     QueryResultDTO,
     RebuildIndexResponse,
     SearchRequest,
+    SummaryRegenerateRequest,
 )
 from episodic.tools.contracts import MemoryToolOutput, ToolDescriptor
 
 logger = logging.getLogger("episodic.http")
 
 
+@lru_cache(maxsize=1024)
+def _thumbnail(path: str, mtime_ns: int, max_side: int) -> bytes:
+    """Miniatura JPEG de un fotograma clave (cacheada por ruta, fecha y tamaño)."""
+    import io
+
+    from PIL import Image
+
+    with Image.open(path) as image:
+        image = image.convert("RGB")
+        image.thumbnail((max_side, max_side))
+        buffer = io.BytesIO()
+        image.save(buffer, "JPEG", quality=72)
+    return buffer.getvalue()
+
+
 def create_api_app(
     config: Optional[EpisodicConfig] = None,
     container: Optional[AppContainer] = None,
     use_fake_encoders: bool = False,
+    start_watcher: bool = True,
+    manage_services: bool = True,
+    serve_web: bool = True,
 ) -> FastAPI:
-    """Crea y configura la aplicación FastAPI con todas las rutas episódicas."""
+    """Crea y configura la aplicación FastAPI con todas las rutas episódicas.
+
+    Si el contenedor trae vigilante (``EPIGRAPH_WATCH_CONFIG``) y
+    ``start_watcher`` es cierto, las carpetas se vigilan mientras el servidor
+    está en marcha. Dentro de la app de proyectos (``projects.py``) cada
+    proyecto tiene una de estas apps sin servicios propios ni web
+    (``manage_services`` y ``serve_web`` falsos): los arranca el gestor.
+    """
     if container is None:
         container = create_app_container(config, use_fake_encoders=use_fake_encoders)
+
+    job_runner = getattr(container, "job_runner", None)
+    watcher = getattr(container, "watcher", None)
+
+    @asynccontextmanager
+    async def lifespan(_app: FastAPI):
+        if manage_services:
+            start_services(container, start_watcher)
+        try:
+            yield
+        finally:
+            if manage_services:
+                stop_services(container)
 
     app = FastAPI(
         title="Memory Episodic API",
         version="0.1.0",
         description="Sistema de memoria episódica multimodal, auditable y basada en evidencia.",
+        lifespan=lifespan,
     )
 
     # CORS para facilitar desarrollo y frontend local
@@ -83,6 +154,23 @@ def create_api_app(
         except Exception:
             logger.debug("No se pudo resolver la colección física activa", exc_info=True)
         return str(collection_name)
+
+    def image_evidence_path(evidence_id: Optional[str]) -> Optional[str]:
+        """Resuelve una evidencia de imagen vigente; nunca acepta rutas del cliente."""
+        if not evidence_id:
+            return None
+        evidence = container.repository.get_evidence(evidence_id)
+        if evidence is None or evidence.state == EvidenceState.DELETED or not evidence.internal_uri:
+            raise HTTPException(status_code=404, detail="Evidencia de imagen no encontrada")
+        if evidence.media_type != EvidenceMediaType.IMAGE:
+            raise HTTPException(status_code=422, detail="La evidencia de consulta debe ser una imagen")
+        try:
+            path = container.evidence_store.resolve_path(evidence.internal_uri)
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail="Evidencia de imagen no encontrada") from exc
+        if not path.is_file():
+            raise HTTPException(status_code=404, detail="Archivo de evidencia no disponible")
+        return str(path)
 
     def query_run_response(run) -> QueryRunResponse:
         results_dto = []
@@ -170,7 +258,7 @@ def create_api_app(
         project_root = Path(__file__).resolve().parents[3]
         episodic_present = (project_root / "episodic" / "bootstrap.py").is_file()
         legacy_rag_present = all(
-            (project_root / path).is_file()
+            (project_root / "legacy" / "rag" / path).is_file()
             for path in ("agent/rag_agent.py", "api/server.py", "storage/qdrant_store.py")
         )
         integrated_robot_present = (project_root / "robot" / "robot.py").is_file()
@@ -196,7 +284,7 @@ def create_api_app(
                 state="isolated" if legacy_rag_present else "missing",
                 present=legacy_rag_present,
                 integrated=False,
-                detail="Código conservado, todavía aislado del contrato de memoria episódica.",
+                detail="Código conservado en legacy/rag, aislado del contrato de memoria episódica.",
             ),
             ProjectComponentStatus(
                 id="robot",
@@ -299,6 +387,259 @@ def create_api_app(
             if temporary_path is not None:
                 temporary_path.unlink(missing_ok=True)
 
+    # -----------------------------------------------------------------------
+    # Capturas (una subida conjunta = un episodio) y trabajos asíncronos
+    # -----------------------------------------------------------------------
+
+    def job_response(job) -> Dict[str, Any]:
+        return {**job.to_dict(), "progress": job.progress}
+
+    def capture_response(capture) -> Dict[str, Any]:
+        jobs = container.repository.list_jobs(target_id=capture.id)
+        assets = [
+            asset
+            for asset_id in capture.asset_ids
+            if (asset := container.repository.get_asset(asset_id)) is not None
+        ]
+        return {
+            **capture.to_dict(),
+            "assets": [
+                {
+                    "id": asset.id,
+                    "original_filename": asset.original_filename,
+                    "media_type": asset.media_type.value,
+                    "mime_type": asset.mime_type,
+                    "source_id": asset.source_id,
+                    "duration_seconds": asset.duration_seconds,
+                }
+                for asset in assets
+            ],
+            "job": job_response(jobs[-1]) if jobs else None,
+        }
+
+    @app.post("/api/captures", status_code=202)
+    def create_capture(
+        files: List[UploadFile] = File(...),
+        environment_id: str = Form(...),
+        title: Optional[str] = Form(None),
+        captured_at: Optional[datetime] = Form(None),
+        window_duration_seconds: float = Form(60.0, gt=0),
+        overlap_seconds: float = Form(5.0, ge=0),
+        audio_offset_seconds: float = Form(0.0),
+    ):
+        if job_runner is None:
+            raise HTTPException(status_code=503, detail="Cola de trabajos no disponible")
+        if not environment_id.strip():
+            raise HTTPException(status_code=422, detail="environment_id es obligatorio")
+        incoming_dir = container.config.data_path / ".incoming"
+        incoming_dir.mkdir(parents=True, exist_ok=True)
+        temporary_paths: List[Path] = []
+        try:
+            capture_files: List[CaptureFile] = []
+            for upload in files:
+                original_name = Path(upload.filename or "archivo.bin").name
+                with tempfile.NamedTemporaryFile(
+                    dir=incoming_dir, suffix=Path(original_name).suffix, delete=False
+                ) as temporary:
+                    shutil.copyfileobj(upload.file, temporary)
+                    temporary_paths.append(Path(temporary.name))
+                capture_files.append(CaptureFile(temporary_paths[-1], original_name))
+            capture = container.capture_service.register(
+                capture_files,
+                environment_id=environment_id,
+                title=title,
+                captured_at=captured_at,
+                window_duration_seconds=window_duration_seconds,
+                overlap_seconds=overlap_seconds,
+                audio_offset_seconds=audio_offset_seconds,
+                origin={"kind": "upload"},
+            )
+        except CaptureConflictError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        finally:
+            for upload in files:
+                upload.file.close()
+            for path in temporary_paths:
+                path.unlink(missing_ok=True)
+        job_runner.submit(CAPTURE_JOB_KIND, capture.id, CAPTURE_STAGES)
+        return capture_response(capture)
+
+    @app.get("/api/captures")
+    def list_captures(
+        environment_id: Optional[str] = None,
+        limit: int = Query(50, ge=1, le=200),
+    ):
+        return {
+            "captures": [
+                capture_response(item)
+                for item in container.repository.list_captures(environment_id, limit)
+            ]
+        }
+
+    @app.get("/api/captures/{capture_id}")
+    def get_capture(capture_id: str):
+        capture = container.repository.get_capture(capture_id)
+        if capture is None:
+            raise HTTPException(status_code=404, detail="Captura no encontrada")
+        return capture_response(capture)
+
+    @app.get("/api/jobs")
+    def list_jobs(limit: int = Query(30, ge=1, le=200)):
+        """Trabajos recientes con la captura a la que pertenecen."""
+        jobs = []
+        for job in container.repository.list_recent_jobs(limit):
+            capture = container.repository.get_capture(job.target_id)
+            jobs.append(
+                {
+                    **job_response(job),
+                    "title": capture.title
+                    if capture
+                    else "Reindexado de la memoria"
+                    if job.job_type == REINDEX_JOB_KIND
+                    else job.target_id,
+                    "capture": {
+                        "id": capture.id,
+                        "title": capture.title,
+                        "environment_id": capture.environment_id,
+                        "status": capture.status.value,
+                        "episode_id": capture.episode_id,
+                        "asset_count": len(capture.asset_ids),
+                        "origin": capture.metadata.get("origin", {}),
+                    }
+                    if capture
+                    else None,
+                }
+            )
+        active = container.repository.list_jobs(states=[JobState.QUEUED, JobState.RUNNING])
+        return {"jobs": jobs, "active_count": len(active)}
+
+    @app.get("/api/jobs/{job_id}")
+    def get_job(job_id: str):
+        job = container.repository.get_job(job_id)
+        if job is None:
+            raise HTTPException(status_code=404, detail="Trabajo no encontrado")
+        return job_response(job)
+
+    # -----------------------------------------------------------------------
+    # Entrada automática (carpetas vigiladas) y registro de ejecución
+    # -----------------------------------------------------------------------
+
+    @app.get("/api/watch")
+    def watch_status():
+        lease = container.repository.get_lease(LEASE_NAME)
+        holder = None
+        if lease is not None:
+            owner, expires_at = lease
+            holder = {
+                "owner": owner,
+                "expires_at": datetime.fromtimestamp(expires_at).astimezone().isoformat(),
+                "active": expires_at > time.time(),
+                "this_process": watcher is not None and owner == watcher.owner,
+            }
+        if watcher is None:
+            return {
+                "configured": False,
+                "config_path": None,
+                "lease": holder,
+                "sources": [],
+            }
+        runtime = watcher.status()
+        return {
+            "configured": True,
+            "config_path": str(watcher.settings.config_path or ""),
+            "interval_seconds": watcher.settings.interval_seconds,
+            "settle_seconds": watcher.settings.settle_seconds,
+            "running": runtime["running"],
+            "has_lease": runtime["has_lease"],
+            "last_scan_at": runtime["last_scan_at"],
+            "last_error": runtime["last_error"],
+            "pass_count": runtime["pass_count"],
+            "lease": holder,
+            "sources": [
+                {
+                    **source.to_dict(),
+                    **runtime["sources"].get(source.name, {}),
+                    "counts": container.repository.count_inbox_files(source.name),
+                }
+                for source in watcher.settings.sources
+            ],
+        }
+
+    @app.post("/api/watch/scan", status_code=202)
+    def watch_scan_now():
+        if watcher is None or not watcher.running:
+            raise HTTPException(status_code=409, detail="La vigilancia no está en marcha en este servidor")
+        watcher.request_scan()
+        return {"requested": True}
+
+    @app.get("/api/watch/files")
+    def watch_files(
+        source: Optional[str] = None,
+        state: Optional[List[InboxFileState]] = Query(None),
+        limit: int = Query(200, ge=1, le=1000),
+    ):
+        files = container.repository.list_inbox_files(source, state, limit)
+        return {"files": [item.to_dict() for item in files]}
+
+    @app.post("/api/watch/retry")
+    def watch_retry(source: str = Form(...), group_key: str = Form(...)):
+        reset = retry_failed_group(
+            container.repository, container.activity_log, source, group_key
+        )
+        if not reset:
+            raise HTTPException(status_code=404, detail="No hay ficheros fallidos en ese grupo")
+        if watcher is not None and watcher.running:
+            watcher.request_scan()
+        return {"reset": reset}
+
+    @app.post("/api/watch/manifest")
+    def watch_manifest(
+        source: str = Form(...), group_key: str = Form(...), write: bool = Form(False)
+    ):
+        """Propone (o escribe, con ``write``) el manifiesto de una carpeta que
+        espera el suyo: para cargas manuales sin la herramienta de captura."""
+        if watcher is None:
+            raise HTTPException(status_code=404, detail="Este servidor no tiene vigilancia configurada")
+        selected = next((item for item in watcher.settings.sources if item.name == source), None)
+        if selected is None:
+            raise HTTPException(status_code=404, detail=f"Fuente desconocida: {source}")
+        try:
+            target, manifest = draft_group_manifest(container.repository, selected, group_key)
+        except LookupError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except FileExistsError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        if write:
+            write_manifest(target, manifest)
+            container.activity_log.info(
+                WATCH_COMPONENT,
+                f"Manifiesto creado a mano para {target.parent.name}: "
+                f"{len(manifest['devices'])} dispositivo(s) deducidos del nombre y de los ficheros",
+                source_name=source,
+                path=target.parent.name,
+                data={"manifest": manifest},
+            )
+            if watcher.running:
+                watcher.request_scan()
+        return {"path": str(target), "manifest": manifest, "written": write}
+
+    @app.get("/api/activity")
+    def list_activity(
+        after_id: int = Query(0, ge=0),
+        limit: int = Query(200, ge=1, le=1000),
+        component: Optional[str] = None,
+        level: Optional[List[ActivityLevel]] = Query(None),
+    ):
+        entries = container.repository.list_activity(after_id, limit, component, level)
+        return {
+            "entries": [entry.to_dict() for entry in entries],
+            "last_id": entries[-1].id if entries else after_id,
+        }
+
     @app.get("/api/memory/assets")
     def list_memory_assets(environment_id: Optional[str] = None):
         return {"assets": container.inspection_service.list_assets(environment_id)}
@@ -324,12 +665,69 @@ def create_api_app(
             filename=asset.original_filename or path.name,
         )
 
+    @app.get("/api/memory/events/{event_id}/keyframes/{index}")
+    def get_event_keyframe(event_id: str, index: int, max_side: Optional[int] = Query(None, ge=32, le=1024)):
+        event = container.repository.get_event(event_id)
+        if event is None or not 0 <= index < len(event.keyframes):
+            raise HTTPException(status_code=404, detail="Fotograma clave no encontrado")
+        try:
+            path = container.evidence_store.resolve_path(event.keyframes[index]["internal_uri"])
+        except (KeyError, ValueError) as exc:
+            raise HTTPException(status_code=404, detail="Fotograma clave no encontrado") from exc
+        if not path.is_file():
+            raise HTTPException(status_code=404, detail="Fotograma clave no disponible")
+        cache = {"Cache-Control": "private, max-age=86400"}
+        if max_side:
+            # Miniatura para las tiras de fotogramas de la línea temporal.
+            return Response(_thumbnail(str(path), path.stat().st_mtime_ns, max_side), media_type="image/jpeg", headers=cache)
+        return FileResponse(path, media_type="image/jpeg", headers=cache)
+
     @app.get("/api/memory/episodes/{episode_id}")
     def inspect_memory_episode(episode_id: str):
         try:
             return container.inspection_service.episode_detail(episode_id)
         except ValueError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    # -----------------------------------------------------------------------
+    # Línea temporal a escala (Fase T): el servidor solo devuelve lo que cabe
+    # en pantalla (densidad por cubos o elementos de la ventana visible).
+    # -----------------------------------------------------------------------
+
+    def _timeline_service():
+        service = getattr(container, "timeline", None)
+        if service is None:
+            raise HTTPException(status_code=503, detail="Línea temporal no disponible")
+        return service
+
+    @app.get("/api/timeline/span")
+    def timeline_span():
+        return _timeline_service().span()
+
+    @app.get("/api/timeline/density")
+    def timeline_density(
+        start: datetime,
+        end: datetime,
+        bucket: str = Query("auto", pattern="^(auto|minute|hour|day)$"),
+        environment_id: Optional[List[str]] = Query(None),
+        by_source: bool = False,
+    ):
+        try:
+            return _timeline_service().density(start, end, bucket, environment_id, by_source)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    @app.get("/api/timeline/items")
+    def timeline_items(
+        start: datetime,
+        end: datetime,
+        environment_id: Optional[List[str]] = Query(None),
+        limit: int = Query(1500, ge=1, le=5000),
+    ):
+        try:
+            return _timeline_service().items(start, end, environment_id, limit)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
 
     @app.get("/api/memory/timeline")
     def inspect_memory_timeline(
@@ -371,12 +769,110 @@ def create_api_app(
             total += processed
         return {"status": "success", "indexed_count": total, "total_points": container.vector_index.count()}
 
+    @app.get("/api/index/status")
+    def index_status():
+        """Si el índice está al día, por qué no, y el reindexado en curso."""
+        maintenance = container.index_maintenance
+        job = maintenance.active_job()
+        return {**maintenance.status().to_dict(), "job": job_response(job) if job else None}
+
+    @app.post("/api/index/reindex", status_code=202)
+    def reindex():
+        """Encola una reconstrucción completa; si ya hay una, devuelve esa."""
+        job = container.index_maintenance.active_job() or submit_reindex(container, TRIGGER_MANUAL)
+        return job_response(job)
+
+    # -----------------------------------------------------------------------
+    # Agente de consulta: pregunta → herramientas → respuesta con citas
+    # -----------------------------------------------------------------------
+
+    @app.post("/api/ask")
+    def ask(req: AskRequest):
+        agent = getattr(container, "answers", None)
+        network = getattr(container, "network", None)
+        if agent is None or not agent.enabled:
+            raise HTTPException(status_code=503, detail="No hay modelo de razonamiento configurado (EPIGRAPH_AGENT_BACKEND)")
+        try:
+            if network is not None:
+                run = network.ask(req.question, mode=req.mode or container.config.agent_mode, run_id=req.run_id)
+            else:
+                run = agent.ask(req.question, run_id=req.run_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        return run.to_dict()
+
+    @app.get("/api/ask/status")
+    def ask_status():
+        agent = getattr(container, "answers", None)
+        return {
+            "enabled": bool(agent and agent.enabled),
+            "model": agent.model.model_id if agent and agent.model else None,
+            "tools": list(agent.tool_names) if agent else [],
+            "max_steps": agent.max_steps if agent else None,
+            "mode": container.config.agent_mode,
+            "network": container.network.describe() if getattr(container, "network", None) else None,
+        }
+
+    @app.get("/api/answers")
+    def list_answers(limit: int = Query(20, ge=1, le=200)):
+        return {"answers": [item.to_dict() for item in container.repository.list_answer_runs(limit)]}
+
+    @app.get("/api/answers/{run_id}")
+    def get_answer(run_id: str):
+        run = container.repository.get_answer_run(run_id)
+        if run is None:
+            raise HTTPException(status_code=404, detail=f"Respuesta no encontrada: {run_id}")
+        return run.to_dict()
+
+    # -----------------------------------------------------------------------
+    # Resúmenes jerárquicos (texto generado, con revisiones)
+    # -----------------------------------------------------------------------
+
+    @app.get("/api/summaries")
+    def get_summaries(scope: str, key: Optional[str] = None, environment_id: Optional[str] = None):
+        """``scope``=episode|day|environment. Con ``key``: el vigente y sus
+        revisiones; sin ella: los vigentes del ámbito (``environment_id``
+        acota los días de un entorno)."""
+        if scope not in {"episode", "day", "environment"}:
+            raise HTTPException(status_code=422, detail="scope debe ser episode, day o environment")
+        repo = container.repository
+        service = getattr(container, "summaries", None)
+        if key:
+            current = repo.get_current_summary(scope, key)
+            revisions = repo.list_summary_revisions(scope, key)
+            return {
+                "scope": scope,
+                "key": key,
+                "enabled": bool(service and service.enabled),
+                "current": current.to_dict() if current else None,
+                "revisions": [item.to_dict() for item in revisions],
+            }
+        prefix = f"{environment_id}|" if scope == "day" and environment_id else None
+        items = repo.list_current_summaries(scope, prefix=prefix)
+        return {"scope": scope, "enabled": bool(service and service.enabled), "items": [item.to_dict() for item in items]}
+
+    @app.post("/api/summaries/regenerate", status_code=202)
+    def regenerate_summary(req: SummaryRegenerateRequest):
+        """Encola la redacción de una revisión nueva; se ve en Vigilancia."""
+        service = getattr(container, "summaries", None)
+        if service is None or not service.enabled:
+            raise HTTPException(status_code=503, detail="No hay modelo de texto configurado (EPIGRAPH_TEXT_BACKEND)")
+        if req.scope == "episode" and container.repository.get_episode(req.key) is None:
+            raise HTTPException(status_code=404, detail=f"Episodio no encontrado: {req.key}")
+        job = container.job_runner.submit(SUMMARY_JOB_KIND, f"{req.scope}|{req.key}", SUMMARY_STAGES)
+        return job_response(job)
+
     @app.post("/api/rebuild-index", response_model=RebuildIndexResponse)
     def rebuild_index():
         try:
             previous_generation = active_vector_generation()
             previous_points = container.vector_index.count()
-            total = container.lifecycle_service.rebuild_index(container.indexing_worker)
+            maintenance = getattr(container, "index_maintenance", None)
+            total = (
+                maintenance.rebuild()
+                if maintenance is not None
+                else container.lifecycle_service.rebuild_index(container.indexing_worker)
+            )
             active_points = container.vector_index.count()
             return RebuildIndexResponse(
                 vector_backend=container.config.vector_backend,
@@ -414,7 +910,7 @@ def create_api_app(
 
         run = container.retrieval_service.search(
             text_query=req.text_query,
-            image_query_path=req.image_query_path,
+            image_query_path=image_evidence_path(req.image_evidence_id),
             intent=intent,
             source_filter=req.source_filter,
             interval_filter=interval_filter,
@@ -508,6 +1004,47 @@ def create_api_app(
             ],
         )
 
+    @app.get("/api/passage-search/settings")
+    def passage_search_settings():
+        service = getattr(container, "passage_search", None)
+        if service is None:
+            raise HTTPException(status_code=503, detail="La búsqueda por pasajes no está configurada")
+        return service.settings()
+
+    @app.post("/api/passage-search")
+    def passage_search(req: PassageSearchRequest):
+        service = getattr(container, "passage_search", None)
+        if service is None:
+            raise HTTPException(status_code=503, detail="La búsqueda por pasajes no está configurada")
+        interval = None
+        if req.start_time and req.end_time:
+            interval = Interval(
+                start=TimeSpec.from_utc(req.start_time, clock_source="api_query"),
+                end=TimeSpec.from_utc(req.end_time, clock_source="api_query"),
+            )
+        try:
+            run = service.search(
+                req.text_query,
+                HybridSearchFilters(
+                    environment_ids=tuple(req.environment_filter or []),
+                    source_ids=tuple(req.source_filter or []),
+                    modalities=tuple(req.modality_filter or []),
+                    observation_types=tuple(req.observation_type_filter or []),
+                    interval=interval,
+                ),
+                max_episodes=req.max_episodes,
+                per_episode=req.per_episode,
+                rerank=req.rerank,
+                # Un null explícito quita el umbral; omitirlo usa el configurado.
+                min_score=req.rerank_min_score if "rerank_min_score" in req.model_fields_set else DEFAULT,
+                agreement_rank=req.agreement_rank,
+                neighbors=req.neighbors,
+                include_summaries=req.include_summaries,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        return run.to_dict()
+
     # -----------------------------------------------------------------------
     # Herramientas deterministas de memoria (Fase 8)
     # -----------------------------------------------------------------------
@@ -523,7 +1060,10 @@ def create_api_app(
         except KeyError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         except ValidationError as exc:
-            raise HTTPException(status_code=422, detail=exc.errors()) from exc
+            # Sin ctx ni url: el contexto puede llevar excepciones no serializables.
+            raise HTTPException(
+                status_code=422, detail=exc.errors(include_url=False, include_context=False, include_input=False)
+            ) from exc
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -636,16 +1176,14 @@ def create_api_app(
         if not ev.internal_uri:
             raise HTTPException(status_code=404, detail="La evidencia no tiene archivo asociado")
 
-        file_path = container.evidence_store.resolve_path(ev.internal_uri)
-        if not file_path.exists():
+        try:
+            file_path = container.evidence_store.resolve_path(ev.internal_uri)
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail="Archivo físico de evidencia no encontrado") from exc
+        if not file_path.is_file():
             raise HTTPException(status_code=404, detail="Archivo físico de evidencia no encontrado")
 
-        media_type = "image/png"
-        if file_path.suffix.lower() in [".jpg", ".jpeg"]:
-            media_type = "image/jpeg"
-        elif file_path.suffix.lower() == ".txt":
-            media_type = "text/plain"
-
+        media_type = mimetypes.guess_type(file_path.name)[0] or "application/octet-stream"
         return FileResponse(file_path, media_type=media_type)
 
     # -----------------------------------------------------------------------
@@ -653,7 +1191,7 @@ def create_api_app(
     # -----------------------------------------------------------------------
 
     web_dir = Path(__file__).parent.parent / "web"
-    if web_dir.exists():
+    if serve_web and web_dir.exists():
         app.mount("/static", StaticFiles(directory=str(web_dir)), name="web_static")
 
         @app.get("/")

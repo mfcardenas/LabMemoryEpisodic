@@ -28,7 +28,7 @@ def test_failed_rebuild_preserves_previous_index(tmp_path: Path) -> None:
             pass
 
         points_before = container.vector_index.count()
-        assert points_before == 20
+        assert points_before == 35  # 20 + 15 pasajes
         aliases_before = {
             alias.alias_name: alias.collection_name
             for alias in container.vector_index.client.get_aliases().aliases
@@ -82,10 +82,10 @@ def test_successful_rebuild_switches_verified_generation(tmp_path: Path) -> None
             collection.name
             for collection in container.vector_index.client.get_collections().collections
         }
-        assert rebuilt == 20
+        assert rebuilt == 30  # 20 representaciones + 10 conjuntos de pasajes
         assert active_after != active_before
         assert active_after in collections
         assert active_before not in collections
-        assert container.vector_index.count() == 20
+        assert container.vector_index.count() == 35
     finally:
         container.close()

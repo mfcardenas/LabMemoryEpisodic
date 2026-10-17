@@ -44,7 +44,7 @@ def test_managed_asset_reaches_episode_timeline_and_qdrant(tmp_path) -> None:
             assert workflow["observation_ids"]
             assert workflow["microepisode_ids"]
             assert workflow["episode_ids"]
-            assert workflow["indexed_points"] == 1
+            assert workflow["indexed_points"] == 2  # el episodio y su pasaje
 
             asset_id = workflow["asset_id"]
             asset_view = client.get(f"/api/memory/assets/{asset_id}")

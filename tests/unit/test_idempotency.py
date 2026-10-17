@@ -64,3 +64,47 @@ def test_import_twice_does_not_duplicate(services, tmp_path: Path):
     episodes, _ = repo.list_episodes()
     assert len(episodes) == 1
     assert episodes[0].external_id == "GATE-001"
+
+
+def _manifest_with_file(file_path: str) -> dict:
+    return {
+        "sources": [{"id": "cam-x", "name": "Cámara X", "source_type": "camera"}],
+        "sessions": [{"id": "sess-x", "source_id": "cam-x"}],
+        "episodes": [
+            {
+                "external_id": "X-001",
+                "title": "Episodio con archivo",
+                "source_ids": ["cam-x"],
+                "evidence": [
+                    {"session_id": "sess-x", "external_capture_id": "cap-x", "file_path": file_path}
+                ],
+            }
+        ],
+    }
+
+
+def test_manifest_rejects_missing_or_escaping_files(services, tmp_path: Path):
+    repo, _store, ingest_svc = services
+    base = tmp_path / "manifest_root"
+    base.mkdir()
+    (tmp_path / "secret.txt").write_text("fuera del manifiesto", encoding="utf-8")
+
+    for bad_path in ("no_existe.png", "../secret.txt"):
+        with pytest.raises(ValueError):
+            ingest_svc.ingest_manifest(_manifest_with_file(bad_path), base_dir=base)
+
+    # Un manifiesto en memoria sin raíz no resuelve rutas contra el cwd.
+    with pytest.raises(ValueError):
+        ingest_svc.ingest_manifest(_manifest_with_file("secret.txt"))
+
+    episodes, _ = repo.list_episodes()
+    assert episodes == []
+
+
+def test_manifest_stores_existing_file_inside_root(services, tmp_path: Path):
+    repo, _store, ingest_svc = services
+    (tmp_path / "frame.png").write_bytes(b"png bytes")
+
+    stats = ingest_svc.ingest_manifest(_manifest_with_file("frame.png"), base_dir=tmp_path)
+
+    assert stats["evidence"] == 1

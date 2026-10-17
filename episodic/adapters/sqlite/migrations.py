@@ -430,12 +430,239 @@ UPDATE relations SET
     payload_json = json_set(payload_json, '$.relation_type', upper(relation_type));
 """
 
+MIGRATION_V6 = """
+-- Capturas subidas en conjunto (una captura = un episodio) y cola durable.
+CREATE TABLE captures (
+    id TEXT PRIMARY KEY,
+    environment_id TEXT NOT NULL REFERENCES environments(id) ON DELETE RESTRICT,
+    title TEXT NOT NULL,
+    status TEXT NOT NULL,
+    episode_id TEXT,
+    created_at TEXT NOT NULL,
+    payload_json TEXT NOT NULL
+);
+CREATE INDEX idx_captures_environment ON captures(environment_id, created_at);
+
+CREATE TABLE jobs (
+    id TEXT PRIMARY KEY,
+    kind TEXT NOT NULL,
+    target_id TEXT NOT NULL,
+    state TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    payload_json TEXT NOT NULL
+);
+CREATE INDEX idx_jobs_state ON jobs(state, created_at);
+CREATE INDEX idx_jobs_target ON jobs(target_id, created_at);
+"""
+
+MIGRATION_V7 = """
+-- Entrada automática: ficheros de las carpetas vigiladas, registro de
+-- ejecución visible en el front y concesión del vigilante entre procesos.
+CREATE TABLE inbox_files (
+    id TEXT PRIMARY KEY,
+    source_name TEXT NOT NULL,
+    rel_path TEXT NOT NULL,
+    group_key TEXT NOT NULL DEFAULT '',
+    state TEXT NOT NULL,
+    capture_id TEXT,
+    archived INTEGER NOT NULL DEFAULT 0,
+    updated_at TEXT NOT NULL,
+    payload_json TEXT NOT NULL
+);
+CREATE INDEX idx_inbox_files_live ON inbox_files(source_name, archived, rel_path);
+CREATE INDEX idx_inbox_files_group ON inbox_files(source_name, group_key);
+CREATE INDEX idx_inbox_files_updated ON inbox_files(updated_at);
+
+CREATE TABLE activity_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    at TEXT NOT NULL,
+    level TEXT NOT NULL,
+    component TEXT NOT NULL,
+    job_id TEXT,
+    capture_id TEXT,
+    payload_json TEXT NOT NULL
+);
+CREATE INDEX idx_activity_component ON activity_log(component, id);
+
+CREATE TABLE leases (
+    name TEXT PRIMARY KEY,
+    owner TEXT NOT NULL,
+    expires_at REAL NOT NULL
+);
+"""
+
+MIGRATION_V9 = """
+-- Estado del sistema que no es dominio: p. ej. la huella con la que se
+-- indexó (modelos, prefijos, formato), para reindexar solo si cambia.
+CREATE TABLE system_state (
+    name TEXT PRIMARY KEY,
+    value_json TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+"""
+
+MIGRATION_V8 = """
+-- Búsqueda por pasajes: índice de texto completo (BM25) de cada observación
+-- con contenido propio. Es una proyección, como Qdrant: la escribe la
+-- indexación y se puede reconstruir desde las observaciones.
+CREATE VIRTUAL TABLE passage_index USING fts5(
+    text,
+    title,
+    observation_id UNINDEXED,
+    episode_id UNINDEXED,
+    observation_type UNINDEXED,
+    tokenize = 'unicode61 remove_diacritics 2'
+);
+"""
+
+MIGRATION_V10 = """
+-- El evento como unidad de consulta: columnas propias (episodio, activo,
+-- orden, posición, título, revisión) rellenadas desde el payload existente.
+-- El episodio se deduce de la observación de la que nació el evento.
+ALTER TABLE events ADD COLUMN episode_id TEXT REFERENCES episodes(id) ON DELETE SET NULL;
+ALTER TABLE events ADD COLUMN asset_id TEXT;
+ALTER TABLE events ADD COLUMN sequence_number INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE events ADD COLUMN start_offset_seconds REAL;
+ALTER TABLE events ADD COLUMN end_offset_seconds REAL;
+ALTER TABLE events ADD COLUMN title TEXT NOT NULL DEFAULT '';
+ALTER TABLE events ADD COLUMN revision INTEGER NOT NULL DEFAULT 1;
+UPDATE events SET
+    asset_id = json_extract(payload_json, '$.asset_id'),
+    sequence_number = coalesce(json_extract(payload_json, '$.sequence_number'), 0),
+    start_offset_seconds = json_extract(payload_json, '$.start_offset_seconds'),
+    end_offset_seconds = json_extract(payload_json, '$.end_offset_seconds'),
+    title = coalesce(json_extract(payload_json, '$.title'), ''),
+    revision = coalesce(json_extract(payload_json, '$.revision'), 1),
+    episode_id = (
+        SELECT o.episode_id FROM observations o
+        WHERE o.id = json_extract(events.payload_json, '$.metadata.observation_ids[0]')
+    );
+UPDATE events SET payload_json = json_set(payload_json, '$.episode_id', episode_id)
+WHERE episode_id IS NOT NULL;
+CREATE INDEX idx_events_episode ON events(episode_id, sequence_number);
+CREATE INDEX idx_events_asset ON events(asset_id, start_offset_seconds);
+
+-- Pasajes como tabla propia: lo que se indexa y lo que se muestra, con sus
+-- filtros en columnas; el índice de texto completo es de contenido externo
+-- sobre ella y se mantiene con disparadores. Sigue siendo una proyección:
+-- la escribe la indexación y se reconstruye desde eventos y observaciones.
+DROP TABLE passage_index;
+CREATE TABLE passages (
+    pid INTEGER PRIMARY KEY,
+    id TEXT NOT NULL UNIQUE,
+    kind TEXT NOT NULL,
+    episode_id TEXT NOT NULL,
+    environment_id TEXT,
+    source_id TEXT,
+    modality TEXT,
+    asset_id TEXT,
+    start_time TEXT,
+    end_time TEXT,
+    start_ms INTEGER,
+    end_ms INTEGER,
+    start_offset_seconds REAL,
+    end_offset_seconds REAL,
+    page_number INTEGER,
+    sequence_number INTEGER,
+    event_id TEXT,
+    observation_id TEXT,
+    title TEXT NOT NULL DEFAULT '',
+    text TEXT NOT NULL,
+    model TEXT,
+    keyframes INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX idx_passages_episode ON passages(episode_id);
+CREATE INDEX idx_passages_env_time ON passages(environment_id, start_ms);
+CREATE VIRTUAL TABLE passage_index USING fts5(
+    text,
+    title,
+    content = 'passages',
+    content_rowid = 'pid',
+    tokenize = 'unicode61 remove_diacritics 2'
+);
+CREATE TRIGGER passages_ai AFTER INSERT ON passages BEGIN
+    INSERT INTO passage_index(rowid, text, title) VALUES (new.pid, new.text, new.title);
+END;
+CREATE TRIGGER passages_ad AFTER DELETE ON passages BEGIN
+    INSERT INTO passage_index(passage_index, rowid, text, title)
+    VALUES ('delete', old.pid, old.text, old.title);
+END;
+CREATE TRIGGER passages_au AFTER UPDATE ON passages BEGIN
+    INSERT INTO passage_index(passage_index, rowid, text, title)
+    VALUES ('delete', old.pid, old.text, old.title);
+    INSERT INTO passage_index(rowid, text, title) VALUES (new.pid, new.text, new.title);
+END;
+"""
+
+MIGRATION_V11 = """
+-- Resúmenes jerárquicos generados por el modelo de texto (episodio, día,
+-- entorno), con revisiones: regenerar añade una fila y la anterior deja de
+-- ser la vigente. Nunca se borran.
+CREATE TABLE summaries (
+    id TEXT PRIMARY KEY,
+    scope TEXT NOT NULL,
+    scope_key TEXT NOT NULL,
+    revision INTEGER NOT NULL,
+    is_current INTEGER NOT NULL DEFAULT 1,
+    title TEXT NOT NULL DEFAULT '',
+    summary TEXT NOT NULL DEFAULT '',
+    narrative TEXT NOT NULL DEFAULT '',
+    highlights_json TEXT NOT NULL DEFAULT '[]',
+    open_questions_json TEXT NOT NULL DEFAULT '[]',
+    model_id TEXT NOT NULL,
+    prompt_version TEXT NOT NULL DEFAULT '',
+    input_hash TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL,
+    metadata_json TEXT NOT NULL DEFAULT '{}',
+    UNIQUE (scope, scope_key, revision)
+);
+CREATE INDEX idx_summaries_current ON summaries(scope, scope_key, is_current);
+"""
+
+MIGRATION_V12 = """
+-- Auditoría de las respuestas del agente: pregunta, pasos (herramientas y
+-- argumentos), citas verificadas, modelo, tokens y latencia.
+CREATE TABLE answer_runs (
+    id TEXT PRIMARY KEY,
+    question TEXT NOT NULL,
+    answer TEXT NOT NULL DEFAULT '',
+    confidence TEXT NOT NULL DEFAULT '',
+    abstained INTEGER NOT NULL DEFAULT 0,
+    citations_json TEXT NOT NULL DEFAULT '[]',
+    steps_json TEXT NOT NULL DEFAULT '[]',
+    model_id TEXT NOT NULL DEFAULT '',
+    usage_json TEXT NOT NULL DEFAULT '{}',
+    took_ms REAL NOT NULL DEFAULT 0,
+    error TEXT,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX idx_answer_runs_created ON answer_runs(created_at);
+"""
+
+MIGRATION_V13 = """
+-- Línea temporal a escala (Fase T): densidad y elementos en ventana por
+-- intervalo, con y sin filtro de ambiente, y habla/documentos por tiempo.
+-- Índices que cubren la densidad (sin leer la tabla) con y sin ambiente.
+CREATE INDEX idx_events_time_env ON events(start_time, environment_id, source_id);
+CREATE INDEX idx_events_env_time ON events(environment_id, start_time, source_id);
+CREATE INDEX idx_obs_type_time ON observations(observation_type, start_time);
+"""
+
 MIGRATIONS: List[Tuple[int, str]] = [
     (1, MIGRATION_V1),
     (2, MIGRATION_V2),
     (3, MIGRATION_V3),
     (4, MIGRATION_V4),
     (5, MIGRATION_V5),
+    (6, MIGRATION_V6),
+    (7, MIGRATION_V7),
+    (8, MIGRATION_V8),
+    (9, MIGRATION_V9),
+    (10, MIGRATION_V10),
+    (11, MIGRATION_V11),
+    (12, MIGRATION_V12),
+    (13, MIGRATION_V13),
 ]
 
 

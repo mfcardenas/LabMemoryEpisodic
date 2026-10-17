@@ -210,7 +210,8 @@ def test_dashboard_exposes_canonical_epigraph_workflow() -> None:
     javascript = Path("episodic/interfaces/web/app.js").read_text(encoding="utf-8")
 
     assert 'type="datetime-local"' in html
-    assert 'id="input-require-unique"' in html
+    assert 'id="input-rerank"' in html
+    assert 'id="input-min-score"' in html and 'id="input-agreement"' in html
     assert 'id="ingest-form"' in html
     assert 'id="episode-inspector"' in html
     assert 'id="memory-map"' in html
@@ -218,11 +219,32 @@ def test_dashboard_exposes_canonical_epigraph_workflow() -> None:
     assert "Asset \u2192 ProcessingWindow" not in html  # El front usa etiquetas en español.
     assert "Activo \u2192 ventanas \u2192 observaciones" in html
     assert "Atlas" not in html
-    assert 'api("/api/workflow/ingest-and-process"' in javascript
-    assert "require_unique_resolution:" in javascript
+    assert 'api("/api/captures", { method: "POST"' in javascript
+    assert "/api/jobs/" in javascript
+    assert 'name="files" type="file" required multiple' in html
+    assert 'api("/api/passage-search"' in javascript
     assert "/api/memory/episodes/" in javascript
     assert "/api/memory/timeline" in javascript
     assert "/api/memory/assets/" in javascript
     assert "Contenido extraído" in javascript
     assert "Archivos y fuentes" in javascript
     assert "Fuente simulada: no existe un fichero físico" in javascript
+
+
+def test_search_never_accepts_client_file_paths() -> None:
+    container = build_container()
+    container.repository.get_evidence = lambda _evidence_id: None
+    client = TestClient(create_api_app(container=container))
+
+    by_path = client.post(
+        "/api/search",
+        json={"text_query": "pasillo", "image_query_path": "C:/Windows/win.ini"},
+    )
+    unknown_evidence = client.post(
+        "/api/search",
+        json={"text_query": "pasillo", "image_evidence_id": "no-existe"},
+    )
+
+    assert by_path.status_code == 200
+    assert container.retrieval_service.last_kwargs["image_query_path"] is None
+    assert unknown_evidence.status_code == 404

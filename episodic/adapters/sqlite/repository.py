@@ -8,11 +8,16 @@ from __future__ import annotations
 import json
 import logging
 import sqlite3
+import threading
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
 
 from episodic.adapters.sqlite.migrations import apply_migrations, init_connection
+from episodic.adapters.sqlite.serialized import SerializedConnection
+from episodic.domain.answers import AnswerRun
+from episodic.domain.captures import Capture, Job, JobState
+from episodic.domain.watch import ActivityEntry, ActivityLevel, InboxFile, InboxFileState
 from episodic.domain.entities import (
     Annotation,
     CaptureSession,
@@ -26,7 +31,9 @@ from episodic.domain.entities import (
     Source,
 )
 from episodic.domain.episodes import MicroEpisode
+from episodic.domain.passages import Passage
 from episodic.domain.processing import Event, ProcessingRun, ProcessingWindow
+from episodic.domain.summaries import Summary
 from episodic.domain.provenance import Asset, Environment, EvidenceReference
 from episodic.domain.relations import Hypothesis, Relation
 from episodic.domain.times import Interval, TimeSpec, utc_now
@@ -54,6 +61,10 @@ def _to_json(val: Any) -> str:
     return json.dumps(val, ensure_ascii=False)
 
 
+def _epoch_ms(value: Optional[datetime]) -> Optional[int]:
+    return int(value.timestamp() * 1000) if value else None
+
+
 def _from_json(val: Optional[str], default: Any = None) -> Any:
     """Deserializa JSON string o devuelve el valor por defecto."""
     if not val:
@@ -79,14 +90,16 @@ class SqliteEpisodicRepository:
     def __init__(self, db_path: Union[str, Path]) -> None:
         self.db_path = Path(db_path)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        self._conn = sqlite3.connect(
+        raw = sqlite3.connect(
             str(self.db_path),
             check_same_thread=False,
             isolation_level=None,  # Autocommit por defecto para manejar BEGIN/COMMIT explícitos
         )
-        init_connection(self._conn)
-        apply_migrations(self._conn)
-        self._in_transaction = False
+        init_connection(raw)
+        apply_migrations(raw)
+        # Las rutas HTTP comparten esta conexión desde varios hilos.
+        self._conn = SerializedConnection(raw)
+        self._transaction_owner: int | None = None
 
     def close(self) -> None:
         if self._conn:
@@ -95,21 +108,43 @@ class SqliteEpisodicRepository:
     # -----------------------------------------------------------------------
     # Transacciones
     # -----------------------------------------------------------------------
+    # La transacción pertenece al hilo que la abre: mantiene el lock de la
+    # conexión hasta COMMIT/ROLLBACK, de modo que otro hilo no puede ni
+    # intercalar sentencias en ella ni confirmarla. Las llamadas anidadas del
+    # mismo hilo se unen a la transacción en curso, como antes.
+
+    @property
+    def _in_transaction(self) -> bool:
+        return self._transaction_owner == threading.get_ident()
 
     def begin_transaction(self) -> None:
-        if not self._in_transaction:
+        if self._in_transaction:
+            return
+        self._conn.lock.acquire()
+        try:
             self._conn.execute("BEGIN IMMEDIATE;")
-            self._in_transaction = True
+        except Exception:
+            self._conn.lock.release()
+            raise
+        self._transaction_owner = threading.get_ident()
 
     def commit_transaction(self) -> None:
-        if self._in_transaction:
+        if not self._in_transaction:
+            return
+        try:
             self._conn.execute("COMMIT;")
-            self._in_transaction = False
+        finally:
+            self._transaction_owner = None
+            self._conn.lock.release()
 
     def rollback_transaction(self) -> None:
-        if self._in_transaction:
+        if not self._in_transaction:
+            return
+        try:
             self._conn.execute("ROLLBACK;")
-            self._in_transaction = False
+        finally:
+            self._transaction_owner = None
+            self._conn.lock.release()
 
     def _require_existing(self, table: str, ids: List[str], field_name: str) -> None:
         """Valida referencias para tablas internas conocidas."""
@@ -668,6 +703,13 @@ class SqliteEpisodicRepository:
             conditions.append("created_at < ?")
             params.append(cursor)
 
+        if interval and interval.start and interval.start.absolute and interval.end and interval.end.absolute:
+            # Poda en SQL (idx_episodes_time); la comprobación precisa sigue abajo.
+            conditions.append("(start_time IS NULL OR start_time <= ?)")
+            params.append(interval.end.absolute.isoformat())
+            conditions.append("(end_time IS NULL OR end_time >= ?)")
+            params.append(interval.start.absolute.isoformat())
+
         where_clause = " AND ".join(conditions)
         query = f"SELECT * FROM episodes WHERE {where_clause} ORDER BY created_at DESC LIMIT ?"
         params.append(limit + 1)
@@ -698,6 +740,43 @@ class SqliteEpisodicRepository:
             "UPDATE episodes SET is_visible = ? WHERE id = ?",
             (1 if visible else 0, episode_id),
         )
+
+    def count_visible_episodes(self) -> int:
+        return int(self._conn.execute("SELECT count(*) FROM episodes WHERE is_visible = 1").fetchone()[0])
+
+    def list_episode_ids_without_representation(self, target_type: str, limit: int = 100000) -> List[str]:
+        """Episodios visibles sin representación de ese tipo en el outbox (en
+        SQL: a 200 k eventos recorrerlos en Python tardaba 40 s)."""
+        rows = self._conn.execute(
+            """
+            SELECT e.id FROM episodes e
+            WHERE e.is_visible = 1
+              AND NOT EXISTS (SELECT 1 FROM representations r WHERE r.target_id = e.id AND r.target_type = ?)
+            ORDER BY e.created_at LIMIT ?
+            """,
+            (target_type, limit),
+        ).fetchall()
+        return [row[0] for row in rows]
+
+    def environment_episode_stats(self) -> Dict[str, Dict[str, Any]]:
+        """Por ambiente: episodios visibles y primer/último inicio (una consulta)."""
+        rows = self._conn.execute(
+            """
+            SELECT json_each.value AS environment_id, count(*) AS episodes,
+                   min(episodes.start_time) AS first_start, max(episodes.start_time) AS last_start
+            FROM episodes, json_each(episodes.environment_ids_json)
+            WHERE episodes.is_visible = 1
+            GROUP BY json_each.value
+            """
+        ).fetchall()
+        return {
+            row["environment_id"]: {
+                "episodes": int(row["episodes"]),
+                "first_start": datetime.fromisoformat(row["first_start"]) if row["first_start"] else None,
+                "last_start": datetime.fromisoformat(row["last_start"]) if row["last_start"] else None,
+            }
+            for row in rows
+        }
 
     def list_episodes_for_environment(self, environment_id: str) -> List[Episode]:
         rows = self._conn.execute(
@@ -1156,9 +1235,20 @@ class SqliteEpisodicRepository:
             INSERT INTO events (
                 id, environment_id, source_id, processing_run_id,
                 processing_window_id, event_type, start_time, end_time,
-                created_at, payload_json
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(id) DO UPDATE SET payload_json=excluded.payload_json
+                created_at, payload_json, episode_id, asset_id, sequence_number,
+                start_offset_seconds, end_offset_seconds, title, revision
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                payload_json = excluded.payload_json,
+                start_time = excluded.start_time,
+                end_time = excluded.end_time,
+                episode_id = coalesce(excluded.episode_id, events.episode_id),
+                asset_id = excluded.asset_id,
+                sequence_number = excluded.sequence_number,
+                start_offset_seconds = excluded.start_offset_seconds,
+                end_offset_seconds = excluded.end_offset_seconds,
+                title = excluded.title,
+                revision = excluded.revision
             """,
             (
                 event.id,
@@ -1171,14 +1261,218 @@ class SqliteEpisodicRepository:
                 event.end_time.isoformat(),  # type: ignore[union-attr]
                 event.created_at.isoformat(),
                 _to_json(event.to_dict()),
+                event.episode_id,
+                event.asset_id,
+                int(event.sequence_number or 0),
+                event.start_offset_seconds,
+                event.end_offset_seconds,
+                event.title or "",
+                int(event.revision or 1),
             ),
         )
 
     def get_event(self, event_id: str) -> Optional[Event]:
         row = self._conn.execute(
-            "SELECT payload_json FROM events WHERE id = ?", (event_id,)
+            "SELECT payload_json, episode_id FROM events WHERE id = ?", (event_id,)
         ).fetchone()
-        return Event.from_dict(_from_json(row["payload_json"])) if row else None
+        return self._row_to_event(row) if row else None
+
+    def get_events(self, event_ids: List[str]) -> Dict[str, Event]:
+        """Varios eventos en una consulta (hidratación sin N+1)."""
+        result: Dict[str, Event] = {}
+        ids = list(dict.fromkeys(event_ids))
+        for start in range(0, len(ids), 500):
+            chunk = ids[start:start + 500]
+            placeholders = ",".join("?" for _ in chunk)
+            for row in self._conn.execute(
+                f"SELECT payload_json, episode_id FROM events WHERE id IN ({placeholders})", chunk
+            ):
+                event = self._row_to_event(row)
+                result[event.id] = event
+        return result
+
+    def list_events(self, episode_id: str) -> List[Event]:
+        """Eventos de un episodio en orden cronológico."""
+        rows = self._conn.execute(
+            "SELECT payload_json, episode_id FROM events WHERE episode_id = ? "
+            "ORDER BY sequence_number, start_time",
+            (episode_id,),
+        ).fetchall()
+        return [self._row_to_event(row) for row in rows]
+
+    def get_event_neighbors(self, event_id: str, before: int = 1, after: int = 1) -> Tuple[List[Event], List[Event]]:
+        """Eventos anteriores y posteriores del mismo episodio (o activo, si
+        el evento no está enlazado a ninguno), ambos en orden cronológico."""
+        row = self._conn.execute(
+            "SELECT episode_id, asset_id, sequence_number, start_time FROM events WHERE id = ?", (event_id,)
+        ).fetchone()
+        if row is None:
+            return [], []
+        scope, scope_value = ("episode_id", row["episode_id"]) if row["episode_id"] else ("asset_id", row["asset_id"])
+        if scope_value is None:
+            return [], []
+        key = (row["sequence_number"], row["start_time"])
+        previous = self._conn.execute(
+            f"SELECT payload_json, episode_id FROM events WHERE {scope} = ? AND id != ? "
+            "AND (sequence_number, start_time) < (?, ?) ORDER BY sequence_number DESC, start_time DESC LIMIT ?",
+            (scope_value, event_id, *key, max(0, before)),
+        ).fetchall()
+        following = self._conn.execute(
+            f"SELECT payload_json, episode_id FROM events WHERE {scope} = ? AND id != ? "
+            "AND (sequence_number, start_time) > (?, ?) ORDER BY sequence_number, start_time LIMIT ?",
+            (scope_value, event_id, *key, max(0, after)),
+        ).fetchall()
+        return [self._row_to_event(r) for r in reversed(previous)], [self._row_to_event(r) for r in following]
+
+    # -- Línea temporal a escala (Fase T) ------------------------------------------------
+    # Los instantes se guardan como ISO UTC («…+00:00»), así que los rangos se
+    # comparan como texto y aprovechan los índices por start_time.
+
+    @staticmethod
+    def _env_clause(column: str, environment_ids: Optional[List[str]]) -> Tuple[str, List[Any]]:
+        if not environment_ids:
+            return "", []
+        return f" AND {column} IN ({','.join('?' for _ in environment_ids)})", list(environment_ids)
+
+    def timeline_data_version(self) -> Tuple[int, int]:
+        """Cambia cuando se añaden, borran o renumeran eventos: invalida cachés."""
+        row = self._conn.execute("SELECT coalesce(max(rowid), 0), count(*) FROM events").fetchone()
+        return int(row[0]), int(row[1])
+
+    def timeline_event_span(self) -> List[Dict[str, Any]]:
+        """Por ambiente: número de eventos y primer y último inicio."""
+        rows = self._conn.execute(
+            "SELECT environment_id, count(*) AS n, min(start_time) AS first, max(start_time) AS last "
+            "FROM events GROUP BY environment_id"
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+    def timeline_event_density(
+        self,
+        start: str,
+        end: str,
+        bucket_format: str,
+        offset_modifier: str,
+        environment_ids: Optional[List[str]] = None,
+        by_source: bool = False,
+    ) -> List[Dict[str, Any]]:
+        """Eventos por cubo de tiempo local (``strftime`` con un desplazamiento
+        fijo) y ambiente (y fuente), con inicio en ``[start, end)``."""
+        env_sql, env_params = self._env_clause("environment_id", environment_ids)
+        source_col = ", source_id" if by_source else ""
+        # Dos niveles: primero por hora (o minuto) UTC cortando el texto ISO,
+        # que solo lee el índice; luego, sobre esos pocos grupos, la hora local.
+        # Por minutos si el cubo es de minutos o el desplazamiento no es de horas enteras.
+        minutes = bucket_format.endswith("%M") or int(offset_modifier.split()[0]) % 60 != 0
+        width, suffix = (16, ":00+00:00") if minutes else (13, ":00:00+00:00")
+        rows = self._conn.execute(
+            f"SELECT strftime(?, slot || ?, ?) AS bucket, environment_id{source_col}, sum(n) AS n FROM ("
+            f"  SELECT substr(start_time, 1, {width}) AS slot, environment_id{source_col}, count(*) AS n "
+            f"  FROM events WHERE start_time >= ? AND start_time < ?{env_sql} "
+            f"  GROUP BY slot, environment_id{source_col}"
+            f") GROUP BY bucket, environment_id{source_col}",
+            [bucket_format, suffix, offset_modifier, start, end, *env_params],
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+    def timeline_count_events(self, start: str, end: str, lookback_start: str, environment_ids: Optional[List[str]] = None) -> int:
+        env_sql, env_params = self._env_clause("environment_id", environment_ids)
+        row = self._conn.execute(
+            f"SELECT count(*) FROM events WHERE start_time >= ? AND start_time < ? AND end_time > ?{env_sql}",
+            [lookback_start, end, start, *env_params],
+        ).fetchone()
+        return int(row[0])
+
+    def timeline_events(
+        self, start: str, end: str, lookback_start: str, environment_ids: Optional[List[str]] = None, limit: int = 2000
+    ) -> List[Dict[str, Any]]:
+        """Eventos que se solapan con ``[start, end)``; ``lookback_start`` acota
+        el recorrido del índice (ningún evento dura más que eso)."""
+        env_sql, env_params = self._env_clause("environment_id", environment_ids)
+        rows = self._conn.execute(
+            f"SELECT payload_json, episode_id FROM events WHERE start_time >= ? AND start_time < ? AND end_time > ?{env_sql} "
+            "ORDER BY start_time, sequence_number LIMIT ?",
+            [lookback_start, end, start, *env_params, limit],
+        ).fetchall()
+        result = []
+        for row in rows:
+            payload = _from_json(row["payload_json"]) or {}
+            if row["episode_id"]:
+                payload["episode_id"] = row["episode_id"]
+            result.append(payload)
+        return result
+
+    def timeline_observations(
+        self,
+        start: str,
+        end: str,
+        lookback_start: str,
+        observation_types: List[str],
+        environment_ids: Optional[List[str]] = None,
+        limit: int = 2000,
+    ) -> List[Dict[str, Any]]:
+        """Observaciones de esos tipos (habla, fragmentos de documento) que se
+        solapan con ``[start, end)``."""
+        env_sql, env_params = self._env_clause("environment_id", environment_ids)
+        types_sql = ",".join("?" for _ in observation_types)
+        rows = self._conn.execute(
+            f"SELECT id, observation_type, environment_id, source_id, episode_id, start_time, end_time, "
+            f"content, description, attributes_json FROM observations "
+            f"WHERE observation_type IN ({types_sql}) AND start_time >= ? AND start_time < ? "
+            f"AND coalesce(end_time, start_time) >= ?{env_sql} ORDER BY start_time LIMIT ?",
+            [*observation_types, lookback_start, end, start, *env_params, limit],
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+    def timeline_episodes(self, start: str, end: str, lookback_start: str, limit: int = 2000) -> List[Dict[str, Any]]:
+        """Episodios visibles que se solapan con ``[start, end)``."""
+        rows = self._conn.execute(
+            # «+is_visible»: que SQLite use el índice por tiempo y no el de visibilidad.
+            "SELECT id, title, external_id, start_time, end_time, environment_ids_json FROM episodes "
+            "WHERE +is_visible = 1 AND start_time >= ? AND start_time < ? AND coalesce(end_time, start_time) >= ? "
+            "ORDER BY start_time LIMIT ?",
+            (lookback_start, end, start, limit),
+        ).fetchall()
+        return [
+            {**dict(row), "environment_ids": _from_json(row["environment_ids_json"]) or []}
+            for row in rows
+        ]
+
+    def count_events(self) -> int:
+        return int(self._conn.execute("SELECT count(*) FROM events").fetchone()[0])
+
+    def link_events_to_episode(self, episode_id: str, observation_ids: List[str]) -> int:
+        """Enlaza con el episodio los eventos nacidos de esas observaciones."""
+        total = 0
+        ids = list(dict.fromkeys(observation_ids))
+        for start in range(0, len(ids), 500):
+            chunk = ids[start:start + 500]
+            placeholders = ",".join("?" for _ in chunk)
+            cursor = self._conn.execute(
+                f"""
+                UPDATE events SET episode_id = ?, payload_json = json_set(payload_json, '$.episode_id', ?)
+                WHERE json_extract(payload_json, '$.metadata.observation_ids[0]') IN ({placeholders})
+                """,
+                (episode_id, episode_id, *chunk),
+            )
+            total += cursor.rowcount
+        return total
+
+    def delete_events_for_asset(self, asset_id: str, keep_ids: List[str]) -> List[str]:
+        """Borra los eventos del activo que ya no están vigentes (otra versión
+        del derivador) y devuelve sus ids."""
+        rows = self._conn.execute("SELECT id FROM events WHERE asset_id = ?", (asset_id,)).fetchall()
+        stale = [row["id"] for row in rows if row["id"] not in set(keep_ids)]
+        for start in range(0, len(stale), 500):
+            chunk = stale[start:start + 500]
+            self._conn.execute(f"DELETE FROM events WHERE id IN ({','.join('?' for _ in chunk)})", chunk)
+        return stale
+
+    def _row_to_event(self, row: sqlite3.Row) -> Event:
+        event = Event.from_dict(_from_json(row["payload_json"]))
+        if row["episode_id"] and event.episode_id != row["episode_id"]:
+            event.episode_id = row["episode_id"]
+        return event
 
     def save_microepisode(self, microepisode: MicroEpisode) -> None:
         self._require_existing("environments", [microepisode.environment_id], "environment_id")
@@ -1467,6 +1761,574 @@ class SqliteEpisodicRepository:
             indexing_state=IndexingState(row["indexing_state"]),
             qdrant_point_id=row["qdrant_point_id"],
             created_at=_parse_iso(row["created_at"]) or utc_now(),
+        )
+
+    # -----------------------------------------------------------------------
+    # Capturas y trabajos asíncronos
+    # -----------------------------------------------------------------------
+
+    def save_capture(self, capture: Capture) -> None:
+        self._require_existing("environments", [capture.environment_id], "environment_id")
+        self._require_existing("assets", capture.asset_ids, "asset_ids")
+        self._conn.execute(
+            """
+            INSERT INTO captures (
+                id, environment_id, title, status, episode_id, created_at, payload_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                title=excluded.title,
+                status=excluded.status,
+                episode_id=excluded.episode_id,
+                payload_json=excluded.payload_json
+            """,
+            (
+                capture.id,
+                capture.environment_id,
+                capture.title,
+                capture.status.value,
+                capture.episode_id,
+                capture.created_at.isoformat(),
+                _to_json(capture.to_dict()),
+            ),
+        )
+
+    def get_capture(self, capture_id: str) -> Optional[Capture]:
+        row = self._conn.execute(
+            "SELECT payload_json FROM captures WHERE id = ?", (capture_id,)
+        ).fetchone()
+        return Capture.from_dict(_from_json(row["payload_json"])) if row else None
+
+    def find_capture_for_episode(self, episode_id: str) -> Optional[Capture]:
+        row = self._conn.execute(
+            "SELECT payload_json FROM captures WHERE episode_id = ?", (episode_id,)
+        ).fetchone()
+        return Capture.from_dict(_from_json(row["payload_json"])) if row else None
+
+    def list_captures(
+        self, environment_id: Optional[str] = None, limit: int = 50
+    ) -> List[Capture]:
+        if environment_id is None:
+            rows = self._conn.execute(
+                "SELECT payload_json FROM captures ORDER BY created_at DESC, id LIMIT ?",
+                (limit,),
+            ).fetchall()
+        else:
+            rows = self._conn.execute(
+                """
+                SELECT payload_json FROM captures
+                WHERE environment_id = ? ORDER BY created_at DESC, id LIMIT ?
+                """,
+                (environment_id, limit),
+            ).fetchall()
+        return [Capture.from_dict(_from_json(row["payload_json"])) for row in rows]
+
+    def save_job(self, job: Job) -> None:
+        self._conn.execute(
+            """
+            INSERT INTO jobs (
+                id, kind, target_id, state, created_at, updated_at, payload_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                state=excluded.state,
+                updated_at=excluded.updated_at,
+                payload_json=excluded.payload_json
+            """,
+            (
+                job.id,
+                job.job_type,
+                job.target_id,
+                job.state.value,
+                job.created_at.isoformat(),
+                job.updated_at.isoformat(),
+                _to_json(job.to_dict()),
+            ),
+        )
+
+    def get_job(self, job_id: str) -> Optional[Job]:
+        row = self._conn.execute(
+            "SELECT payload_json FROM jobs WHERE id = ?", (job_id,)
+        ).fetchone()
+        return Job.from_dict(_from_json(row["payload_json"])) if row else None
+
+    def list_jobs(
+        self,
+        states: Optional[List[JobState]] = None,
+        target_id: Optional[str] = None,
+    ) -> List[Job]:
+        conditions: List[str] = []
+        params: List[Any] = []
+        if states:
+            conditions.append(f"state IN ({', '.join('?' for _ in states)})")
+            params.extend(state.value for state in states)
+        if target_id:
+            conditions.append("target_id = ?")
+            params.append(target_id)
+        where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+        rows = self._conn.execute(
+            f"SELECT payload_json FROM jobs {where} ORDER BY created_at, id",
+            params,
+        ).fetchall()
+        return [Job.from_dict(_from_json(row["payload_json"])) for row in rows]
+
+    def list_recent_jobs(self, limit: int = 50) -> List[Job]:
+        rows = self._conn.execute(
+            "SELECT payload_json FROM jobs ORDER BY created_at DESC, id LIMIT ?",
+            (limit,),
+        ).fetchall()
+        return [Job.from_dict(_from_json(row["payload_json"])) for row in rows]
+
+    # -----------------------------------------------------------------------
+    # Entrada automática (carpetas vigiladas) y registro de ejecución
+    # -----------------------------------------------------------------------
+
+    def save_inbox_file(self, item: InboxFile) -> None:
+        self._conn.execute(
+            """
+            INSERT INTO inbox_files (
+                id, source_name, rel_path, group_key, state, capture_id,
+                archived, updated_at, payload_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                group_key=excluded.group_key,
+                state=excluded.state,
+                capture_id=excluded.capture_id,
+                archived=excluded.archived,
+                updated_at=excluded.updated_at,
+                payload_json=excluded.payload_json
+            """,
+            (
+                item.id,
+                item.source_name,
+                item.rel_path,
+                item.group_key,
+                item.state.value,
+                item.capture_id,
+                0 if item.present else 1,
+                item.updated_at.isoformat(),
+                _to_json(item.to_dict()),
+            ),
+        )
+
+    def list_live_inbox_files(self, source_name: str) -> List[InboxFile]:
+        """Ficheros que siguen en la carpeta (ni archivados ni desaparecidos)."""
+        rows = self._conn.execute(
+            """
+            SELECT payload_json FROM inbox_files
+            WHERE source_name = ? AND archived = 0 ORDER BY rel_path
+            """,
+            (source_name,),
+        ).fetchall()
+        return [InboxFile.from_dict(_from_json(row["payload_json"])) for row in rows]
+
+    def list_inbox_group_keys(self, source_name: str) -> List[str]:
+        """Grupos que ya produjeron una captura (también los archivados)."""
+        rows = self._conn.execute(
+            """
+            SELECT DISTINCT group_key FROM inbox_files
+            WHERE source_name = ? AND capture_id IS NOT NULL
+            """,
+            (source_name,),
+        ).fetchall()
+        return [row["group_key"] for row in rows]
+
+    def list_inbox_files(
+        self,
+        source_name: Optional[str] = None,
+        states: Optional[List[InboxFileState]] = None,
+        limit: int = 200,
+    ) -> List[InboxFile]:
+        conditions: List[str] = []
+        params: List[Any] = []
+        if source_name:
+            conditions.append("source_name = ?")
+            params.append(source_name)
+        if states:
+            conditions.append(f"state IN ({', '.join('?' for _ in states)})")
+            params.extend(state.value for state in states)
+        where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+        rows = self._conn.execute(
+            f"SELECT payload_json FROM inbox_files {where} ORDER BY updated_at DESC, id LIMIT ?",
+            [*params, limit],
+        ).fetchall()
+        return [InboxFile.from_dict(_from_json(row["payload_json"])) for row in rows]
+
+    def count_inbox_files(self, source_name: str) -> Dict[str, int]:
+        rows = self._conn.execute(
+            """
+            SELECT state, COUNT(*) AS n FROM inbox_files
+            WHERE source_name = ? GROUP BY state
+            """,
+            (source_name,),
+        ).fetchall()
+        return {row["state"]: row["n"] for row in rows}
+
+    def append_activity(self, entry: ActivityEntry) -> int:
+        cursor = self._conn.execute(
+            """
+            INSERT INTO activity_log (at, level, component, job_id, capture_id, payload_json)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (
+                entry.at.isoformat(),
+                entry.level.value,
+                entry.component,
+                entry.job_id,
+                entry.capture_id,
+                _to_json(entry.to_dict()),
+            ),
+        )
+        return int(cursor.lastrowid)
+
+    def list_activity(
+        self,
+        after_id: int = 0,
+        limit: int = 200,
+        component: Optional[str] = None,
+        levels: Optional[List[ActivityLevel]] = None,
+    ) -> List[ActivityEntry]:
+        """Líneas posteriores a ``after_id`` o, sin él, las ``limit`` más recientes.
+
+        Siempre en orden cronológico.
+        """
+        conditions = ["id > ?"]
+        params: List[Any] = [after_id]
+        if component:
+            conditions.append("component = ?")
+            params.append(component)
+        if levels:
+            conditions.append(f"level IN ({', '.join('?' for _ in levels)})")
+            params.extend(level.value for level in levels)
+        order = "ASC" if after_id else "DESC"
+        rows = self._conn.execute(
+            f"""
+            SELECT id, payload_json FROM activity_log
+            WHERE {' AND '.join(conditions)} ORDER BY id {order} LIMIT ?
+            """,
+            [*params, limit],
+        ).fetchall()
+        entries = [
+            ActivityEntry.from_dict({**_from_json(row["payload_json"]), "id": row["id"]})
+            for row in rows
+        ]
+        return entries if after_id else entries[::-1]
+
+    def prune_activity(
+        self, keep: int, levels: Optional[List[ActivityLevel]] = None
+    ) -> int:
+        """Conserva las ``keep`` líneas más recientes (de esos niveles, si se dan)."""
+        scope, params = "1 = 1", []
+        if levels:
+            scope = f"level IN ({', '.join('?' for _ in levels)})"
+            params = [level.value for level in levels]
+        # Id de la línea más antigua que se conserva; sin ella, no sobra ninguna.
+        cursor = self._conn.execute(
+            f"""
+            DELETE FROM activity_log
+            WHERE {scope} AND id < COALESCE((
+                SELECT id FROM activity_log WHERE {scope}
+                ORDER BY id DESC LIMIT 1 OFFSET ?
+            ), 0)
+            """,
+            [*params, *params, max(keep, 1) - 1],
+        )
+        return cursor.rowcount
+
+    # -----------------------------------------------------------------------
+    # Pasajes (índice de texto completo)
+    # -----------------------------------------------------------------------
+
+    _PASSAGE_COLUMNS = (
+        "id, kind, episode_id, environment_id, source_id, modality, asset_id, start_time, end_time, "
+        "start_ms, end_ms, start_offset_seconds, end_offset_seconds, page_number, sequence_number, "
+        "event_id, observation_id, title, text, model, keyframes"
+    )
+
+    def replace_episode_passages(self, episode_id: str, passages: List[Passage]) -> List[str]:
+        """Sustituye los pasajes del episodio y devuelve los ids que dejaron de serlo."""
+        new_ids = {item.id for item in passages}
+        self.begin_transaction()
+        try:
+            previous = [
+                row[0]
+                for row in self._conn.execute("SELECT id FROM passages WHERE episode_id = ?", (episode_id,))
+            ]
+            self._conn.execute("DELETE FROM passages WHERE episode_id = ?", (episode_id,))
+            # Un id repetido en otro episodio (reprocesado) no debe romper la escritura.
+            stale = [item.id for item in passages]
+            for start in range(0, len(stale), 500):
+                chunk = stale[start:start + 500]
+                self._conn.execute(f"DELETE FROM passages WHERE id IN ({','.join('?' for _ in chunk)})", chunk)
+            self._conn.executemany(
+                f"INSERT INTO passages ({self._PASSAGE_COLUMNS}) VALUES ({','.join('?' for _ in range(21))})",
+                [self._passage_row(item) for item in passages],
+            )
+            self.commit_transaction()
+        except Exception:
+            self.rollback_transaction()
+            raise
+        return [item for item in previous if item not in new_ids]
+
+    def delete_episode_passages(self, episode_id: str) -> List[str]:
+        rows = self._conn.execute("SELECT id FROM passages WHERE episode_id = ?", (episode_id,)).fetchall()
+        self._conn.execute("DELETE FROM passages WHERE episode_id = ?", (episode_id,))
+        return [row[0] for row in rows]
+
+    def get_passages(self, passage_ids: List[str]) -> Dict[str, Passage]:
+        result: Dict[str, Passage] = {}
+        ids = list(dict.fromkeys(passage_ids))
+        for start in range(0, len(ids), 500):
+            chunk = ids[start:start + 500]
+            placeholders = ",".join("?" for _ in chunk)
+            for row in self._conn.execute(
+                f"SELECT {self._PASSAGE_COLUMNS} FROM passages WHERE id IN ({placeholders})", chunk
+            ):
+                passage = self._row_to_passage(row)
+                result[passage.id] = passage
+        return result
+
+    def list_passages_for_episode(self, episode_id: str) -> List[Passage]:
+        rows = self._conn.execute(
+            f"SELECT {self._PASSAGE_COLUMNS} FROM passages WHERE episode_id = ? "
+            "ORDER BY start_ms, sequence_number",
+            (episode_id,),
+        ).fetchall()
+        return [self._row_to_passage(row) for row in rows]
+
+    @staticmethod
+    def _passage_row(item: Passage) -> tuple:
+        return (
+            item.id, item.kind, item.episode_id, item.environment_id, item.source_id, item.modality, item.asset_id,
+            item.start_time.isoformat() if item.start_time else None,
+            item.end_time.isoformat() if item.end_time else None,
+            _epoch_ms(item.start_time), _epoch_ms(item.end_time),
+            item.start_offset_seconds, item.end_offset_seconds, item.page_number, item.sequence_number,
+            item.event_id, item.observation_id, item.title or "", item.text, item.model, int(item.keyframes or 0),
+        )
+
+    @staticmethod
+    def _row_to_passage(row: sqlite3.Row) -> Passage:
+        return Passage(
+            id=row["id"], kind=row["kind"], episode_id=row["episode_id"], text=row["text"], title=row["title"] or "",
+            environment_id=row["environment_id"], source_id=row["source_id"], modality=row["modality"],
+            asset_id=row["asset_id"],
+            start_time=datetime.fromisoformat(row["start_time"]) if row["start_time"] else None,
+            end_time=datetime.fromisoformat(row["end_time"]) if row["end_time"] else None,
+            start_offset_seconds=row["start_offset_seconds"], end_offset_seconds=row["end_offset_seconds"],
+            page_number=row["page_number"], sequence_number=row["sequence_number"],
+            event_id=row["event_id"], observation_id=row["observation_id"], model=row["model"],
+            keyframes=int(row["keyframes"] or 0),
+        )
+
+    def get_system_state(self, name: str) -> Optional[Any]:
+        row = self._conn.execute("SELECT value_json FROM system_state WHERE name = ?", (name,)).fetchone()
+        return _from_json(row["value_json"]) if row else None
+
+    def set_system_state(self, name: str, value: Any) -> None:
+        self._conn.execute(
+            """
+            INSERT INTO system_state (name, value_json, updated_at) VALUES (?, ?, ?)
+            ON CONFLICT(name) DO UPDATE SET value_json = excluded.value_json, updated_at = excluded.updated_at
+            """,
+            (name, _to_json(value), utc_now().isoformat()),
+        )
+
+    def count_passages(self) -> int:
+        return int(self._conn.execute("SELECT count(*) FROM passages").fetchone()[0])
+
+    # -- Respuestas del agente -------------------------------------------------------
+
+    def save_answer_run(self, run: AnswerRun) -> None:
+        self._conn.execute(
+            """
+            INSERT INTO answer_runs (id, question, answer, confidence, abstained, citations_json, steps_json,
+                                     model_id, usage_json, took_ms, error, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET answer = excluded.answer, confidence = excluded.confidence,
+                abstained = excluded.abstained, citations_json = excluded.citations_json,
+                steps_json = excluded.steps_json, usage_json = excluded.usage_json, took_ms = excluded.took_ms,
+                error = excluded.error
+            """,
+            (
+                run.id, run.question, run.answer, run.confidence, 1 if run.abstained else 0,
+                _to_json(run.citations), _to_json({"steps": run.steps, "dropped": run.dropped_citations, "metadata": run.metadata, "trace": run.trace}),
+                run.model_id, _to_json(run.usage), run.took_ms, run.error, run.created_at.isoformat(),
+            ),
+        )
+
+    def get_answer_run(self, run_id: str) -> Optional[AnswerRun]:
+        row = self._conn.execute("SELECT * FROM answer_runs WHERE id = ?", (run_id,)).fetchone()
+        return self._row_to_answer_run(row) if row else None
+
+    def list_answer_runs(self, limit: int = 50) -> List[AnswerRun]:
+        rows = self._conn.execute("SELECT * FROM answer_runs ORDER BY created_at DESC LIMIT ?", (limit,)).fetchall()
+        return [self._row_to_answer_run(row) for row in rows]
+
+    @staticmethod
+    def _row_to_answer_run(row: sqlite3.Row) -> AnswerRun:
+        extra = _from_json(row["steps_json"], {}) or {}
+        return AnswerRun(
+            id=row["id"], question=row["question"], answer=row["answer"], confidence=row["confidence"],
+            abstained=bool(row["abstained"]), citations=_from_json(row["citations_json"], []),
+            dropped_citations=extra.get("dropped", []), steps=extra.get("steps", []), trace=extra.get("trace", []), model_id=row["model_id"],
+            usage=_from_json(row["usage_json"], {}), took_ms=float(row["took_ms"] or 0), error=row["error"],
+            created_at=datetime.fromisoformat(row["created_at"]), metadata=extra.get("metadata", {}),
+        )
+
+    # -- Resúmenes jerárquicos --------------------------------------------------
+
+    _SUMMARY_COLUMNS = (
+        "id, scope, scope_key, revision, is_current, title, summary, narrative, highlights_json, "
+        "open_questions_json, model_id, prompt_version, input_hash, created_at, metadata_json"
+    )
+
+    def save_summary(self, summary: Summary) -> None:
+        """Guarda una revisión; si es la vigente, las anteriores dejan de serlo."""
+        self.begin_transaction()
+        try:
+            if summary.is_current:
+                self._conn.execute(
+                    "UPDATE summaries SET is_current = 0 WHERE scope = ? AND scope_key = ? AND id != ?",
+                    (summary.scope, summary.scope_key, summary.id),
+                )
+            self._conn.execute(
+                f"""
+                INSERT INTO summaries ({self._SUMMARY_COLUMNS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET
+                    is_current = excluded.is_current, title = excluded.title, summary = excluded.summary,
+                    narrative = excluded.narrative, highlights_json = excluded.highlights_json,
+                    open_questions_json = excluded.open_questions_json, metadata_json = excluded.metadata_json
+                """,
+                (
+                    summary.id, summary.scope, summary.scope_key, summary.revision, 1 if summary.is_current else 0,
+                    summary.title, summary.summary, summary.narrative, _to_json(summary.highlights),
+                    _to_json(summary.open_questions), summary.model_id, summary.prompt_version, summary.input_hash,
+                    summary.created_at.isoformat(), _to_json(summary.metadata),
+                ),
+            )
+            self.commit_transaction()
+        except Exception:
+            self.rollback_transaction()
+            raise
+
+    def get_summary(self, summary_id: str) -> Optional[Summary]:
+        row = self._conn.execute(f"SELECT {self._SUMMARY_COLUMNS} FROM summaries WHERE id = ?", (summary_id,)).fetchone()
+        return self._row_to_summary(row) if row else None
+
+    def get_current_summary(self, scope: str, scope_key: str) -> Optional[Summary]:
+        row = self._conn.execute(
+            f"SELECT {self._SUMMARY_COLUMNS} FROM summaries WHERE scope = ? AND scope_key = ? AND is_current = 1 "
+            "ORDER BY revision DESC LIMIT 1",
+            (scope, scope_key),
+        ).fetchone()
+        return self._row_to_summary(row) if row else None
+
+    def list_summary_revisions(self, scope: str, scope_key: str) -> List[Summary]:
+        rows = self._conn.execute(
+            f"SELECT {self._SUMMARY_COLUMNS} FROM summaries WHERE scope = ? AND scope_key = ? ORDER BY revision DESC",
+            (scope, scope_key),
+        ).fetchall()
+        return [self._row_to_summary(row) for row in rows]
+
+    def list_current_summaries(self, scope: str, prefix: Optional[str] = None, limit: int = 500) -> List[Summary]:
+        """Resúmenes vigentes de un ámbito; ``prefix`` acota la clave («env|»)."""
+        conditions, params = ["scope = ?", "is_current = 1"], [scope]
+        if prefix:
+            conditions.append("scope_key LIKE ?")
+            params.append(prefix.replace("%", "%%") + "%")
+        params.append(limit)
+        rows = self._conn.execute(
+            f"SELECT {self._SUMMARY_COLUMNS} FROM summaries WHERE {' AND '.join(conditions)} "
+            "ORDER BY scope_key LIMIT ?",
+            params,
+        ).fetchall()
+        return [self._row_to_summary(row) for row in rows]
+
+    def count_summaries(self, scope: Optional[str] = None) -> int:
+        if scope:
+            return int(self._conn.execute("SELECT count(*) FROM summaries WHERE scope = ? AND is_current = 1", (scope,)).fetchone()[0])
+        return int(self._conn.execute("SELECT count(*) FROM summaries WHERE is_current = 1").fetchone()[0])
+
+    @staticmethod
+    def _row_to_summary(row: sqlite3.Row) -> Summary:
+        return Summary(
+            id=row["id"], scope=row["scope"], scope_key=row["scope_key"], revision=int(row["revision"]),
+            is_current=bool(row["is_current"]), title=row["title"], summary=row["summary"], narrative=row["narrative"],
+            highlights=_from_json(row["highlights_json"], []), open_questions=_from_json(row["open_questions_json"], []),
+            model_id=row["model_id"], prompt_version=row["prompt_version"], input_hash=row["input_hash"],
+            created_at=datetime.fromisoformat(row["created_at"]), metadata=_from_json(row["metadata_json"], {}),
+        )
+
+    def search_passages(
+        self,
+        match: str,
+        limit: int,
+        *,
+        environment_ids: Tuple[str, ...] = (),
+        source_ids: Tuple[str, ...] = (),
+        modalities: Tuple[str, ...] = (),
+        kinds: Tuple[str, ...] = (),
+        exclude_kinds: Tuple[str, ...] = (),
+        start_ms: Optional[int] = None,
+        end_ms: Optional[int] = None,
+    ) -> List[Tuple[str, str, float, str]]:
+        """Pasajes que casan con una expresión FTS5, con los filtros aplicados
+        **antes** del límite: (passage_id, episode_id, puntuación BM25 —mayor es
+        mejor—, fragmento resaltado entre los caracteres de control 2 y 3)."""
+        if not match.strip():
+            return []
+        conditions = ["passage_index MATCH ?"]
+        params: List[Any] = [match]
+        if exclude_kinds:
+            conditions.append(f"p.kind NOT IN ({','.join('?' for _ in exclude_kinds)})")
+            params.extend(exclude_kinds)
+        for column, values in (
+            ("p.environment_id", environment_ids),
+            ("p.source_id", source_ids),
+            ("p.modality", modalities),
+            ("p.kind", kinds),
+        ):
+            if values:
+                conditions.append(f"{column} IN ({','.join('?' for _ in values)})")
+                params.extend(values)
+        if start_ms is not None and end_ms is not None:
+            # Solapamiento semiabierto, como en Qdrant; un punto cuenta si cae dentro.
+            conditions.append("p.start_ms IS NOT NULL AND p.start_ms < ? AND coalesce(p.end_ms, p.start_ms) + 1 > ?")
+            params.extend([end_ms, start_ms])
+        params.append(limit)
+        rows = self._conn.execute(
+            f"""
+            SELECT p.id, p.episode_id, -bm25(passage_index, 1.0, 2.0) AS score,
+                   snippet(passage_index, 0, char(2), char(3), '…', 24) AS fragment
+            FROM passage_index JOIN passages p ON p.pid = passage_index.rowid
+            WHERE {' AND '.join(conditions)}
+            ORDER BY score DESC LIMIT ?
+            """,
+            params,
+        ).fetchall()
+        return [(row[0], row[1], float(row[2]), row[3]) for row in rows]
+
+    def acquire_lease(self, name: str, owner: str, ttl_seconds: float, now: float) -> bool:
+        """Toma o renueva una concesión; falla si otro dueño la tiene vigente."""
+        cursor = self._conn.execute(
+            """
+            INSERT INTO leases (name, owner, expires_at) VALUES (?, ?, ?)
+            ON CONFLICT(name) DO UPDATE SET
+                owner=excluded.owner, expires_at=excluded.expires_at
+            WHERE leases.owner = excluded.owner OR leases.expires_at < ?
+            """,
+            (name, owner, now + ttl_seconds, now),
+        )
+        return cursor.rowcount == 1
+
+    def get_lease(self, name: str) -> Optional[Tuple[str, float]]:
+        row = self._conn.execute(
+            "SELECT owner, expires_at FROM leases WHERE name = ?", (name,)
+        ).fetchone()
+        return (row["owner"], float(row["expires_at"])) if row else None
+
+    def release_lease(self, name: str, owner: str) -> None:
+        self._conn.execute(
+            "DELETE FROM leases WHERE name = ? AND owner = ?", (name, owner)
         )
 
     # -----------------------------------------------------------------------

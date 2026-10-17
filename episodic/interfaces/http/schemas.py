@@ -2,13 +2,16 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Literal, Optional
 from pydantic import BaseModel, Field, model_validator
 
 
 class SearchRequest(BaseModel):
     text_query: Optional[str] = Field(None, description="Texto de búsqueda")
-    image_query_path: Optional[str] = Field(None, description="Ruta a imagen de consulta")
+    image_evidence_id: Optional[str] = Field(
+        None,
+        description="ID de una evidencia de imagen ya almacenada que se usa como consulta",
+    )
     intent: str = Field("semantic_search", description="semantic_search, interval_search, last_observation, timeline")
     source_filter: Optional[List[str]] = Field(None, description="Filtrar por IDs de fuente")
     start_time: Optional[datetime] = Field(None, description="Inicio de intervalo ISO UTC")
@@ -37,6 +40,70 @@ class SearchRequest(BaseModel):
         if self.start_time.tzinfo is None or self.end_time.tzinfo is None:
             raise ValueError("start_time y end_time deben incluir zona horaria")
         if self.start_time >= self.end_time:
+            raise ValueError("start_time debe ser anterior a end_time")
+        return self
+
+
+class AskRequest(BaseModel):
+    """Pregunta en lenguaje natural para el agente de consulta."""
+
+    question: str = Field(..., min_length=1, max_length=2000)
+    # Opcional: id elegido por el cliente para seguir la traza en /api/activity
+    # (data.run_id) mientras el agente trabaja.
+    run_id: Optional[str] = Field(None, min_length=8, max_length=64, pattern=r"^[A-Za-z0-9_-]+$")
+    # auto: la red de agentes solo si la pregunta cruza episodios; simple: agente
+    # único; red: siempre la red. Sin valor, el de EPIGRAPH_AGENT_MODE.
+    mode: Optional[Literal["auto", "simple", "red"]] = None
+
+
+class SummaryRegenerateRequest(BaseModel):
+    """Pide una revisión nueva del resumen de un episodio, un día o un entorno."""
+
+    scope: Literal["episode", "day", "environment"]
+    key: str = Field(..., min_length=1, description="id del episodio, «<entorno>|AAAA-MM-DD» o id del entorno")
+
+
+class PassageSearchRequest(BaseModel):
+    """Búsqueda por pasajes: los momentos que responden, agrupados por episodio."""
+
+    text_query: str = Field(..., min_length=1, description="Pregunta o términos a buscar")
+    environment_filter: Optional[List[str]] = None
+    source_filter: Optional[List[str]] = None
+    modality_filter: Optional[List[str]] = None
+    observation_type_filter: Optional[List[str]] = None
+    start_time: Optional[datetime] = Field(None, description="Inicio de intervalo ISO UTC")
+    end_time: Optional[datetime] = Field(None, description="Fin de intervalo ISO UTC")
+    max_episodes: Optional[int] = Field(None, ge=1, le=100)
+    per_episode: Optional[int] = Field(None, ge=1, le=50)
+    rerank: bool = Field(True, description="Reordenar con el cross-encoder configurado")
+    rerank_min_score: Optional[float] = Field(
+        None,
+        description="Umbral del reordenador solo para esta consulta; null explícito: sin umbral; "
+        "omitido: el de EPIGRAPH_RERANK_MIN_SCORE",
+    )
+    agreement_rank: Optional[int] = Field(
+        None,
+        ge=0,
+        le=1000,
+        description="Se conserva bajo el umbral si ambas vías lo ponen entre sus N primeros; 0: nunca; "
+        "omitido: EPIGRAPH_PASSAGE_AGREEMENT_RANK",
+    )
+    neighbors: Optional[int] = Field(
+        None,
+        ge=0,
+        le=10,
+        description="Eventos anterior y siguiente que acompañan a cada resultado; omitido: los que "
+        "sugiera la pregunta (2 si pregunta por antes/después)",
+    )
+    include_summaries: bool = Field(
+        False, description="Incluir los resúmenes de episodio (texto generado) como pasajes candidatos"
+    )
+
+    @model_validator(mode="after")
+    def validate_interval(self) -> "PassageSearchRequest":
+        if (self.start_time is None) != (self.end_time is None):
+            raise ValueError("start_time y end_time deben enviarse juntos")
+        if self.start_time is not None and self.start_time >= self.end_time:
             raise ValueError("start_time debe ser anterior a end_time")
         return self
 

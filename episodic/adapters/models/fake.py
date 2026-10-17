@@ -91,3 +91,13 @@ class FakeAlignedTextEncoder:
 
     def embed_query(self, text: str) -> List[float]:
         return _hash_to_unit_vector(text, self._dim)
+
+
+class FakePassageReranker:
+    """Reordenador determinista: cuenta los términos de la pregunta en el pasaje."""
+
+    model_id = "fake-reranker"
+
+    def rerank(self, query: str, passages: List[str]) -> List[float]:
+        terms = {term for term in query.lower().split() if len(term) > 2}
+        return [float(sum(passage.lower().count(term) for term in terms)) for passage in passages]

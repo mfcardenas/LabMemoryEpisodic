@@ -58,6 +58,7 @@ class BaseObservationProcessor(ABC):
     """Template determinista; los adaptadores solo extraen borradores."""
 
     name = "base-processor"
+    label = "procesador"  # nombre en el registro de ejecución
     model_version = "phase4-v1"
     supported_modalities: frozenset[EvidenceMediaType] = frozenset()
 

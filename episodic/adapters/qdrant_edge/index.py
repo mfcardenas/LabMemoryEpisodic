@@ -143,6 +143,7 @@ class QdrantEdgeVectorIndex:
             "validation_states": PayloadSchemaType.Keyword,
             "max_confidence": PayloadSchemaType.Float,
             "episode_id": PayloadSchemaType.Keyword,
+            "target_type": PayloadSchemaType.Keyword,
             "timeline_start_ms": PayloadSchemaType.Float,
             "timeline_filter_end_ms": PayloadSchemaType.Float,
             "edge_timeline_unknown": PayloadSchemaType.Keyword,
@@ -189,6 +190,23 @@ class QdrantEdgeVectorIndex:
                     [Point(id=clean_id, vector=vectors, payload=point_payload)]
                 )
             )
+            self.shard.flush()
+
+    def upsert_many(self, points: List[tuple]) -> None:
+        """Varios puntos con una sola escritura y un solo flush."""
+        if not points:
+            return
+        prepared = []
+        for point_id, target_id, vectors, payload in points:
+            point_payload = dict(payload)
+            point_payload.update({"target_id": target_id, "raw_point_id": point_id})
+            point_payload.setdefault("is_visible", True)
+            point_payload["edge_is_visible"] = "true" if point_payload.get("is_visible") is True else "false"
+            point_payload["edge_timeline_unknown"] = "true" if point_payload.get("timeline_unknown") is True else "false"
+            prepared.append(Point(id=_sanitize_point_id(point_id), vector=vectors, payload=point_payload))
+        with self._lock:
+            self.shard.update(UpdateOperation.delete_points([item.id for item in prepared]))
+            self.shard.update(UpdateOperation.upsert_points(prepared))
             self.shard.flush()
 
     def delete_points(self, point_ids: List[str]) -> None:
@@ -261,7 +279,14 @@ class QdrantEdgeVectorIndex:
                         ),
                     ]
                 )
-        return Filter(must=must)
+        # Los pasajes comparten el vector "text" con los episodios: solo
+        # aparecen cuando se piden expresamente (target_type="passage").
+        must_not = []
+        if not (filters and filters.get("target_type")):
+            must_not.append(FieldCondition(key="target_type", match=MatchValue("passage")))
+        for kind in (filters or {}).get("exclude_kinds") or ():
+            must_not.append(FieldCondition(key="kind", match=MatchValue(kind)))
+        return Filter(must=must, must_not=must_not or None)
 
     def search(
         self,

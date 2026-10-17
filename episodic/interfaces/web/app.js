@@ -6,12 +6,24 @@ document.addEventListener("DOMContentLoaded", () => {
     episodes: [],
     nextCursor: null,
     activeEpisode: null,
+    inspectedEpisode: null,
+    inspectRequest: 0,
+    episodesRequest: 0,
     episodeGroupMode: "blocks",
     timelineZoom: 1,
     timelineRawData: null,
+    watchTimer: null,
+    watchBusy: false,
+    logLastId: 0,
+    logFilterKey: null,
   };
   const $ = selector => document.querySelector(selector);
-  const $$ = selector => [...document.querySelectorAll(selector)];
+  const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
+  // Proyecto de esta consola: /p/<id>/ en la URL; en «/» es el principal. Las rutas /api/
+  // del proyecto llevan su prefijo; el catálogo de proyectos (/api/projects) es común.
+  const PROJECT = (location.pathname.match(/^\/p\/([a-z0-9-]+)/) || [])[1] || "principal";
+  const BASE = location.pathname.startsWith("/p/") ? `/p/${PROJECT}` : "";
+  const apiUrl = url => url.startsWith("/api/") && !url.startsWith("/api/projects") ? BASE + url : url;
   const esc = value => String(value ?? "").replace(/[&<>'"]/g, char => ({
     "&": "&amp;", "<": "&lt;", ">": "&gt;", "'": "&#39;", '"': "&quot;",
   })[char]);
@@ -29,6 +41,14 @@ document.addEventListener("DOMContentLoaded", () => {
     const remM = Math.round((s % 3600) / 60);
     return remM ? `${h}h ${remM}m` : `${h}h`;
   };
+  const fmtClock = seconds => {
+    if (seconds === null || seconds === undefined || isNaN(seconds)) return "—";
+    const total = Math.max(0, Number(seconds));
+    const minutes = Math.floor(total / 60);
+    const rest = total - minutes * 60;
+    return `${String(minutes).padStart(2, "0")}:${rest.toFixed(1).padStart(4, "0")}`;
+  };
+  const paragraphs = text => String(text || "").split(/\n+/).filter(Boolean).map(line => `<p>${esc(line)}</p>`).join("");
   const itemDurationSeconds = item => {
     const rawStart = item.start_time ?? item.interval?.start?.absolute;
     const rawEnd = item.end_time ?? item.interval?.end?.absolute ?? item.start_time;
@@ -63,7 +83,7 @@ document.addEventListener("DOMContentLoaded", () => {
   })[value] || humanize(value || "modalidad no declarada");
   const observationLabel = value => ({
     text_fragment: "Fragmento de texto", document_fragment: "Fragmento documental",
-    audio_segment: "Segmento de audio", visual_observation: "Observación visual",
+    audio_segment: "Segmento de audio", speech_segment: "Habla transcrita", visual_observation: "Observación visual",
     image_observation: "Observación de imagen", video_observation: "Observación de vídeo",
     tool_presence: "Presencia de herramienta", tool_absence: "Ausencia de herramienta",
   })[value] || humanize(value || "observación");
@@ -106,23 +126,35 @@ document.addEventListener("DOMContentLoaded", () => {
     action_compatibility: "Acción compatible",
     state_compatibility: "Estado compatible",
   })[value] || humanize(value);
-  const timelineTitle = item => item.kind === "episode" && item.title?.startsWith("Episodio compuesto")
-    ? `Episodio · ${item.environment_id || "ambiente sin declarar"}`
-    : item.title;
+  const timelineTitle = item => {
+    const title = item.kind === "episode" && item.title?.startsWith("Episodio compuesto")
+      ? `Episodio · ${item.environment_id || "ambiente sin declarar"}`
+      : item.title;
+    return item.external_id && item.external_id !== title ? `${title} · ${item.external_id}` : title;
+  };
 
   const views = {
     episodes: ["MEMORIA CANÓNICA", "Explorador de episodios", "Dossier auditable: observaciones extraídas, eventos, microepisodios y evidencias originales."],
+    cronologia: ["CRONOLOGÍA", "Línea temporal", "El pulso dice dónde mirar; las pistas por fuente muestran qué pasó, con fotogramas, habla y documentos; el inspector lo cuenta."],
     timeline: ["CRONOLOGÍA MULTI-FUENTE", "Eje temporal continuo", "Visualización temporal por carriles: duración real de intervalos, simultaneidad y solapamientos."],
     ingest: ["RECORRIDO CANÓNICO", "Registro y custodia de activos", "El archivo original inicia la memoria; SHA-256 inmutable y procesamiento observable."],
-    search: ["CONSULTA Y AUDITORÍA", "Búsqueda híbrida y herramientas", "Recuperación semántica vectorial en Qdrant y herramientas tipadas de la Fase 8."],
+    watch: ["ENTRADA AUTOMÁTICA", "Vigilancia y trabajos", "Lo que llega a las carpetas vigiladas se convierte en capturas: cada fichero leído, cada trabajo y su registro de ejecución."],
+    search: ["CONSULTA Y AUDITORÍA", "Preguntar, buscar por momentos y herramientas", "El agente responde con citas verificadas a momentos reales; la búsqueda devuelve momentos concretos con su hora y su motivo; las herramientas son el catálogo que usa el agente."],
+    projects: ["ESPACIOS DE DATOS", "Proyectos", "Cada proyecto aísla sus ambientes y evidencias: base de datos, medios, índice y colección de Qdrant propios. Crea escenarios de prueba sin tocar las capturas reales."],
     system: ["ARQUITECTURA Y ESTADO", "Proyección vectorial y runtime", "Separación estricta entre la verdad canónica (SQLite) y la proyección reconstruible (Qdrant)."],
   };
 
+  // La línea temporal clásica queda oculta pero intacta: poner true para recuperarla.
+  const LEGACY_TIMELINE = false;
+  const legacyButton = $('.nav-item[data-view="timeline"]');
+  if (legacyButton) legacyButton.hidden = !LEGACY_TIMELINE;
   $$(".nav-item").forEach(button => button.addEventListener("click", () => {
     location.hash = button.dataset.view;
   }));
   window.addEventListener("hashchange", () => {
     const name = location.hash.slice(1);
+    if (name === "timeline" && !LEGACY_TIMELINE) { location.hash = "cronologia"; return; }
+    if (name === "ask") { switchView("search"); activateSearchTab("ask"); return; }
     switchView(views[name] ? name : "episodes");
   });
   function switchView(name, loadData = true) {
@@ -132,13 +164,42 @@ document.addEventListener("DOMContentLoaded", () => {
     $("#view-kicker").textContent = kicker; $("#view-title").textContent = title; $("#view-subtitle").textContent = subtitle;
     if (loadData && name === "episodes") loadEpisodes().catch(showEpisodeError);
     if (loadData && name === "timeline") loadTimeline().catch(showTimelineError);
-    if (loadData && name === "ingest") loadAssets().catch(error => console.error(error));
-    if (loadData && name === "search") loadToolsCatalog().catch(error => console.error(error));
+    if (name === "cronologia") window.EpiGraphChrono?.activate();
+    if (loadData && name === "ingest") Promise.all([loadAssets(), loadCaptures()]).catch(error => console.error(error));
+    if (loadData && name === "search") { loadAskView().catch(error => console.error(error)); loadToolsCatalog().catch(error => console.error(error)); }
+    if (name === "watch") startWatchPolling(); else stopWatchPolling();
     if (loadData && name === "system") loadSystem().catch(error => console.error(error));
+    if (name === "projects") window.EpiGraphProjects?.activate();
   }
 
+  // Estado de las peticiones de Consultas (Preguntar, búsqueda, herramientas):
+  // una sola a la vez. Mientras dura, se muestra «Cargando…» y se bloquean
+  // los formularios y el historial; los envíos repetidos se ignoran.
+  const query = { busy: false, disabled: [] };
+  function beginQuery(label) {
+    if (query.busy) return false;
+    query.busy = true;
+    const status = $("#query-status");
+    if (status) { $("#query-status-text").textContent = label; status.hidden = false; }
+    $$("#view-search form :is(input, select, textarea, button), #view-search .history-item").forEach(el => {
+      if (el.disabled) return;
+      el.disabled = true; query.disabled.push(el);
+    });
+    $$("#view-search form").forEach(form => form.setAttribute("aria-busy", "true"));
+    return true;
+  }
+  function endQuery() {
+    query.disabled.forEach(el => { el.disabled = false; });
+    query.disabled = [];
+    $$("#view-search form").forEach(form => form.removeAttribute("aria-busy"));
+    const status = $("#query-status");
+    if (status) status.hidden = true;
+    query.busy = false;
+  }
+  const loading = text => `<div class="empty roomy loading"><span class="spinner" aria-hidden="true"></span><b>Cargando…</b><span>${text}</span></div>`;
+
   async function api(url, options) {
-    const response = await fetch(url, options);
+    const response = await fetch(apiUrl(url), options);
     if (!response.ok) {
       let message = `${response.status} ${response.statusText}`;
       try { const body = await response.json(); message = body.detail || message; } catch (_) { /* no JSON */ }
@@ -206,12 +267,34 @@ document.addEventListener("DOMContentLoaded", () => {
       const first = select.options[0]?.outerHTML || '<option value="">Todos</option>';
       select.innerHTML = first + environments.map(item => `<option value="${esc(item.id)}">${esc(item.name || item.id)} · ${esc(item.id)}</option>`).join("");
     });
-    [$("#timeline-source"), $("#search-source")].forEach(select => {
-      if (!select) return;
-      const first = select.options[0]?.outerHTML || '<option value="">Todas</option>';
-      select.innerHTML = first + sources.map(item => `<option value="${esc(item.id)}">${esc(item.name || item.id)} · ${esc(item.source_type)}</option>`).join("");
-    });
+    SOURCE_SELECTS.forEach(([envId, srcId]) => fillSourceSelect($(srcId), $(envId)?.value));
   }
+  // Ambiente → fuentes: el selector de fuente solo ofrece las del ambiente
+  // elegido (sin ambiente, todas agrupadas por ambiente) y se vacía si la
+  // fuente elegida deja de pertenecer al ambiente.
+  const SOURCE_SELECTS = [["#timeline-environment", "#timeline-source"], ["#search-environment", "#search-source"]];
+  const sourceLabel = source => {
+    const name = source.name || source.id;
+    const prefix = `${source.environment_id}.`;
+    return name.startsWith(prefix) ? name.slice(prefix.length) : name;
+  };
+  function fillSourceSelect(select, environmentId) {
+    if (!select) return;
+    const current = select.value;
+    const first = select.options[0]?.outerHTML || '<option value="">Todas</option>';
+    const option = item => `<option value="${esc(item.id)}">${esc(sourceLabel(item))} · ${esc(sourceTypeLabel(item.source_type))}</option>`;
+    const sources = state.sources.filter(item => !environmentId || item.environment_id === environmentId);
+    if (environmentId) {
+      select.innerHTML = first + sources.map(option).join("");
+    } else {
+      const groups = new Map();
+      sources.forEach(item => { const key = item.environment_id || ""; if (!groups.has(key)) groups.set(key, []); groups.get(key).push(item); });
+      select.innerHTML = first + [...groups.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([env, items]) => `<optgroup label="${esc(environmentLabel(env) || "sin ambiente")}">${items.map(option).join("")}</optgroup>`).join("");
+    }
+    select.value = sources.some(item => item.id === current) ? current : "";
+    select.disabled = environmentId ? sources.length === 0 : false;
+  }
+  SOURCE_SELECTS.forEach(([envId, srcId]) => $(envId)?.addEventListener("change", () => fillSourceSelect($(srcId), $(envId).value)));
 
   async function loadAssets() {
     const data = await api("/api/memory/assets");
@@ -245,7 +328,7 @@ document.addEventListener("DOMContentLoaded", () => {
         <div><span>AMBIENTE</span><b>${esc(asset.environment_id)}</b></div><div><span>FUENTE</span><b>${esc(asset.source_id)}</b></div>
         <div><span>DISPONIBLE</span><b>${data.storage.available ? "Sí" : "No"}</b></div>
       </div>
-      <p><a class="button primary" href="/api/memory/assets/${encodeURIComponent(asset.id)}/file" target="_blank">Abrir original</a></p>
+      <p><a class="button primary" href="${BASE}/api/memory/assets/${encodeURIComponent(asset.id)}/file" target="_blank">Abrir original</a></p>
       <h3>Ventanas de procesamiento (${data.processing_windows.length})</h3>
       <pre class="json-block">${esc(JSON.stringify(data.processing_windows, null, 2))}</pre>
       <h3>Referencias de evidencia (${data.evidence_references.length})</h3>
@@ -256,29 +339,86 @@ document.addEventListener("DOMContentLoaded", () => {
   $("[data-close-dialog]").addEventListener("click", () => $("#asset-dialog").close());
 
   $("#asset-file").addEventListener("change", event => {
-    $("#file-label").textContent = event.target.files[0]?.name || "Seleccionar archivo";
+    const names = [...event.target.files].map(file => file.name);
+    $("#file-label").textContent = names.length
+      ? (names.length === 1 ? names[0] : `${names.length} archivos: ${names.join(", ")}`)
+      : "Seleccionar los archivos de la captura";
   });
+
+  const captureStatusLabel = value => ({
+    received: "Recibida", processing: "Procesando", ready: "Lista", failed: "Fallida",
+  })[value] || value;
+  const timeOriginLabel = value => ({
+    declared: "hora declarada", media_metadata: "hora del vídeo", file_time: "hora del fichero",
+    upload_time: "hora de subida (no declarada)",
+  })[value] || value;
+  const stageIcon = state => ({ completed: "✓", running: "…", failed: "✗" })[state] || "·";
+
+  function renderJob(job, capture) {
+    const output = $("#workflow-result");
+    output.hidden = false;
+    output.classList.toggle("error", job.state === "failed");
+    const title = capture?.title ? esc(capture.title) : "Captura";
+    const percent = Math.round((job.progress || 0) * 100);
+    const stages = job.stages.map(stage => `<li class="${esc(stage.state)}"><span>${stageIcon(stage.state)}</span><b>${esc(stage.label)}</b><small>${esc(stage.detail || "")}</small></li>`).join("");
+    const action = job.state === "completed" && job.result?.episode_id
+      ? `<div class="job-actions"><button type="button" class="button primary" data-open-episode="${esc(job.result.episode_id)}">Abrir episodio</button></div>`
+      : job.state === "failed" ? `<p>${esc(job.error || "El procesamiento falló")}</p>` : "";
+    output.innerHTML = `<header><b>${title}</b><span>${job.state === "completed" ? "Completado" : job.state === "failed" ? "Fallido" : `${percent}%`}</span></header><ol>${stages}</ol>${action}`;
+    output.querySelector("[data-open-episode]")?.addEventListener("click", button => openEpisode(button.currentTarget.dataset.openEpisode));
+  }
+
+  async function followJob(jobId, capture) {
+    // El procesamiento ocurre en segundo plano: se consulta el progreso por etapas.
+    while (true) {
+      const job = await api(`/api/jobs/${encodeURIComponent(jobId)}`);
+      renderJob(job, capture);
+      if (job.state === "completed" || job.state === "failed") return job;
+      await new Promise(resolve => setTimeout(resolve, 1000));
+    }
+  }
+
   $("#ingest-form").addEventListener("submit", async event => {
     event.preventDefault();
     const submit = $("#ingest-submit"); const output = $("#workflow-result");
     const formData = new FormData(event.currentTarget);
     const captured = formData.get("captured_at");
     if (captured) formData.set("captured_at", new Date(captured).toISOString()); else formData.delete("captured_at");
-    submit.disabled = true; submit.textContent = "Procesando memoria…"; output.hidden = false; output.classList.remove("error");
-    output.textContent = "Copiando el original y ejecutando el recorrido canónico…";
+    if (!formData.get("title")) formData.delete("title");
+    submit.disabled = true; submit.textContent = "Subiendo…"; output.hidden = false; output.classList.remove("error");
+    output.textContent = "Copiando los originales al almacén…";
     try {
-      const data = await api("/api/workflow/ingest-and-process", { method: "POST", body: formData });
-      const flow = data.workflow;
-      output.textContent = [
-        `ESTADO        ${data.status}`, `ASSET         ${flow.asset_id}`, `VENTANAS      ${flow.processing_window_ids.length}`,
-        `OBSERVACIONES ${flow.observation_ids.length}`, `MICROEPISODIOS ${flow.microepisode_ids.length}`,
-        `EPISODIOS     ${flow.episode_ids.length}`, `QDRANT        ${flow.indexed_points} puntos`,
-        ...(flow.processor_failures.length ? [`ERRORES       ${flow.processor_failures.join(" | ")}`] : []),
-      ].join("\n");
-      await Promise.all([loadHealth(), loadScope(), loadAssets()]);
+      const capture = await api("/api/captures", { method: "POST", body: formData });
+      submit.textContent = "Procesando…";
+      await loadCaptures();
+      await followJob(capture.job.id, capture);
+      await Promise.all([loadHealth(), loadScope(), loadAssets(), loadCaptures()]);
     } catch (error) { output.classList.add("error"); output.textContent = `ERROR\n${error.message}`; }
-    finally { submit.disabled = false; submit.textContent = "Conservar y procesar"; }
+    finally { submit.disabled = false; submit.textContent = "Subir captura y procesar"; }
   });
+
+  async function loadCaptures() {
+    const ledger = $("#capture-ledger");
+    if (!ledger) return;
+    const data = await api("/api/captures");
+    $("#capture-count").textContent = data.captures.length;
+    if (!data.captures.length) { ledger.innerHTML = '<div class="empty">Todavía no hay capturas. Sube la primera arriba.</div>'; return; }
+    ledger.innerHTML = data.captures.map(capture => {
+      const files = capture.assets.map(asset => `${asset.original_filename} · ${modalityLabel(asset.media_type)}`).join("<br>");
+      const when = capture.captured_at ? `${fmtTime(capture.captured_at)} · ${timeOriginLabel(capture.captured_at_origin)}` : "Tiempo no declarado";
+      const origin = originLabel(capture.metadata?.origin);
+      const action = capture.episode_id
+        ? `<button type="button" class="button-mini ghost" data-open-episode="${esc(capture.episode_id)}">Abrir episodio</button>`
+        : capture.job && ["queued", "running"].includes(capture.job.state)
+          ? `<button type="button" class="button-mini ghost" data-follow-job="${esc(capture.job.id)}">Ver progreso</button>` : "";
+      return `<div class="capture-row"><div><strong>${esc(capture.title)}</strong><small>${esc(capture.environment_id)} · ${esc(when)} · ${esc(origin)}</small></div><small>${files}</small><span class="capture-status ${esc(capture.status)}">${esc(captureStatusLabel(capture.status))}</span><div>${action}</div></div>`;
+    }).join("");
+    ledger.querySelectorAll("[data-open-episode]").forEach(button => button.addEventListener("click", () => openEpisode(button.dataset.openEpisode)));
+    ledger.querySelectorAll("[data-follow-job]").forEach(button => button.addEventListener("click", () => {
+      const capture = data.captures.find(item => item.job?.id === button.dataset.followJob);
+      followJob(button.dataset.followJob, capture).then(() => loadCaptures()).catch(error => console.error(error));
+    }));
+  }
 
   async function loadEpisodes(selectedId = state.activeEpisode, append = false, loadAll = false) {
     const list = $("#memory-map") || $("#episode-list");
@@ -286,6 +426,7 @@ document.addEventListener("DOMContentLoaded", () => {
     const loadAllBtn = $("#load-all-episodes");
     if (loadMoreBtn) loadMoreBtn.disabled = true;
     if (loadAllBtn) loadAllBtn.disabled = true;
+    const requestToken = ++state.episodesRequest;
 
     try {
       let cursor = append ? state.nextCursor : null;
@@ -301,7 +442,10 @@ document.addEventListener("DOMContentLoaded", () => {
         cursor = data.next_cursor || null;
       } while (loadAll && cursor);
 
+      if (requestToken !== state.episodesRequest) return;
       state.episodes = episodesToKeep;
+      // Recarga completa: el detalle visible también se vuelve a pedir.
+      if (!append) state.inspectedEpisode = null;
       state.nextCursor = cursor;
       $("#episode-count").textContent = state.episodes.length;
       updateEpisodeDeltaMetrics(state.episodes);
@@ -408,9 +552,9 @@ document.addEventListener("DOMContentLoaded", () => {
       return;
     }
 
-    const targetId = filtered.some(item => item.id === selectedId)
-      ? selectedId
-      : (filtered.some(item => item.id === state.activeEpisode) ? state.activeEpisode : filtered[0].id);
+    // Un episodio pedido explícitamente se inspecciona aunque no esté en las
+    // páginas cargadas: el detalle se obtiene por ID, no de la lista.
+    const targetId = selectedId || state.activeEpisode || filtered[0].id;
 
     if (state.episodeGroupMode === "blocks") {
       const groups = new Map();
@@ -443,8 +587,21 @@ document.addEventListener("DOMContentLoaded", () => {
       });
     });
 
-    if (targetId) {
+    // Filtrar u ordenar no debe volver a pedir el detalle ya mostrado.
+    if (targetId && targetId !== state.inspectedEpisode) {
       inspectEpisode(targetId);
+    }
+  }
+
+  function openEpisode(episodeId, focus = null) {
+    state.activeEpisode = episodeId;
+    state.episodeFocus = focus ? { episodeId, ...focus } : null;
+    if (focus && state.inspectedEpisode === episodeId) state.inspectedEpisode = null;
+    if (location.hash !== "#episodes") {
+      // hashchange -> switchView -> loadEpisodes(state.activeEpisode): una sola carga.
+      location.hash = "episodes";
+    } else {
+      loadEpisodes(episodeId).catch(showEpisodeError);
     }
   }
 
@@ -464,6 +621,7 @@ document.addEventListener("DOMContentLoaded", () => {
     }
     return `<button class="episode-item ${episode.id === targetId ? "active" : ""}" data-episode-id="${esc(episode.id)}">
       <b>${esc(episodeTitle(episode))}</b>
+      ${episode.external_id && episode.external_id !== episode.title ? `<code class="item-key">${esc(episode.external_id)}</code>` : ""}
       <div class="item-meta">
         <span>${esc(envText)}</span>
         <time>${esc(fmtShortInterval(episode))}</time>
@@ -516,10 +674,14 @@ document.addEventListener("DOMContentLoaded", () => {
 
   async function inspectEpisode(episodeId) {
     state.activeEpisode = episodeId;
+    state.inspectedEpisode = episodeId;
+    const requestToken = ++state.inspectRequest;
     $$(".episode-item").forEach(item => item.classList.toggle("active", item.dataset.episodeId === episodeId));
     const root = $("#episode-inspector"); root.innerHTML = '<div class="empty roomy">Reconstruyendo trazabilidad…</div>';
     try {
       const data = await loadEpisodeDetail(episodeId);
+      // Una selección posterior ganó la carrera: no pintar un detalle obsoleto.
+      if (requestToken !== state.inspectRequest) return;
       const episode = data.episode;
       const referencesById = new Map(data.evidence_references.map(reference => [reference.id, reference]));
       const assetsById = new Map(data.assets.map(asset => [asset.id, asset]));
@@ -538,7 +700,7 @@ document.addEventListener("DOMContentLoaded", () => {
         const evidenceHtml = linkedEvidence.length
           ? linkedEvidence.map(reference => `<span>${esc(evidenceLocator(reference))}</span>`).join("")
           : '<span class="missing">Sin localización de evidencia</span>';
-        return `<article class="extraction-card">
+        return `<article class="extraction-card" data-observation-id="${esc(observation.id)}">
           <div class="extraction-number">${String(index + 1).padStart(2, "0")}</div>
           <div class="extraction-body"><div class="extraction-head"><span class="modality-tag ${esc(observation.modality)}">${esc(modalityLabel(observation.modality))}</span><b>${esc(observationLabel(observation.observation_type))}</b><em>${esc(confidenceLabel(observation.confidence))}</em></div>
           <div class="extracted-content">${extracted ? `<p>${esc(extracted)}</p>` : '<p class="no-content">El procesador no produjo contenido textual; se conserva la observación estructurada.</p>'}</div>
@@ -547,7 +709,16 @@ document.addEventListener("DOMContentLoaded", () => {
           <details class="technical-details compact"><summary>Datos técnicos de la observación</summary><dl><dt>ID</dt><dd>${esc(observation.id)}</dd><dt>Productor</dt><dd>${esc(observation.producer || "—")}</dd><dt>Modelo</dt><dd>${esc(observation.model_version || "—")}</dd><dt>Estado</dt><dd>${esc(observation.validation_state || "—")}</dd></dl></details></div>
         </article>`;
       };
-      const observationsHtml = allObservations.map(renderObservation).join("");
+      const hasVideoEvents = data.events.some(item => item.event_type === "video_segment");
+      const speechObservations = allObservations.filter(item => item.observation_type === "speech_segment");
+      // Lo que ya se muestra como eventos o transcripción no se repite abajo;
+      // los segmentos de audio técnicos sobran cuando hay transcripción.
+      const hiddenTypes = new Set([
+        ...(hasVideoEvents ? ["video_event"] : []),
+        ...(speechObservations.length ? ["speech_segment", "audio_segment"] : []),
+      ]);
+      const contentObservations = allObservations.filter(item => !hiddenTypes.has(item.observation_type));
+      const observationsHtml = contentObservations.map(renderObservation).join("");
       const originsHtml = data.assets.map(asset => {
         const source = sourcesById.get(asset.source_id);
         const references = data.evidence_references.filter(item => item.asset_id === asset.id);
@@ -555,10 +726,70 @@ document.addEventListener("DOMContentLoaded", () => {
         return `<article class="origin-card"><div class="origin-type"><span>${esc(modalityLabel(asset.media_type))}</span><small>${esc(asset.mime_type || "tipo MIME no declarado")}</small></div>
           <h4>${esc(assetLabel(asset, source))}</h4><p>${source ? `${esc(source.name)} · ${esc(sourceTypeLabel(source.source_type))}` : "Fuente no registrada"}</p>
           <div class="origin-evidence">${references.map(item => `<span>${esc(evidenceLocator(item))}</span>`).join("") || '<span>Sin referencias localizadas</span>'}</div>
-          ${asset.available ? `<a href="/api/memory/assets/${encodeURIComponent(asset.id)}/file" target="_blank">Abrir archivo original</a>` : `<div class="origin-unavailable">${isFixture ? "Fuente simulada: no existe un fichero físico" : "El fichero original no está disponible"}</div>`}
+          ${asset.available ? `<a href="${BASE}/api/memory/assets/${encodeURIComponent(asset.id)}/file" target="_blank">Abrir archivo original</a>` : `<div class="origin-unavailable">${isFixture ? "Fuente simulada: no existe un fichero físico" : "El fichero original no está disponible"}</div>`}
         </article>`;
       }).join("");
-      const eventsHtml = data.events.length ? `<section class="event-section"><div class="section-title"><p class="kicker">EVENTOS</p><h3>Acciones o cambios detectados</h3></div>${data.events.map(item => `<article class="event-card"><strong>${esc(humanize(item.event_type))}</strong><p>${esc(item.description)}</p><small>${fmtInterval(item)}</small></article>`).join("")}</section>` : "";
+      const orderedEvents = [...data.events].sort((a, b) =>
+        (a.asset_id || "").localeCompare(b.asset_id || "") || (a.sequence_number || 0) - (b.sequence_number || 0));
+      const videoAsset = data.assets.find(asset => asset.media_type === "video" && asset.available);
+      const renderEvent = item => {
+        const attributes = item.attributes || {};
+        const generation = item.metadata?.generation || {};
+        const hasOffsets = item.start_offset_seconds !== null && item.start_offset_seconds !== undefined;
+        const span = hasOffsets ? `${fmtClock(item.start_offset_seconds)} – ${fmtClock(item.end_offset_seconds)}` : fmtInterval(item);
+        const delta = hasOffsets ? fmtDeltaSeconds(item.end_offset_seconds - item.start_offset_seconds) : fmtDeltaSeconds(itemDurationSeconds(item));
+        const frames = (item.keyframes || []).map((frame, index) => `<button type="button" class="keyframe" data-seek="${esc(frame.offset_seconds)}" title="Ver en el vídeo (${fmtClock(frame.offset_seconds)})"><img loading="lazy" alt="Fotograma ${fmtClock(frame.offset_seconds)}" src="${BASE}/api/memory/events/${encodeURIComponent(item.id)}/keyframes/${index}"><span>${fmtClock(frame.offset_seconds)}</span></button>`).join("");
+        const speech = attributes.speech || [];
+        const speechHtml = speech.length ? `<div class="event-speech"><b>Lo que se dijo</b>${speech.map(line => `<p><button type="button" class="speech-time" data-seek="${esc(line.start_offset_seconds)}" title="Ver en el vídeo">${fmtClock(line.start_offset_seconds)}</button><span>${esc(line.text)}</span></p>`).join("")}</div>` : "";
+        const chips = (label, values) => values?.length ? `<div class="event-chips"><b>${label}</b>${values.map(value => `<span>${esc(typeof value === "string" ? value : [value.label, ...(value.attributes || []), value.description].filter(Boolean).join(" · "))}</span>`).join("")}</div>` : "";
+        return `<article class="event-card rich" data-event-start="${hasOffsets ? esc(item.start_offset_seconds) : ""}">
+          <header><span class="event-seq">${String((item.sequence_number || 0) + 1).padStart(2, "0")}</span><div><strong>${esc(item.title || humanize(item.event_type))}</strong><small>${esc(span)} · Δt ${esc(delta)}</small></div>${hasOffsets && videoAsset ? `<button type="button" class="button-mini ghost" data-seek="${esc(item.start_offset_seconds)}">▶ ${fmtClock(item.start_offset_seconds)}</button>` : ""}</header>
+          ${item.summary ? `<p class="event-summary">${esc(item.summary)}</p>` : ""}
+          ${frames ? `<div class="keyframes">${frames}</div>` : ""}
+          ${speechHtml}
+          <details class="event-detail"><summary>Descripción detallada</summary><div class="event-detail-body">${paragraphs(item.description)}
+            ${chips("Acciones", attributes.actions)}${chips("Personas", attributes.actors)}${chips("Objetos", attributes.objects)}${chips("Texto visible", attributes.visible_text)}
+            ${attributes.scene ? `<p class="event-meta"><b>Escena:</b> ${esc(attributes.scene)}</p>` : ""}
+            ${attributes.changes_from_previous ? `<p class="event-meta"><b>Cambio respecto al anterior:</b> ${esc(attributes.changes_from_previous)}</p>` : ""}
+            ${attributes.uncertainty ? `<p class="event-meta uncertain"><b>Incertidumbre:</b> ${esc(attributes.uncertainty)}</p>` : ""}
+          </div></details>
+          ${generation.vision_model ? `<p class="event-provenance">Descripción generada por ${esc(generation.vision_model)}${speech[0]?.speech_model ? ` · habla transcrita por ${esc(speech[0].speech_model)}` : ""} · no verificada</p>` : ""}
+        </article>`;
+      };
+      const playerHtml = videoAsset && orderedEvents.length
+        ? `<div class="episode-player"><video id="episode-video" controls preload="metadata" src="${BASE}/api/memory/assets/${encodeURIComponent(videoAsset.id)}/file"></video></div>` : "";
+      const transcriptHtml = speechObservations.length ? (() => {
+        const byAsset = new Map();
+        speechObservations.forEach(item => byAsset.set(item.asset_id, [...(byAsset.get(item.asset_id) || []), item]));
+        const blocks = [...byAsset.entries()].map(([assetId, lines]) => {
+          const asset = data.assets.find(item => item.id === assetId);
+          const seekable = videoAsset && asset?.id === videoAsset.id;
+          const model = lines[0].attributes?.generation?.speech_model;
+          const rows = lines
+            .sort((a, b) => (a.attributes?.start_offset_seconds || 0) - (b.attributes?.start_offset_seconds || 0))
+            .map(line => {
+              const offset = line.attributes?.start_offset_seconds || 0;
+              const time = seekable
+                ? `<button type="button" class="speech-time" data-seek="${esc(offset)}" title="Ver en el vídeo">${fmtClock(offset)}</button>`
+                : `<span class="speech-time">${fmtClock(offset)}</span>`;
+              return `<p data-observation-id="${esc(line.id)}">${time}<span>${esc(line.description)}</span></p>`;
+            }).join("");
+          return `<div class="transcript-block"><h4>${esc(asset ? assetLabel(asset, sourcesById.get(asset.source_id)) : "Audio")}</h4>${rows}${model ? `<p class="event-provenance">Transcrito por ${esc(model)} · no verificado</p>` : ""}</div>`;
+        }).join("");
+        return `<section class="transcript-section"><div class="section-title"><p class="kicker">HABLA</p><h3>Transcripción</h3><p>Lo que se dijo, con su tiempo dentro de cada archivo.</p></div>${blocks}</section>`;
+      })() : "";
+      // Resumen generado por el modelo de texto: citas [ev N · mm:ss] clicables.
+      const summary = data.summary;
+      const cite = text => esc(text).replace(/\[ev (\d+) · (\d{1,2}):(\d{2})\]/g, (all, seq, mm, ss) => `<button type="button" class="cite" data-seek="${Number(mm) * 60 + Number(ss)}" title="Ver en el vídeo">ev ${seq} · ${mm}:${ss}</button>`);
+      const summaryHtml = summary
+        ? `<section class="summary-section" id="episode-summary"><div class="section-title"><p class="kicker">RESUMEN</p><h3>${esc(summary.title || "Resumen del episodio")}</h3><p>Texto generado por ${esc(summary.model_id)} · revisión ${summary.revision}${data.summary_revisions > 1 ? ` de ${data.summary_revisions}` : ""} · no verificado salvo las citas, que apuntan a eventos reales.</p></div>
+            <p class="summary-lead">${esc(summary.summary)}</p>
+            <div class="summary-narrative">${String(summary.narrative || "").split(/\n+/).filter(Boolean).map(line => `<p>${cite(line)}</p>`).join("")}</div>
+            ${summary.highlights?.length ? `<div class="summary-highlights"><b>Momentos clave</b>${summary.highlights.map(item => `<button type="button" class="highlight" data-seek="${esc(item.offset_seconds ?? 0)}"><time>${fmtClock(item.offset_seconds ?? 0)}</time><span>${esc(item.text)}</span></button>`).join("")}</div>` : ""}
+            ${summary.open_questions?.length ? `<div class="summary-questions"><b>No consta</b><ul>${summary.open_questions.map(item => `<li>${esc(item)}</li>`).join("")}</ul></div>` : ""}
+            <footer><button type="button" class="button-mini" id="regenerate-summary" data-episode-id="${esc(episode.id)}">Regenerar resumen</button>${summary.metadata?.dropped_citations?.length ? `<small>${summary.metadata.dropped_citations.length} cita(s) inválida(s) eliminada(s)</small>` : ""}</footer></section>`
+        : data.events.length ? `<section class="summary-section empty-summary" id="episode-summary"><div class="section-title"><p class="kicker">RESUMEN</p><h3>Sin resumen todavía</h3><p>El modelo de texto no lo ha redactado (sin modelo configurado o falló). Puedes pedirlo ahora.</p></div><footer><button type="button" class="button-mini" id="regenerate-summary" data-episode-id="${esc(episode.id)}">Redactar resumen</button></footer></section>` : "";
+      const eventsHtml = orderedEvents.length ? `<section class="event-section"><div class="section-title"><p class="kicker">EVENTOS</p><h3>Qué ocurrió, tramo a tramo</h3><p>Cada evento es un tramo del vídeo descrito por el modelo de visión, con lo que se dijo durante ese tramo. Pulsa un fotograma o un tiempo para verlo en el vídeo.</p></div>${playerHtml}${orderedEvents.map(renderEvent).join("")}</section>` : "";
       const microHtml = data.microepisodes.map(({microepisode, observations, events}, index) => {
         const rules = (microepisode.metadata?.grouping_decisions || []).flatMap(item => item.rules || []);
         return `<article class="micro-summary"><span>Microepisodio ${index + 1}</span><b>${observations.length} observación(es) · ${events.length} evento(s)</b><small>${fmtInterval(microepisode)}</small><p>${[...new Set(rules)].map(groupingRuleLabel).join(" · ") || "Sin reglas declaradas"}</p></article>`;
@@ -568,20 +799,48 @@ document.addEventListener("DOMContentLoaded", () => {
       const compatibilityNotice = data.compatibility_mode ? '<div class="compatibility-notice"><b>Vista de compatibilidad</b><span>Reinicia EpiGraph para recuperar la trazabilidad completa del servidor actualizado.</span></div>' : "";
       const environmentIds = episode.environment_ids?.length ? episode.environment_ids : [episode.location].filter(Boolean);
       const environment = environmentIds.map(environmentLabel).join(", ") || "Ambiente no declarado";
-      root.innerHTML = `<header class="episode-hero"><div><p class="kicker">EPISODIO EN LA MEMORIA</p><h2>${esc(episodeTitle(episode))}</h2><p>${esc(fmtInterval(episode))}</p></div><span class="episode-place">${esc(environment)}</span></header>${compatibilityNotice}
-        <div class="memory-facts"><div><span>CONTENIDO EXTRAÍDO</span><b>${allObservations.length} observación(es)</b></div><div><span>PROCEDENCIA</span><b>${data.assets.length} activo(s)</b></div><div><span>EVENTOS</span><b>${data.events.length}</b></div><div><span>ESTRUCTURA</span><b>${data.microepisodes.length} microepisodio(s)</b></div></div>
-        <div class="episode-readable"><main><section class="content-section"><div class="section-title"><p class="kicker">QUÉ CONTIENE</p><h3>Contenido extraído</h3><p>Texto o descripción producido por los procesadores. No sustituye al original.</p></div>${observationsHtml || '<div class="empty">No hay contenido extraído asociado a este episodio.</div>'}</section>${eventsHtml}</main>
+      root.innerHTML = `<header class="episode-hero"><div><p class="kicker">EPISODIO EN LA MEMORIA</p><h2>${esc(episodeTitle(episode))}</h2>${episode.external_id ? `<p class="episode-key">Captura <code>${esc(episode.external_id)}</code></p>` : ""}<p>${esc(fmtInterval(episode))}${episode.metadata?.captured_at_origin ? ` · ${esc(timeOriginLabel(episode.metadata.captured_at_origin))}` : ""}</p></div><span class="episode-place">${esc(environment)}</span></header>${compatibilityNotice}
+        <div class="memory-facts"><div><span>CONTENIDO EXTRAÍDO</span><b>${allObservations.length} observación(es)</b></div><div><span>PROCEDENCIA</span><b>${data.assets.length} activo(s)</b></div><div><span>EVENTOS</span><b>${data.events.length || "Sin eventos"}</b></div><div><span>ESTRUCTURA</span><b>${data.microepisodes.length} microepisodio(s)</b></div></div>
+        <div class="episode-readable"><main>${summaryHtml}${eventsHtml}${transcriptHtml}<section class="content-section"><div class="section-title"><p class="kicker">QUÉ CONTIENE</p><h3>${hasVideoEvents ? "Otro contenido extraído" : "Contenido extraído"}</h3><p>Texto o descripción producido por los procesadores. No sustituye al original.</p></div>${observationsHtml || '<div class="empty">No hay más contenido extraído en este episodio.</div>'}</section></main>
           <aside class="origin-section"><div class="section-title"><p class="kicker">DE DÓNDE PROCEDE</p><h3>Archivos y fuentes</h3><p>Cada observación debe poder volver a su evidencia original.</p></div>${originsHtml || '<div class="empty">No hay activos originales enlazados.</div>'}</aside></div>
         ${hypothesesHtml}
         <details class="episode-structure"><summary><span>Cómo se construyó este episodio</span><small>Reglas deterministas y microepisodios</small></summary><div class="structure-content">${structureHtml}</div></details>
         <details class="technical-details episode-technical"><summary>Identificadores y datos técnicos</summary><dl><dt>ID del episodio</dt><dd>${esc(episode.id)}</dd><dt>Productor</dt><dd>${esc(episode.producer || "—")}</dd><dt>Versión</dt><dd>${esc(episode.model_version || "—")}</dd><dt>Confianza</dt><dd>${episode.confidence ?? "—"}</dd><dt>Qdrant</dt><dd>${data.compatibility_mode ? "No consultado" : data.vector_projection.indexed ? "Indexado" : "Pendiente"}</dd><dt>Relaciones</dt><dd>${data.relations.length}</dd></dl></details>`;
-    } catch (error) { root.innerHTML = `<div class="empty roomy"><b>Error</b><span>${esc(error.message)}</span></div>`; }
+      root.querySelectorAll("[data-seek]").forEach(button => button.addEventListener("click", () => {
+        const video = root.querySelector("#episode-video");
+        if (!video) return;
+        video.currentTime = Number(button.dataset.seek) || 0;
+        video.scrollIntoView({ behavior: "smooth", block: "center" });
+        video.play().catch(() => {});
+      }));
+      root.querySelector("#regenerate-summary")?.addEventListener("click", async event => {
+        const button = event.currentTarget; button.disabled = true; button.textContent = "Redactando…";
+        try {
+          const job = await api("/api/summaries/regenerate", { method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({ scope: "episode", key: button.dataset.episodeId }) });
+          const poll = async () => {
+            const current = await api(`/api/jobs/${encodeURIComponent(job.id)}`);
+            if (current.state === "completed" || current.state === "failed") {
+              if (current.state === "failed") alert(current.error || "No se pudo redactar el resumen");
+              if (state.inspectedEpisode === episodeId) openEpisode(episodeId);
+              return;
+            }
+            setTimeout(poll, 1500);
+          };
+          setTimeout(poll, 1500);
+        } catch (error) { alert(error.message); button.disabled = false; button.textContent = "Regenerar resumen"; }
+      });
+      applyEpisodeFocus(root, episodeId);
+    } catch (error) {
+      if (requestToken !== state.inspectRequest) return;
+      state.inspectedEpisode = null;
+      root.innerHTML = `<div class="empty roomy"><b>Error</b><span>${esc(error.message)}</span></div>`;
+    }
   }
 
   function evidenceLocator(reference) {
     if (reference.frame_number !== null && reference.frame_number !== undefined) return `fotograma ${reference.frame_number}`;
     if (reference.page_number) return `página ${reference.page_number}`;
-    if (reference.start_offset_seconds !== null && reference.start_offset_seconds !== undefined) return `${reference.start_offset_seconds}s–${reference.end_offset_seconds}s`;
+    if (reference.start_offset_seconds !== null && reference.start_offset_seconds !== undefined) return `${fmtClock(reference.start_offset_seconds)}–${fmtClock(reference.end_offset_seconds)}`;
     if (reference.text_start !== null && reference.text_start !== undefined) return `caracteres ${reference.text_start}–${reference.text_end}`;
     return reference.text_quote || "archivo completo";
   }
@@ -647,6 +906,44 @@ document.addEventListener("DOMContentLoaded", () => {
     $("#timeline-ledger").innerHTML = "";
   }
 
+  // Filas dentro de cada carril, de arriba abajo.
+  const TIMELINE_ROWS = ["episode", "microepisode", "event", "observation", "processing_window"];
+  const TARGET_BLOCK_PX = 56;   // ancho que debería tener el bloque mediano para leerse
+  const zoomLevels = [1, 1.5, 2, 3, 5, 8, 12, 16, 24, 32];
+
+  // Carriles: sin ambiente elegido, uno por ambiente (los episodios van en el
+  // suyo); con ambiente, uno por fuente del ambiente más «Episodios».
+  function timelineLanes(items, environmentId) {
+    if (!environmentId) {
+      const byEnv = new Map();
+      items.forEach(item => { const key = item.environment_id || ""; if (!byEnv.has(key)) byEnv.set(key, []); byEnv.get(key).push(item); });
+      return [...byEnv.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([env, laneItems]) => {
+        const sources = new Set(laneItems.map(item => item.source_id).filter(Boolean));
+        return { id: env, label: environmentLabel(env) || "Sin ambiente", small: `${laneItems.length} elemento(s) · ${sources.size} fuente(s)`, items: laneItems };
+      });
+    }
+    const bySource = new Map();
+    items.forEach(item => { const key = item.source_id || ""; if (!bySource.has(key)) bySource.set(key, []); bySource.get(key).push(item); });
+    const lanes = [...bySource.entries()].filter(([key]) => key).sort(([a], [b]) => a.localeCompare(b)).map(([sourceId, laneItems]) => {
+      const source = state.sources.find(item => item.id === sourceId);
+      return { id: sourceId, label: source ? sourceLabel(source) : sourceId, small: `${source ? sourceTypeLabel(source.source_type) : "fuente"} · ${laneItems.length} elemento(s)`, items: laneItems };
+    });
+    if (bySource.has("")) lanes.unshift({ id: "episodic", label: "Episodios", small: `${bySource.get("").length} elemento(s)`, items: bySource.get("") });
+    return lanes;
+  }
+
+  // Zoom automático: el ancho visible por el factor necesario para que el
+  // bloque mediano mida TARGET_BLOCK_PX; los botones fijan un zoom manual.
+  function autoZoom(items, range) {
+    const track = $("#timeline-scroll-container");
+    const visiblePx = Math.max(400, (track?.clientWidth || 900) - 145 - 40);
+    const durations = items.map(item => new Date(item.end_time || item.start_time) - new Date(item.start_time)).filter(ms => ms > 0).sort((a, b) => a - b);
+    if (!durations.length) return 1;
+    const median = durations[Math.floor(durations.length / 2)];
+    const needed = (TARGET_BLOCK_PX * range) / (median * visiblePx);
+    return zoomLevels.find(level => level >= needed) || zoomLevels[zoomLevels.length - 1];
+  }
+
   function renderTimeline(data) {
     if (!data) return;
     const showWindows = $("#show-windows")?.checked;
@@ -673,13 +970,12 @@ document.addEventListener("DOMContentLoaded", () => {
       min = center - minimumSpan / 2;
       max = center + minimumSpan / 2;
     } else {
-      const padding = observedSpan * .04;
+      const padding = observedSpan * .03;
       min -= padding;
       max += padding;
     }
     const range = max - min;
 
-    // Calcular cadencia y menor delta de tiempo entre evidencias/episodios
     let minDeltaMs = Infinity;
     items.forEach((item, idx) => {
       const st = new Date(item.start_time).getTime();
@@ -687,229 +983,163 @@ document.addEventListener("DOMContentLoaded", () => {
       const dur = et - st;
       if (dur > 0 && dur < minDeltaMs) minDeltaMs = dur;
       if (idx > 0) {
-        const prevSt = new Date(items[idx - 1].start_time).getTime();
-        const gap = Math.abs(st - prevSt);
+        const gap = Math.abs(st - new Date(items[idx - 1].start_time).getTime());
         if (gap > 0 && gap < minDeltaMs) minDeltaMs = gap;
       }
     });
 
-    const metricCount = $("#tl-metric-count");
-    const metricSpan = $("#tl-metric-span");
-    const metricMinDelta = $("#tl-metric-min-delta");
-    if (metricCount) metricCount.textContent = `${items.length} elementos`;
-    if (metricSpan) metricSpan.textContent = `Duración: ${fmtDeltaSeconds(observedSpan / 1000)}`;
-    if (metricMinDelta) metricMinDelta.textContent = `Δt mín: ${minDeltaMs < Infinity ? fmtDeltaSeconds(minDeltaMs / 1000) : "—"}`;
-
+    if (!state.timelineZoomManual) state.timelineZoom = autoZoom(items, range);
     const zoomFactor = state.timelineZoom || 1;
-    const gridWidthPercent = Math.max(100, zoomFactor * 100);
+    const zoomText = $("#zoom-level-text");
+    if (zoomText) zoomText.textContent = `${zoomFactor}x${state.timelineZoomManual ? "" : " auto"}`;
 
-    const numTicks = Math.min(30, Math.max(5, Math.round(5 * zoomFactor)));
+    if ($("#tl-metric-count")) $("#tl-metric-count").textContent = `${items.length} elementos`;
+    if ($("#tl-metric-span")) $("#tl-metric-span").textContent = `Duración: ${fmtDeltaSeconds(observedSpan / 1000)}`;
+    if ($("#tl-metric-min-delta")) $("#tl-metric-min-delta").textContent = `Δt mín: ${minDeltaMs < Infinity ? fmtDeltaSeconds(minDeltaMs / 1000) : "—"}`;
+
+    const gridWidthPercent = Math.max(100, zoomFactor * 100);
+    const multiDay = new Date(min).toDateString() !== new Date(max).toDateString();
+    const numTicks = Math.min(40, Math.max(6, Math.round(6 * zoomFactor)));
     const ticks = Array.from({ length: numTicks }, (_, i) => i / (numTicks - 1)).map(ratio => {
       const instant = new Date(min + range * ratio);
-      const timeStr = instant.toLocaleTimeString("es-ES", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
-      return `<span style="left:${ratio * 100}%">${timeStr}</span>`;
+      const timeStr = instant.toLocaleTimeString("es-ES", { hour: "2-digit", minute: "2-digit", second: range < 3_600_000 ? "2-digit" : undefined });
+      const dayStr = multiDay ? `<small>${instant.toLocaleDateString("es-ES", { day: "2-digit", month: "2-digit" })}</small>` : "";
+      return `<span style="left:${ratio * 100}%">${timeStr}${dayStr}</span>`;
     }).join("");
 
-    const laneHtml = (data.lanes || []).map(lane => {
-      const laneItems = items.filter(item => item.lane_id === lane.id || (lane.id === "episodic" && !data.lanes.some(candidate => candidate.id === item.lane_id)));
-      const blocks = laneItems.map(item => {
+    const environmentId = $("#timeline-environment")?.value || "";
+    const lanes = timelineLanes(items, environmentId);
+    const laneHtml = lanes.map(lane => {
+      const rows = TIMELINE_ROWS.filter(kind => lane.items.some(item => item.kind === kind));
+      const blocks = lane.items.map(item => {
         const start = new Date(item.start_time).getTime();
         const end = new Date(item.end_time || item.start_time).getTime();
         const left = ((start - min) / range) * 100;
         const duration = end - start;
-        const width = Math.max((duration / range) * 100, 0.4 / zoomFactor);
+        const width = (duration / range) * 100;
         const instantClass = duration <= 0 ? " instant" : "";
         const durText = fmtDeltaSeconds(duration / 1000);
-        return `<button class="time-block ${esc(item.kind)}${instantClass}" style="left:${left}%;width:${width}%" data-kind="${esc(item.kind)}" data-id="${esc(item.id)}" title="${esc(kindLabel(item.kind))} · ${esc(timelineTitle(item))} · Δt: ${durText} · ${esc(fmtInterval(item))}"><span>${esc(timelineTitle(item))}</span></button>`;
+        const row = rows.indexOf(item.kind);
+        return `<button class="time-block ${esc(item.kind)}${instantClass}" style="left:${left}%;width:${width}%;top:${8 + row * 34}px" data-kind="${esc(item.kind)}" data-id="${esc(item.id)}" title="${esc(kindLabel(item.kind))} · ${esc(timelineTitle(item))} · Δt: ${durText} · ${esc(fmtInterval(item))}"><span>${esc(timelineTitle(item))}</span></button>`;
       }).join("");
-      return `<div class="timeline-lane"><div class="lane-label">${esc(lane.label)}<small>${esc(lane.kind)}</small></div><div class="lane-track">${blocks}</div></div>`;
+      const rowLabels = rows.map((kind, index) => `<i class="row-tag ${esc(kind)}" style="top:${8 + index * 34}px">${esc(kindLabel(kind))}</i>`).join("");
+      return `<div class="timeline-lane" style="min-height:${rows.length * 34 + 16}px"><div class="lane-label">${esc(lane.label)}<small>${esc(lane.small)}</small>${rowLabels}</div><div class="lane-track">${blocks}</div></div>`;
     }).join("");
 
     canvas.innerHTML = `<div class="timeline-grid" style="width:${gridWidthPercent}%;"><div class="timeline-axis"><div></div><div class="axis-labels">${ticks}</div></div>${laneHtml}</div>`;
+    // Los bloques estrechos llevan la etiqueta fuera, a la derecha; solo se
+    // pinta si cabe antes del siguiente bloque de la misma fila (si no, se ve
+    // al pasar el ratón y en el tooltip), para que ningún texto quede debajo
+    // de otro bloque.
+    $$(".time-block:not(.instant)", canvas).forEach(block => { if (block.offsetWidth < 80) block.classList.add("narrow"); });
+    $$(".lane-track", canvas).forEach(track => {
+      const rows = new Map();
+      $$(".time-block", track).forEach(block => { const key = block.style.top; if (!rows.has(key)) rows.set(key, []); rows.get(key).push(block); });
+      rows.forEach(blocks => {
+        blocks.sort((a, b) => a.offsetLeft - b.offsetLeft);
+        blocks.forEach((block, index) => {
+          if (!block.classList.contains("narrow") && !block.classList.contains("instant")) return;
+          const label = block.querySelector("span");
+          const next = blocks[index + 1];
+          const room = next ? next.offsetLeft - (block.offsetLeft + block.offsetWidth) - 8 : Infinity;
+          if (label && label.scrollWidth > room) block.classList.add("no-label");
+        });
+      });
+    });
 
-    ledger.innerHTML = `<div class="timeline-ledger-head"><h3>Registro temporal</h3><span>${items.length} elementos visibles</span></div>${items.sort((a, b) => new Date(a.start_time) - new Date(b.start_time)).map(item => {
+    const laneOf = item => lanes.find(lane => lane.items.includes(item));
+    ledger.innerHTML = `<div class="timeline-ledger-head"><h3>Registro temporal</h3><span>${items.length} elementos visibles · ${lanes.length} carril(es)</span></div>${items.slice().sort((a, b) => new Date(a.start_time) - new Date(b.start_time)).map(item => {
       const durSec = itemDurationSeconds(item);
-      return `<button class="timeline-record" data-kind="${esc(item.kind)}" data-id="${esc(item.id)}"><span class="record-kind ${esc(item.kind)}">${esc(kindLabel(item.kind))}</span><b>${esc(timelineTitle(item))}</b><time>${esc(fmtInterval(item))} (Δt ${fmtDeltaSeconds(durSec)})</time><small>${(item.evidence_reference_ids || []).length} evidencia(s)</small></button>`;
+      return `<button class="timeline-record" data-kind="${esc(item.kind)}" data-id="${esc(item.id)}"><span class="record-kind ${esc(item.kind)}">${esc(kindLabel(item.kind))}</span><b>${esc(timelineTitle(item))}</b><time>${esc(fmtInterval(item))} (Δt ${fmtDeltaSeconds(durSec)})</time><small>${esc(laneOf(item)?.label || "")}</small></button>`;
     }).join("")}`;
 
     $$(".time-block, .timeline-record").forEach(element => element.addEventListener("click", () => {
       if (element.dataset.kind !== "episode") return;
-      location.hash = "episodes";
-      loadEpisodes(element.dataset.id);
+      openEpisode(element.dataset.id);
     }));
   }
 
   [$("#timeline-environment"), $("#timeline-source"), $("#show-windows")].forEach(control => control?.addEventListener("change", loadTimeline));
 
-  const zoomLevels = [1, 1.5, 2, 3, 5, 8, 12, 16];
-  $("#zoom-in")?.addEventListener("click", () => {
-    const curr = state.timelineZoom || 1;
-    const next = zoomLevels.find(z => z > curr) || 16;
-    state.timelineZoom = next;
-    const zoomText = $("#zoom-level-text");
-    if (zoomText) zoomText.textContent = `${next}x`;
+  function setZoom(level, manual) {
+    state.timelineZoom = level; state.timelineZoomManual = manual;
     if (state.timelineRawData) renderTimeline(state.timelineRawData);
-  });
-  $("#zoom-out")?.addEventListener("click", () => {
-    const curr = state.timelineZoom || 1;
-    const prev = [...zoomLevels].reverse().find(z => z < curr) || 1;
-    state.timelineZoom = prev;
-    const zoomText = $("#zoom-level-text");
-    if (zoomText) zoomText.textContent = `${prev}x`;
-    if (state.timelineRawData) renderTimeline(state.timelineRawData);
-  });
-  $("#zoom-fit")?.addEventListener("click", () => {
-    state.timelineZoom = 1;
-    const zoomText = $("#zoom-level-text");
-    if (zoomText) zoomText.textContent = "1x";
-    if (state.timelineRawData) renderTimeline(state.timelineRawData);
-  });
+  }
+  $("#zoom-in")?.addEventListener("click", () => setZoom(zoomLevels.find(z => z > (state.timelineZoom || 1)) || zoomLevels[zoomLevels.length - 1], true));
+  $("#zoom-out")?.addEventListener("click", () => setZoom([...zoomLevels].reverse().find(z => z < (state.timelineZoom || 1)) || 1, true));
+  $("#zoom-fit")?.addEventListener("click", () => setZoom(1, false));
 
-  // Pestañas del módulo de consultas
-  $$(".search-tab-btn").forEach(btn => {
-    btn.addEventListener("click", () => {
-      const tab = btn.dataset.searchTab;
-      $$(".search-tab-btn").forEach(b => b.classList.toggle("active", b.dataset.searchTab === tab));
-      const isHybrid = (tab === "hybrid");
-      const hybridEl = $("#search-tab-hybrid-content");
-      const toolsEl = $("#search-tab-tools-content");
-      if (hybridEl) { hybridEl.classList.toggle("active", isHybrid); hybridEl.hidden = !isHybrid; }
-      if (toolsEl) { toolsEl.classList.toggle("active", !isHybrid); toolsEl.hidden = isHybrid; }
-      if (tab === "tools") loadToolsCatalog();
+  // Pestañas del módulo de consultas: Preguntar, búsqueda por momentos y herramientas.
+  function activateSearchTab(tab) {
+    $$(".search-tab-btn").forEach(b => b.classList.toggle("active", b.dataset.searchTab === tab));
+    $$(".search-tab-content").forEach(el => {
+      const active = el.id === `search-tab-${tab}-content`;
+      el.classList.toggle("active", active); el.hidden = !active;
     });
-  });
+    if (tab === "tools") loadToolsCatalog();
+    if (tab === "ask") $("#ask-question")?.focus();
+  }
+  $$(".search-tab-btn").forEach(btn => btn.addEventListener("click", () => activateSearchTab(btn.dataset.searchTab)));
 
-  const TOOL_DEFS = [
-    {
-      name: "get_last_confirmed_observation",
-      label: "get_last_confirmed_observation · Última observación confirmada",
-      desc: "Devuelve la última observación con estado 'validated' para una identidad de entidad.",
-      fields: [{ name: "entity_id", label: "ID de la Entidad", type: "text", required: true, placeholder: "ej. drill_north_track" }]
-    },
-    {
-      name: "get_entity_timeline",
-      label: "get_entity_timeline · Línea temporal de entidad",
-      desc: "Observaciones cronológicas asociadas a una identidad validada y sus alias.",
-      fields: [
-        { name: "entity_id", label: "ID de la Entidad", type: "text", required: true, placeholder: "ej. drill_north_track" },
-        { name: "limit", label: "Límite", type: "number", value: 20 }
-      ]
-    },
-    {
-      name: "search_observations",
-      label: "search_observations · Buscar observaciones estructuradas",
-      desc: "Observaciones filtradas o semánticamente relacionadas.",
-      fields: [
-        { name: "query", label: "Consulta", type: "text", placeholder: "ej. taladro, pipeta, inspección" },
-        { name: "modality", label: "Modalidad", type: "select", options: ["", "video", "audio", "image", "document", "text"] },
-        { name: "limit", label: "Límite", type: "number", value: 10 }
-      ]
-    },
-    {
-      name: "search_documents",
-      label: "search_documents · Fragmentos documentales",
-      desc: "Búsqueda de fragmentos documentales con número de página y cita textual.",
-      fields: [
-        { name: "query", label: "Término en documentos", type: "text", required: true, placeholder: "ej. número de serie, calibración" },
-        { name: "limit", label: "Límite", type: "number", value: 5 }
-      ]
-    },
-    {
-      name: "find_contradictions",
-      label: "find_contradictions · Detectar contradicciones",
-      desc: "Encuentra relaciones CONTRADICTS, extremos en conflicto y evidencias asociadas.",
-      fields: [
-        { name: "entity_id", label: "Entidad (opcional)", type: "text", placeholder: "ej. drill_north_track" },
-        { name: "environment_id", label: "Ambiente (opcional)", type: "text", placeholder: "ej. workshop_north" }
-      ]
-    },
-    {
-      name: "compare_entities",
-      label: "compare_entities · Comparar entidades",
-      desc: "Compara dos identidades (validated_same, hypothesized_same o undetermined) sin crear decisiones arbitrarias.",
-      fields: [
-        { name: "entity_id_a", label: "Entidad A", type: "text", required: true, placeholder: "ej. drill_north_track" },
-        { name: "entity_id_b", label: "Entidad B", type: "text", required: true, placeholder: "ej. drill_south_track" }
-      ]
-    },
-    {
-      name: "get_environment_topology",
-      label: "get_environment_topology · Topología de ambiente",
-      desc: "Ambientes, fuentes, entidades presentes, episodios y vínculos espaciales.",
-      fields: [
-        { name: "include_inferred", label: "Incluir inferencias", type: "checkbox", checked: true },
-        { name: "include_hypotheses", label: "Incluir hipótesis", type: "checkbox", checked: true }
-      ]
-    },
-    {
-      name: "expand_relations",
-      label: "expand_relations · Recorrido lógico",
-      desc: "Recorrido determinista acotado por las relaciones del grafo lógico.",
-      fields: [
-        { name: "origin_id", label: "ID del nodo origen", type: "text", required: true, placeholder: "ej. episode_south_repair" },
-        { name: "max_depth", label: "Profundidad máxima (1-5)", type: "number", value: 2, min: 1, max: 5 }
-      ]
-    },
-    {
-      name: "get_supporting_evidence",
-      label: "get_supporting_evidence · Evidencias de respaldo",
-      desc: "Evidencias verificables de observación, episodio, relación, hipótesis, entidad o activo.",
-      fields: [
-        { name: "target_kind", label: "Tipo de objetivo", type: "select", options: ["observation", "episode", "relation", "hypothesis", "entity", "asset"] },
-        { name: "target_id", label: "ID del objetivo", type: "text", required: true, placeholder: "ej. observation_drill_south" }
-      ]
-    },
-    {
-      name: "get_episode",
-      label: "get_episode · Detalle canónico de episodio",
-      desc: "Recupera el detalle canónico completo de un episodio.",
-      fields: [{ name: "episode_id", label: "ID del Episodio", type: "text", required: true, placeholder: "ej. episode_south_repair" }]
-    },
-    {
-      name: "search_episodes",
-      label: "search_episodes · Recuperación híbrida",
-      desc: "Episodios rehidratados con observaciones y evidencias.",
-      fields: [
-        { name: "query", label: "Texto de consulta", type: "text", required: true, placeholder: "ej. mantenimiento taller" },
-        { name: "limit", label: "Límite", type: "number", value: 5 }
-      ]
-    }
-  ];
-
+  // Catálogo de herramientas generado desde GET /api/tools (esquema JSON de cada entrada).
+  let toolCatalog = [];
   let toolsLoaded = false;
+  const TOOL_LABELS = {
+    search_moments: "Momentos que responden", get_event: "Evento completo", get_event_neighbors: "Eventos vecinos",
+    get_episode_summary: "Resumen del episodio", browse_memory: "Navegar la memoria", get_document_passages: "Documentos del episodio",
+  };
   async function loadToolsCatalog() {
     if (toolsLoaded) return;
     const select = $("#tool-select");
     if (!select) return;
-
-    select.innerHTML = TOOL_DEFS.map(t => `<option value="${esc(t.name)}">${esc(t.label)}</option>`).join("");
+    try { toolCatalog = await api("/api/tools"); } catch (error) { select.innerHTML = `<option>${esc(error.message)}</option>`; return; }
+    const agentNames = Object.keys(TOOL_LABELS);
+    const ordered = [...toolCatalog.filter(t => agentNames.includes(t.name)), ...toolCatalog.filter(t => !agentNames.includes(t.name))];
+    select.innerHTML = ordered.map(t => `<option value="${esc(t.name)}">${esc(t.name)}${TOOL_LABELS[t.name] ? ` · ${esc(TOOL_LABELS[t.name])}` : ""}</option>`).join("");
     select.addEventListener("change", () => renderToolForm(select.value));
-    renderToolForm(TOOL_DEFS[0].name);
+    renderToolForm(ordered[0]?.name);
     toolsLoaded = true;
   }
 
-  function renderToolForm(toolName) {
-    const def = TOOL_DEFS.find(t => t.name === toolName) || TOOL_DEFS[0];
-    const desc = $("#tool-description");
-    if (desc) desc.textContent = def.desc;
+  // Resuelve $ref dentro del esquema de entrada (enum de pydantic, por ejemplo).
+  const resolveSchema = (schema, root) => schema?.$ref ? (root.$defs || {})[schema.$ref.split("/").pop()] || {} : (schema || {});
+  const schemaKind = (prop, root) => {
+    const resolved = resolveSchema(prop, root);
+    const variants = (resolved.anyOf || []).map(v => resolveSchema(v, root)).filter(v => v.type !== "null");
+    const base = variants.length === 1 ? variants[0] : resolved;
+    if (base.enum) return { kind: "select", options: base.enum };
+    if (base.type === "boolean") return { kind: "checkbox" };
+    if (base.type === "integer" || base.type === "number") return { kind: "number", min: base.minimum, max: base.maximum };
+    if (base.type === "array") return { kind: "list" };
+    if (base.format === "date-time") return { kind: "datetime" };
+    return { kind: "text" };
+  };
 
+  function renderToolForm(toolName) {
+    const def = toolCatalog.find(t => t.name === toolName) || toolCatalog[0];
+    if (!def) return;
+    const desc = $("#tool-description");
+    if (desc) desc.textContent = def.description || "";
     const fieldsContainer = $("#tool-fields");
     if (!fieldsContainer) return;
-
-    fieldsContainer.innerHTML = def.fields.map(f => {
-      if (f.type === "select") {
-        const opts = (f.options || []).map(opt => `<option value="${esc(opt)}">${opt ? esc(opt) : "(Cualquiera)"}</option>`).join("");
-        return `<label>${esc(f.label)}<select name="${esc(f.name)}">${opts}</select></label>`;
+    const schema = def.input_schema || {};
+    const required = new Set(schema.required || []);
+    fieldsContainer.innerHTML = Object.entries(schema.properties || {}).map(([name, prop]) => {
+      const meta = schemaKind(prop, schema);
+      const label = `${name}${required.has(name) ? " *" : ""}`;
+      const hint = prop.description ? ` title="${esc(prop.description)}"` : "";
+      if (meta.kind === "select") {
+        const opts = [...(required.has(name) ? [] : [""]), ...meta.options].map(opt => `<option value="${esc(opt)}">${opt === "" ? "(cualquiera)" : esc(String(opt))}</option>`).join("");
+        return `<label${hint}>${esc(label)}<select name="${esc(name)}" data-kind="select">${opts}</select></label>`;
       }
-      if (f.type === "checkbox") {
-        return `<label class="switch"><input type="checkbox" name="${esc(f.name)}" ${f.checked ? "checked" : ""}><span></span>${esc(f.label)}</label>`;
+      if (meta.kind === "checkbox") {
+        return `<label class="switch"${hint}><input type="checkbox" name="${esc(name)}" data-kind="checkbox" ${prop.default ? "checked" : ""}><span></span>${esc(name)}</label>`;
       }
-      return `<label>${esc(f.label)}
-        <input type="${f.type || "text"}" name="${esc(f.name)}" ${f.value !== undefined ? `value="${esc(f.value)}"` : ""}
-          ${f.placeholder ? `placeholder="${esc(f.placeholder)}"` : ""} ${f.required ? "required" : ""}
-          ${f.min !== undefined ? `min="${f.min}"` : ""} ${f.max !== undefined ? `max="${f.max}"` : ""}>
-      </label>`;
-    }).join("");
+      const value = prop.default !== undefined && prop.default !== null ? `value="${esc(Array.isArray(prop.default) ? prop.default.join(", ") : prop.default)}"` : "";
+      const type = meta.kind === "number" ? "number" : meta.kind === "datetime" ? "datetime-local" : "text";
+      const placeholder = meta.kind === "list" ? 'placeholder="valores separados por comas"' : "";
+      return `<label${hint}>${esc(label)}<input type="${type}" name="${esc(name)}" data-kind="${meta.kind}" ${value} ${placeholder} ${required.has(name) ? "required" : ""} ${meta.min !== undefined ? `min="${meta.min}"` : ""} ${meta.max !== undefined ? `max="${meta.max}"` : ""}></label>`;
+    }).join("") || '<p class="tool-desc">Esta herramienta no necesita parámetros.</p>';
   }
 
   $("#tool-form")?.addEventListener("submit", async event => {
@@ -917,28 +1147,21 @@ document.addEventListener("DOMContentLoaded", () => {
     const submit = $("#tool-submit");
     const root = $("#tool-results");
     const toolName = $("#tool-select").value;
-    const formData = new FormData(event.currentTarget);
     const payload = {};
+    event.currentTarget.querySelectorAll("[name]").forEach(input => {
+      const kind = input.dataset.kind;
+      if (kind === "checkbox") { payload[input.name] = input.checked; return; }
+      const value = input.value.trim();
+      if (value === "") return;
+      if (kind === "number") payload[input.name] = Number(value);
+      else if (kind === "list") payload[input.name] = value.split(",").map(item => item.trim()).filter(Boolean);
+      else if (kind === "datetime") payload[input.name] = new Date(value).toISOString();
+      else payload[input.name] = value;
+    });
 
-    for (const [key, value] of formData.entries()) {
-      if (value === "") continue;
-      if (value === "on") { payload[key] = true; continue; }
-      if (!isNaN(value) && value.trim() !== "") {
-        payload[key] = Number(value);
-      } else {
-        payload[key] = value;
-      }
-    }
-    const def = TOOL_DEFS.find(t => t.name === toolName);
-    if (def) {
-      def.fields.filter(f => f.type === "checkbox").forEach(f => {
-        if (!(f.name in payload)) payload[f.name] = false;
-      });
-    }
-
-    submit.disabled = true;
-    submit.textContent = "Consultando...";
-    root.innerHTML = '<div class="empty roomy">Ejecutando herramienta contra la memoria canónica…</div>';
+    if (!beginQuery(`Ejecutando ${toolName}…`)) return;
+    submit.textContent = "Consultando…";
+    root.innerHTML = loading("Ejecutando la herramienta contra la memoria canónica.");
 
     try {
       const output = await api(`/api/tools/${encodeURIComponent(toolName)}`, {
@@ -950,7 +1173,7 @@ document.addEventListener("DOMContentLoaded", () => {
     } catch (err) {
       root.innerHTML = `<div class="empty roomy"><b>Error ejecutando ${esc(toolName)}</b><span>${esc(err.message)}</span></div>`;
     } finally {
-      submit.disabled = false;
+      endQuery();
       submit.textContent = "Ejecutar herramienta";
     }
   });
@@ -1003,6 +1226,21 @@ document.addEventListener("DOMContentLoaded", () => {
 
     const resultCount = (out.result_ids || []).length;
 
+    // Herramientas para agentes: momentos citables, texto generado y navegación.
+    const momentCard = (item, small = false) => `<article class="passage-hit${!small && item.keyframes > 0 && item.event_id ? " has-thumb" : ""}">
+        ${!small && item.keyframes > 0 && item.event_id ? `<button type="button" class="passage-thumb" data-passage-episode="${esc(item.episode_id)}" data-passage-observation="${esc(item.observation_id || "")}" data-passage-seek="${esc(item.start_offset_seconds ?? "")}"><img loading="lazy" alt="" src="${BASE}/api/memory/events/${encodeURIComponent(item.event_id)}/keyframes/0"></button>` : ""}
+        <div class="passage-body"><header><span class="modality-tag ${esc(item.kind === "video_event" ? "video" : "text")}">${esc(passageTypeLabel(item))}</span>${item.title ? `<b>${esc(item.title)}</b>` : ""}<time>${esc([item.episode_external_id || "", item.start_offset_seconds != null ? fmtClock(item.start_offset_seconds) : "", item.page_number ? `pág. ${item.page_number}` : ""].filter(Boolean).join(" · "))}</time></header>
+        <p class="passage-text">${esc(item.snippet || item.text)}</p>
+        ${(item.speech || []).length ? `<p class="passage-text"><b>Se dijo:</b> ${item.speech.map(s => esc(s.text)).join(" · ")}</p>` : ""}
+        ${item.before?.length || item.after?.length ? `<div class="passage-neighbors">${(item.before || []).map(n => `<span class="neighbor"><small>antes</small><span>${esc(n.title)}</span></span>`).join("")}<span class="neighbor-here">este momento</span>${(item.after || []).map(n => `<span class="neighbor"><small>después</small><span>${esc(n.title)}</span></span>`).join("")}</div>` : ""}
+        <footer><span class="passage-why">${item.scores?.dense_rank ? `<span class="dense">Significado #${item.scores.dense_rank}</span>` : ""}${item.scores?.lexical_rank ? `<span class="lexical">Palabras #${item.scores.lexical_rank}</span>` : ""}${item.scores?.rerank != null ? `<span class="rerank">Reordenado ${Number(item.scores.rerank).toFixed(2)}</span>` : ""}</span><button type="button" class="button-mini" data-passage-episode="${esc(item.episode_id)}" data-passage-observation="${esc(item.observation_id || "")}" ${item.start_offset_seconds != null ? `data-passage-seek="${esc(item.start_offset_seconds)}"` : ""}>Ver en el episodio</button></footer></div></article>`;
+    const momentsHtml = (out.moments || []).map(item => momentCard(item)).join("");
+    const summariesHtml = (out.summaries || []).map(item => `<article class="summary-section"><div class="section-title"><p class="kicker">TEXTO GENERADO · ${esc(item.model_id)} · rev ${item.revision}</p><h3>${esc(item.title)}</h3></div><p class="summary-lead">${esc(item.summary)}</p><div class="summary-narrative">${paragraphs(item.narrative)}</div></article>`).join("");
+    const browseHtml = (out.browse || []).map(item => `<article class="event-card"><header><span class="event-seq">${esc(item.level)}</span><div><strong>${esc(item.label)}</strong><small>${esc([item.external_id || item.id, item.start_time ? fmtTime(item.start_time) : "", item.count != null ? `${item.count} elemento(s)` : "", item.offset_seconds != null ? fmtClock(item.offset_seconds) : ""].filter(Boolean).join(" · "))}</small></div></header>${item.summary_text ? `<p class="event-summary">${esc(item.summary_text)}</p>` : ""}</article>`).join("");
+    const pageInfo = out.metadata?.total != null ? `<p class="tool-desc">Página ${out.metadata.page} · ${out.metadata.total} en total${out.metadata.has_more ? " · hay más" : ""}</p>` : "";
+    const planInfo = out.metadata?.plan ? `<p class="tool-desc">Entendí: ${esc(out.metadata.plan.intent)}${out.metadata.plan.time_expression ? ` · ${esc(out.metadata.plan.time_expression)}` : ""}</p>` : "";
+    const anything = obsHtml || relsHtml || docsHtml || compsHtml || momentsHtml || summariesHtml || browseHtml;
+
     root.innerHTML = `
       <div class="panel">
         <div class="tool-output-head">
@@ -1010,49 +1248,702 @@ document.addEventListener("DOMContentLoaded", () => {
           <span>Confianza: ${out.confidence !== null && out.confidence !== undefined ? `${Math.round(out.confidence * 100)}%` : "—"}</span>
         </div>
         <div style="padding: 22px;">
+          ${planInfo}${pageInfo}
+          ${momentsHtml ? `<div class="tool-card-section"><h4>Momentos (${(out.moments || []).length})</h4><div class="search-results">${momentsHtml}</div></div>` : ""}
+          ${summariesHtml ? `<div class="tool-card-section"><h4>Resúmenes generados (${(out.summaries || []).length})</h4>${summariesHtml}</div>` : ""}
+          ${browseHtml ? `<div class="tool-card-section"><h4>Navegación (${(out.browse || []).length})</h4>${browseHtml}</div>` : ""}
           ${obsHtml ? `<div class="tool-card-section"><h4>Observaciones verificadas (${(out.observations || []).length})</h4>${obsHtml}</div>` : ""}
           ${relsHtml ? `<div class="tool-card-section"><h4>Relaciones y contradicciones (${(out.relations || []).length})</h4>${relsHtml}</div>` : ""}
           ${docsHtml ? `<div class="tool-card-section"><h4>Citas documentales (${(out.documents || []).length})</h4>${docsHtml}</div>` : ""}
           ${compsHtml ? `<div class="tool-card-section"><h4>Comparaciones (${(out.comparisons || []).length})</h4>${compsHtml}</div>` : ""}
-          ${!obsHtml && !relsHtml && !docsHtml && !compsHtml ? `<div class="empty">La consulta finalizó con éxito pero no devolvió registros coincidentes.</div>` : ""}
+          ${!anything ? `<div class="empty">La consulta finalizó con éxito pero no devolvió registros coincidentes.</div>` : ""}
+          <details class="technical-details"><summary>Respuesta completa (JSON)</summary><pre class="tool-json">${esc(JSON.stringify(out, null, 2))}</pre></details>
         </div>
       </div>`;
+    root.querySelectorAll("[data-passage-episode]").forEach(button => button.addEventListener("click", () => {
+      const seek = button.dataset.passageSeek;
+      openEpisode(button.dataset.passageEpisode, { observationId: button.dataset.passageObservation || null, seek: seek === undefined || seek === "" ? null : Number(seek) });
+    }));
   }
 
-  $("#search-form")?.addEventListener("submit", async event => {
-    event.preventDefault(); const root = $("#search-results"); root.innerHTML = '<div class="empty roomy">Consultando Qdrant y rehidratando desde SQLite…</div>';
-    const payload = {
-      text_query: $("#search-query").value.trim(), intent: "semantic_search",
-      environment_filter: $("#search-environment").value ? [$("#search-environment").value] : null,
-      source_filter: $("#search-source").value ? [$("#search-source").value] : null,
-      modality_filter: $("#search-modality").value ? [$("#search-modality").value] : null,
-      require_unique_resolution: $("#input-require-unique").checked, expand_relations: true, limit: 10,
-    };
-    try { renderSearch(await api("/api/hybrid-search", { method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(payload) })); }
-    catch (error) { root.innerHTML = `<div class="empty roomy"><b>Error de recuperación</b><span>${esc(error.message)}</span></div>`; }
-  });
-  function renderSearch(data) {
-    const root = $("#search-results");
-    if (!data.results.length) { root.innerHTML = '<div class="empty roomy">Sin candidatos. Comprueba que los episodios estén indexados.</div>'; return; }
-    root.innerHTML = data.results.map(item => `<article class="result-card"><div class="result-head"><span class="result-rank">${item.rank}</span><div><h3>${esc(item.episode.title)}</h3><small>${esc(item.match_kinds.join(" · "))}</small></div><div class="score-stack">${score("Semántica", item.scores.semantic, "semantic")}${score("Estructura", item.scores.structured)}${score("Tiempo", item.scores.temporal)}${score("Relación", item.scores.relational)}</div></div>
-      <div class="result-body"><div><b>Observaciones canónicas</b><ul>${item.observations.map(obs => `<li>${esc(obs.observation_type)} · ${esc(obs.description || obs.content)}</li>`).join("") || "<li>Sin observaciones</li>"}</ul></div><div class="evidence-list"><b>EVIDENCIAS</b><br>${item.evidence_references.map(ref => `${esc(ref.reference_kind)} · ${esc(shortId(ref.id))}`).join("<br>") || "Sin evidencia"}<br><br><button class="button ghost result-open" data-episode-id="${esc(item.episode.id)}">Inspeccionar episodio</button></div></div></article>`).join("");
-    $$(".result-open").forEach(button => button.addEventListener("click", () => { switchView("episodes"); loadEpisodes(button.dataset.episodeId); }));
+  // -- Preguntar: el agente responde con citas [mN] que abren el vídeo ------
+  async function loadAskView() {
+    const badge = $("#ask-status");
+    try {
+      const status = await api("/api/ask/status");
+      badge.textContent = status.enabled ? `${status.model} · ${status.tools.length} herramientas${status.network ? ` · red: ${status.network.map_episodes} episodios, ${status.network.workers} en paralelo` : ""}` : "SIN MODELO (EPIGRAPH_AGENT_BACKEND)";
+      const modeSelect = $("#ask-mode");
+      if (modeSelect && !modeSelect.dataset.touched && status.mode) modeSelect.value = status.mode;
+      if (!query.busy) $("#ask-submit").disabled = !status.enabled;
+    } catch (error) { badge.textContent = error.message; }
+    renderAskHistory(await api("/api/answers?limit=20").catch(() => ({ answers: [] })));
   }
-  function score(label, value, cls = "") { return value === null || value === undefined ? "" : `<span class="score ${cls}">${label} ${Number(value).toFixed(3)}</span>`; }
+  const answerConfidenceLabel = value => ({ alta: "evidencia verificada", media: "con citas, alguna retirada", baja: "sin citas", sin_evidencia: "no consta" })[value] || value;
+  const STRATEGY_LABEL = { simple: "agente único", por_episodio: "mapa por episodio", subpreguntas: "subpreguntas" };
+  const AGGREGATE_LABEL = { listar: "listar", contar: "contar", comparar: "comparar", secuencia: "en secuencia", comun: "lo común", ninguna: "—" };
+  const BRANCH_STATE = { confirmado: "ready", respondida: "ready", descartado: "duplicate", "sin hallazgos": "duplicate", error: "failed" };
+  // Cómo respondió la red: plan, cobertura de episodios, ramas con sus hallazgos y agentes.
+  function renderNetwork(run, cite) {
+    const meta = run.metadata || {};
+    const plan = meta.plan, routing = meta.routing || {};
+    if (!plan && !routing.cues?.length && meta.mode !== "red") return "";
+    const withCites = text => esc(text || "").replace(/\[(m\d+(?:\s*,\s*m\d+)*)\]/g, (all, list) => list.split(",").map(h => cite(h.trim())).join(" "));
+    const coverage = meta.coverage;
+    const branches = (meta.branches || []).map(b => {
+      const label = b.kind === "episode" ? `${esc(b.external_id || b.episode_id)}${b.start_time ? ` · ${esc(fmtTime(b.start_time))}` : ""}${b.environment_id ? ` · ${esc(b.environment_id)}` : ""}` : `${b.index}. ${esc(b.question || "")}`;
+      const findings = (b.findings || []).map(f => `<li>${withCites(f.text)}</li>`).join("");
+      return `<li class="net-branch"><header><span class="state-chip ${BRANCH_STATE[b.status] || ""}">${esc(b.status)}</span><b>${label}</b><small>${esc(b.agent || "")} · ${(b.took_ms / 1000 || 0).toFixed(1)} s</small></header>${findings ? `<ul>${findings}</ul>` : b.error ? `<p class="warn">${esc(b.error)}</p>` : ""}</li>`;
+    }).join("");
+    const agents = (meta.agents || []).map(a => `<tr><td>${esc(a.name)}</td><td>${esc(a.role || "")}</td><td>${a.turns ?? 0}</td><td>${a.tool_calls ?? 0}</td><td>${((a.took_ms || 0) / 1000).toFixed(1)} s</td></tr>`).join("");
+    const removed = meta.verification?.removed || [];
+    return `<div class="net-panel">
+      <div class="net-route"><b>${meta.mode === "red" ? "Red de agentes" : "Agente único"}</b><span>${esc(routing.requested === "auto" ? (routing.cues?.length ? `automático · señales: ${routing.cues.join(", ")}` : "automático · sin señales de varios episodios") : `modo ${routing.requested || "—"}`)}</span>${plan ? `<span>plan: ${esc(STRATEGY_LABEL[plan.strategy] || plan.strategy)}${plan.source === "heuristica" ? " (heurístico)" : ""}</span>` : ""}</div>
+      ${plan && plan.strategy !== "simple" ? `<dl class="net-plan">${plan.focus ? `<dt>Foco</dt><dd>${esc(plan.focus)}</dd>` : ""}${plan.per_episode_question ? `<dt>En cada episodio</dt><dd>${esc(plan.per_episode_question)}</dd>` : ""}${plan.subquestions?.length ? `<dt>Subpreguntas</dt><dd>${plan.subquestions.map(esc).join("<br>")}</dd>` : ""}<dt>Agregación</dt><dd>${esc(AGGREGATE_LABEL[plan.aggregate] || plan.aggregate)}</dd>${plan.reason ? `<dt>Motivo</dt><dd>${esc(plan.reason)}</dd>` : ""}</dl>` : ""}
+      ${coverage ? `<p class="net-coverage"><b>${coverage.candidates}</b> episodio(s) candidato(s) · <b>${coverage.confirmed ?? 0}</b> confirmado(s) · ${coverage.discarded ?? 0} descartado(s)${coverage.more_candidates ? ` · <span class="warn">${coverage.more_candidates} sin revisar</span>` : ""}</p>` : ""}
+      ${branches ? `<ol class="net-branches">${branches}</ol>` : ""}
+      ${removed.length ? `<details class="net-removed"><summary>El verificador retiró ${removed.length} frase(s) que sus citas no sostenían</summary><ul>${removed.map(text => `<li>${esc(text)}</li>`).join("")}</ul></details>` : ""}
+      ${agents ? `<table class="net-agents"><thead><tr><th>Agente</th><th>Papel</th><th>Vueltas</th><th>Herramientas</th><th>Tiempo</th></tr></thead><tbody>${agents}</tbody></table>` : ""}
+    </div>`;
+  }
+  function renderAnswer(run, root = $("#ask-results")) {
+    const byHandle = new Map((run.citations || []).map(item => [item.handle, item]));
+    const cite = handle => {
+      const c = byHandle.get(handle);
+      if (!c) return `<span class="cite dropped">${esc(handle)}</span>`;
+      const seek = c.start_offset_seconds != null ? ` data-passage-seek="${esc(c.start_offset_seconds)}"` : "";
+      return `<button type="button" class="cite" data-passage-episode="${esc(c.episode_id)}" data-passage-observation="${esc(c.observation_id || "")}"${seek} title="${esc(c.title || c.text || "")}">${esc(c.episode_external_id || c.episode_id)}${c.start_offset_seconds != null ? ` · ${fmtClock(c.start_offset_seconds)}` : c.page_number ? ` · pág. ${c.page_number}` : ""}</button>`;
+    };
+    const html = esc(run.answer || "").replace(/\[(m\d+(?:\s*,\s*m\d+)*)\]/g, (all, list) => list.split(",").map(h => cite(h.trim())).join(" "));
+    const body = html.split(/\n{2,}|\n/).filter(Boolean).map(line => `<p>${line.replace(/\*\*(.+?)\*\*/g, "<b>$1</b>")}</p>`).join("");
+    const trace = run.trace?.length ? run.trace : (run.steps || []).map(step => ({ kind: "tool", message: `${step.tool}(${JSON.stringify(step.arguments)}) → ${step.error ? `error: ${step.error}` : `${step.result_count ?? 0} resultado(s)`}`, error: step.error }));
+    const agents = run.metadata?.agents || [{ name: "agente de consulta", model: run.model_id, turns: run.usage?.turns, tool_calls: (run.steps || []).length }];
+    const agentsText = agents.map(a => `${a.name} (${a.model || "modelo"}) · ${a.turns ?? "?"} vuelta(s) · ${a.tool_calls ?? 0} herramienta(s)`).join("; ");
+    const citations = (run.citations || []).map((c, citeIndex) => `<article class="passage-hit"><div class="passage-body"><header><span class="modality-tag ${esc(c.kind === "video_event" ? "video" : "text")}">${esc(c.handle)}</span><b>${esc(c.title || c.kind)}</b><time>${esc([c.episode_external_id || "", c.start_time ? fmtTime(c.start_time) : "", c.start_offset_seconds != null ? `${fmtClock(c.start_offset_seconds)} en el vídeo` : "", c.page_number ? `pág. ${c.page_number}` : ""].filter(Boolean).join(" · "))}</time></header><p class="passage-text">${esc(clip(c.text || "", 300))}</p><footer><button type="button" class="button-mini" data-passage-episode="${esc(c.episode_id)}" data-passage-observation="${esc(c.observation_id || "")}" ${c.start_offset_seconds != null ? `data-passage-seek="${esc(c.start_offset_seconds)}"` : ""}>Ver en el episodio${c.start_offset_seconds != null ? ` ▶ ${fmtClock(c.start_offset_seconds)}` : ""}</button>${c.start_time ? `<button type="button" class="button-mini" data-cite-timeline="${citeIndex}" title="Marcar esta cita en la línea temporal">Ver en la línea</button>` : ""}</footer></div></article>`).join("");
+    root.innerHTML = `<section class="answer-card ${esc(run.confidence)}">
+      <header><div><p class="kicker">RESPUESTA</p><h3>${esc(run.question)}</h3></div><span class="confidence ${esc(run.confidence)}" title="${esc(run.confidence)}">${esc(answerConfidenceLabel(run.confidence))}</span></header>
+      <div class="answer-body">${body || '<p class="empty">Sin respuesta.</p>'}</div>
+      ${renderNetwork(run, cite)}
+      ${run.error ? `<p class="warn">${esc(run.error)}</p>` : ""}
+      ${run.dropped_citations?.length ? `<p class="answer-note">${run.dropped_citations.length} cita(s) inventada(s) por el modelo se han eliminado: ${esc(run.dropped_citations.join(", "))}.</p>` : ""}
+      ${citations ? `<div class="answer-citations"><b>Evidencia citada</b>${(run.citations || []).some(c => c.start_time) ? '<button type="button" class="button-mini" data-cite-timeline-all title="Marcar todas las citas en la línea temporal">Ver las citas en la línea temporal</button>' : ""}${citations}</div>` : ""}
+      <p class="answer-console"><button type="button" class="button-mini" data-console-run>Consola de agentes</button><span>${agents.length} agente(s) · ${Math.round((run.took_ms || 0) / 100) / 10} s · ${run.usage?.prompt_tokens || 0}+${run.usage?.completion_tokens || 0} tokens</span></p>
+      <details class="technical-details answer-trace"><summary>Traza · ${agents.length} agente(s): ${esc(agentsText)}</summary>${renderTraceList(trace)}</details>
+    </section>`;
+    root.querySelectorAll("[data-passage-episode]").forEach(button => button.addEventListener("click", () => {
+      const seek = button.dataset.passageSeek;
+      openEpisode(button.dataset.passageEpisode, { observationId: button.dataset.passageObservation || null, seek: seek === undefined || seek === "" ? null : Number(seek) });
+    }));
+    root.querySelector("[data-console-run]")?.addEventListener("click", () => window.EpiGraphAgents?.show(run));
+    const citeTitle = `Respuesta: «${run.question}»`;
+    const citeEntries = (run.citations || []).map(c => [c, `${c.handle} · ${c.title || clip(c.text || "", 70)}`]);
+    root.querySelector("[data-cite-timeline-all]")?.addEventListener("click", () => showOnTimeline(citeTitle, citeEntries));
+    root.querySelectorAll("[data-cite-timeline]").forEach(button => button.addEventListener("click", () => showOnTimeline(citeTitle, citeEntries, Number(button.dataset.citeTimeline))));
+  }
+  const TRACE_KIND = { question: "PREGUNTA", route: "ENRUTADO", plan: "PLAN", map: "COBERTURA", found: "HALLAZGOS", narrate: "NARRADOR", thinking: "MODELO", turn: "DECISIÓN", tool: "HERRAMIENTA", retry: "REINTENTO", budget: "PRESUPUESTO", verify: "VERIFICACIÓN", error: "ERROR", answer: "RESPUESTA" };
+  const agentRole = agent => (agent || "").split(" ")[0];
+  function renderTraceList(trace, { pending = false } = {}) {
+    if (!trace.length) return `<ol class="trace-list">${pending ? "" : "<li class=\"trace-line\">Sin traza registrada.</li>"}</ol>`;
+    const t0 = trace[0].at ? new Date(trace[0].at).getTime() : null;
+    const lines = trace.map(item => {
+      const delta = t0 != null && item.at ? `+${((new Date(item.at).getTime() - t0) / 1000).toFixed(1)} s` : "";
+      return `<li class="trace-line ${esc(item.kind || "")}${item.error ? " has-error" : ""}${item.agent ? ` by-${esc(agentRole(item.agent))}` : ""}"><time>${esc(delta)}</time><span class="trace-kind">${esc(TRACE_KIND[item.kind] || (item.kind || "").toUpperCase())}</span><span class="trace-msg">${esc(item.message || "")}</span></li>`;
+    });
+    if (pending) lines.push('<li class="trace-line pending"><time></time><span class="trace-kind"><span class="spinner" aria-hidden="true"></span></span><span class="trace-msg">En curso…</span></li>');
+    return `<ol class="trace-list">${lines.join("")}</ol>`;
+  }
+  function renderLiveTrace(root, question, trace, startedAt) {
+    const turns = trace.filter(item => item.kind === "turn").length;
+    const tools = trace.filter(item => item.kind === "tool").length;
+    const elapsed = ((Date.now() - startedAt) / 1000).toFixed(0);
+    const network = trace.some(item => item.kind === "plan" || item.kind === "map");
+    const agents = new Set(trace.map(item => item.agent).filter(Boolean));
+    const who = network ? `red de agentes · ${agents.size} agente(s) hasta ahora` : "1 agente de consulta";
+    root.innerHTML = `<section class="answer-card live">
+      <header><div><p class="kicker">${network ? "LA RED DE AGENTES ESTÁ RESPONDIENDO" : "EL AGENTE ESTÁ RESPONDIENDO"}</p><h3>${esc(question)}</h3></div><span class="confidence live"><span class="spinner" aria-hidden="true"></span>${elapsed} s</span></header>
+      <p class="answer-note">${who} · ${turns} vuelta(s) del modelo · ${tools} herramienta(s) ejecutada(s). El detalle, agente a agente, en la consola de agentes. <button type="button" class="button-mini" data-console-open>Abrir la consola</button></p>
+      ${renderTraceList(trace.slice(-4), { pending: true })}
+    </section>`;
+    root.querySelector("[data-console-open]")?.addEventListener("click", () => window.EpiGraphAgents?.open());
+  }
+  function renderAskHistory(data) {
+    const root = $("#ask-history");
+    if (!root) return;
+    const items = data.answers || [];
+    root.innerHTML = items.length ? items.map(run => `<button type="button" class="history-item" data-answer-id="${esc(run.id)}"><span class="confidence ${esc(run.confidence)}">${esc(answerConfidenceLabel(run.confidence))}</span><b>${esc(run.question)}</b><small>${esc(fmtTime(run.created_at))} · ${(run.citations || []).length} cita(s)</small></button>`).join("") : '<p class="tool-desc">Todavía no hay preguntas.</p>';
+    root.querySelectorAll("[data-answer-id]").forEach(button => button.addEventListener("click", async () => {
+      if (!beginQuery("Cargando la respuesta guardada…")) return;
+      try {
+        renderAnswer(await api(`/api/answers/${encodeURIComponent(button.dataset.answerId)}`));
+        $("#ask-results").scrollIntoView({ behavior: "smooth", block: "start" });
+      } catch (error) { $("#ask-results").innerHTML = `<div class="empty roomy"><b>No se pudo cargar la respuesta</b><span>${esc(error.message)}</span></div>`; }
+      finally { endQuery(); }
+    }));
+  }
+  $("#ask-mode")?.addEventListener("change", event => { event.target.dataset.touched = "1"; });
+  $("#ask-form")?.addEventListener("submit", async event => {
+    event.preventDefault();
+    const question = $("#ask-question").value.trim();
+    const root = $("#ask-results"); const submit = $("#ask-submit");
+    if (!beginQuery("Pensando… el agente consulta la memoria")) return;
+    submit.textContent = "Pensando…";
+    const runId = (crypto.randomUUID ? crypto.randomUUID() : `web-${Date.now()}-${Math.random().toString(16).slice(2)}`);
+    const startedAt = Date.now();
+    // Traza en directo: los agentes escriben cada paso en /api/activity con data.run_id; la
+    // consola de agentes la lee y la tarjeta en curso muestra un resumen.
+    let liveTrace = [];
+    renderLiveTrace(root, question, liveTrace, startedAt);
+    await window.EpiGraphAgents?.start({ runId, question, onUpdate: trace => { liveTrace = trace; renderLiveTrace(root, question, trace, startedAt); } });
+    let answered = null;
+    try {
+      answered = await api("/api/ask", { method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({ question, run_id: runId, mode: $("#ask-mode")?.value || undefined }) });
+      renderAnswer(answered);
+      renderAskHistory(await api("/api/answers?limit=20").catch(() => ({ answers: [] })));
+    } catch (error) {
+      root.innerHTML = `<div class="empty roomy"><b>No se pudo responder</b><span>${esc(error.message)}</span>${renderTraceList(liveTrace)}</div>`;
+      window.EpiGraphAgents?.finish(null, error);
+    } finally {
+      if (answered) window.EpiGraphAgents?.finish(answered);
+      endQuery(); submit.textContent = "Preguntar";
+    }
+  });
+
+  // Foco al abrir un episodio desde un resultado: el momento exacto.
+  function applyEpisodeFocus(root, episodeId) {
+    const focus = state.episodeFocus;
+    if (!focus || focus.episodeId !== episodeId) return;
+    state.episodeFocus = null;
+    let target = focus.observationId ? root.querySelector(`[data-observation-id="${CSS.escape(focus.observationId)}"]`) : null;
+    if (!target && focus.seek != null) {
+      const cards = [...root.querySelectorAll("[data-event-start]")].filter(card => card.dataset.eventStart !== "");
+      target = cards.filter(card => Number(card.dataset.eventStart) <= focus.seek + 0.01).pop() || null;
+    }
+    const video = root.querySelector("#episode-video");
+    if (video && focus.seek != null) video.currentTime = focus.seek;
+    const element = target || (focus.seek != null ? video : null);
+    if (!element) return;
+    element.classList.add("focus-flash");
+    setTimeout(() => element.scrollIntoView({ behavior: "smooth", block: "center" }), 60);
+    setTimeout(() => element.classList.remove("focus-flash"), 2600);
+  }
+
+  // Umbrales de la búsqueda por pasajes: los de .env, visibles y ajustables por consulta.
+  let passageSettings = null;
+  const fillThresholds = () => {
+    if (!passageSettings) return;
+    $("#input-min-score").value = passageSettings.rerank_min_score ?? "";
+    $("#input-agreement").value = passageSettings.agreement_rank ?? 0;
+  };
+  async function loadPassageSettings() {
+    try { passageSettings = await api("/api/passage-search/settings"); } catch { return; }
+    state.indexStatus = await api("/api/index/status").catch(() => null);
+    fillThresholds();
+    const s = passageSettings;
+    $("#passage-settings").textContent = `.env: umbral ${s.rerank_min_score ?? "ninguno"} · acuerdo top ${s.agreement_rank} · ${s.candidates} candidatos por vía · ${s.rerank_candidates} al reordenador (${s.rerank_model || "sin modelo"}) · ${s.indexed_passages} pasajes indexados`;
+  }
+  $("#reset-thresholds")?.addEventListener("click", fillThresholds);
+  loadPassageSettings();
+  const thresholdOverrides = () => {
+    const minScore = $("#input-min-score").value.trim();
+    const agreement = $("#input-agreement").value.trim();
+    return { rerank_min_score: minScore === "" ? null : Number(minScore), agreement_rank: agreement === "" ? 0 : Number(agreement) };
+  };
+
+  const searchFilters = () => ({
+    environment_filter: $("#search-environment").value ? [$("#search-environment").value] : null,
+    source_filter: $("#search-source").value ? [$("#search-source").value] : null,
+    modality_filter: $("#search-modality").value ? [$("#search-modality").value] : null,
+  });
+  $("#search-form")?.addEventListener("submit", async event => {
+    event.preventDefault();
+    if (!beginQuery("Buscando por significado y por palabras…")) return;
+    const root = $("#search-results"); root.innerHTML = loading("Buscando por significado y por palabras en cada pasaje.");
+    const text = $("#search-query").value.trim();
+    const json = body => ({ method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(body) });
+    // El estado del índice se carga con la vista y tras reindexar, no en cada consulta.
+    if (!state.indexStatus) state.indexStatus = await api("/api/index/status").catch(() => null);
+    try { renderPassageSearch(await api("/api/passage-search", json({ text_query: text, ...searchFilters(), rerank: $("#input-rerank").checked, ...thresholdOverrides() }))); }
+    catch (error) { root.innerHTML = `<div class="empty roomy"><b>Error de recuperación</b><span>${esc(error.message)}</span></div>`; }
+    finally { endQuery(); }
+  });
+
+  // Momentos de Consultas (resultados y citas) como marcas de la línea temporal.
+  const timelineMark = (item, label) => {
+    if (!item?.start_time) return null;
+    const start = Date.parse(item.start_time);
+    let end = item.end_time ? Date.parse(item.end_time) : NaN;
+    if (Number.isNaN(end) && item.start_offset_seconds != null && item.end_offset_seconds != null) end = start + (item.end_offset_seconds - item.start_offset_seconds) * 1000;
+    return { start: item.start_time, end: Number.isNaN(end) ? item.start_time : new Date(end).toISOString(), environment_id: item.environment_id || null, event_id: item.event_id || null, kind: item.kind, label };
+  };
+  function showOnTimeline(title, entries, index = -1) {
+    const marks = [], position = [];
+    entries.forEach(([item, label]) => { const mark = timelineMark(item, label); position.push(mark ? marks.length : -1); if (mark) marks.push(mark); });
+    if (!marks.length || !window.EpiGraphChrono) return;
+    window.EpiGraphChrono.focus({ title, marks, index: index >= 0 ? position[index] : -1 });
+  }
+
+  const passageTypeLabel = hit => ({ video_event: "Evento", speech_segment: "Habla", document_text_fragment: "Documento", text_fragment: "Texto" })[hit.kind] || observationLabel(hit.kind);
+  // El índice marca los términos encontrados con los caracteres de control 2 y 3.
+  const marked = text => esc(text).replace(/\u0002/g, "<mark>").replace(/\u0003/g, "</mark>");
+  const clip = (text, size = 320) => text.length > size ? `${text.slice(0, size).trimEnd()}…` : text;
+
+  function renderPassageSearch(data) {
+    const root = $("#search-results");
+    const rerank = data.rerank || {};
+    const rules = `umbral ${rerank.min_score ?? "ninguno"} · acuerdo top ${rerank.agreement_rank || "no"}`;
+    const discarded = rerank.discarded_low_relevance ? ` · ${rerank.discarded_low_relevance} descartado(s)` : "";
+    const rerankText = rerank.applied ? `reordenado con ${rerank.model} (${rules})${discarded}` : rerank.error ? `sin reordenar: ${rerank.error}` : "sin reordenar";
+    const plan = data.plan || {};
+    const intentLabel = { cuando: "cuándo", quien: "quién", donde: "dónde", que: "qué", cuanto: "cuánto", documento: "documento", antes_despues: "antes / después", libre: "" }[plan.intent] ?? plan.intent;
+    const understood = [
+      intentLabel ? `pregunta por <b>${esc(intentLabel)}</b>` : "",
+      plan.interval ? `entre <b>${esc(fmtTime(plan.interval.start))}</b> y <b>${esc(fmtTime(plan.interval.end))}</b>${plan.time_expression ? ` («${esc(plan.time_expression)}»)` : ""}` : "",
+      (plan.environment_ids || []).length ? `ambiente ${esc(plan.environment_ids.map(environmentLabel).join(", "))}` : "",
+      plan.search_text && plan.search_text !== plan.text ? `busca «${esc(plan.search_text)}»` : "",
+      plan.neighbors ? `con ${plan.neighbors} evento(s) antes y después` : "",
+    ].filter(Boolean);
+    const planHtml = understood.length ? `<div class="passage-plan">Entendí: ${understood.join(" · ")}</div>` : "";
+    const summary = `${planHtml}<div class="passage-summary"><b>${data.passage_count} momento(s) en ${data.groups.length} episodio(s)</b>
+      <span>significado: ${data.dense_candidates} candidatos</span><span>palabras: ${data.lexical_candidates}${data.lexical_query ? ` (${esc(data.lexical_query)})` : ""}</span>
+      <span class="${rerank.error ? "warn" : ""}">${esc(rerankText)}</span><span>${Math.round(data.took_ms)} ms</span>${data.groups.some(group => group.passages.some(hit => hit.start_time)) ? '<button type="button" class="button-mini" data-timeline-all title="Marcar todos los momentos en la línea temporal">Ver en la línea temporal</button>' : ""}</div>`;
+    const neighborItem = (item, label) => `<button type="button" class="neighbor" data-passage-episode="${esc(item.episode_id)}" data-passage-observation="${esc(item.observation_id || "")}" ${item.start_offset_seconds != null ? `data-passage-seek="${esc(item.start_offset_seconds)}"` : ""}><small>${label}</small>${item.keyframes > 0 && item.event_id ? `<img loading="lazy" alt="" src="${BASE}/api/memory/events/${encodeURIComponent(item.event_id)}/keyframes/0">` : ""}<span>${esc(item.title || clip(item.text, 60))}</span><time>${item.start_offset_seconds != null ? fmtClock(item.start_offset_seconds) : ""}</time></button>`;
+    const neighborsHtml = hit => {
+      const n = hit.neighbors; if (!n || (!n.before?.length && !n.after?.length)) return "";
+      return `<div class="passage-neighbors">${(n.before || []).map(item => neighborItem(item, "antes")).join("")}<span class="neighbor-here">este momento</span>${(n.after || []).map(item => neighborItem(item, "después")).join("")}</div>`;
+    };
+    const timelineHits = data.groups.flatMap(group => group.passages);
+    const timelineLabel = hit => hit.title || clip(hit.text || "", 80);
+    const renderGroups = list => list.map((group, index) => {
+      const episode = group.episode;
+      const hits = group.passages.map(hit => {
+        const seekable = hit.start_offset_seconds != null && (hit.kind === "video_event" || hit.modality === "video");
+        const where = [hit.start_time ? fmtTime(hit.start_time) : "", hit.start_offset_seconds != null ? `${fmtClock(hit.start_offset_seconds)}${hit.end_offset_seconds != null ? `–${fmtClock(hit.end_offset_seconds)}` : ""} en el ${hit.kind === "video_event" ? "vídeo" : "archivo"}` : "", hit.page_number ? `pág. ${hit.page_number}` : ""].filter(Boolean).join(" · ");
+        const seekAttrs = `data-passage-episode="${esc(hit.episode_id)}" data-passage-observation="${esc(hit.observation_id || "")}" ${seekable ? `data-passage-seek="${esc(hit.start_offset_seconds)}"` : ""}`;
+        const thumb = hit.kind === "video_event" && hit.event_id && hit.keyframes > 0
+          ? `<button type="button" class="passage-thumb" ${seekAttrs} title="Ver en el vídeo"><img loading="lazy" alt="" src="${BASE}/api/memory/events/${encodeURIComponent(hit.event_id)}/keyframes/0"></button>`
+          : "";
+        const why = [
+          hit.scores.dense_rank ? `<span class="dense" title="Similitud ${Number(hit.scores.dense).toFixed(3)}">Significado #${hit.scores.dense_rank}</span>` : "",
+          hit.scores.lexical_rank ? `<span class="lexical" title="BM25 ${Number(hit.scores.lexical).toFixed(2)}">Palabras #${hit.scores.lexical_rank}</span>` : "",
+          hit.scores.rerank != null ? `<span class="rerank">Reordenado ${Number(hit.scores.rerank).toFixed(2)}</span>` : "",
+          hit.kept_by === "agreement" ? `<span class="agreement" title="Bajo el umbral, pero significado y palabras coinciden entre sus ${rerank.agreement_rank} primeros">Ambas vías coinciden</span>` : "",
+          hit.model ? `<span title="Contenido generado por un modelo; no verificado">${esc(hit.model)}</span>` : "",
+        ].join("");
+        return `<article class="passage-hit${thumb ? " has-thumb" : ""}">${thumb}<div class="passage-body">
+          <header><span class="modality-tag ${esc(hit.modality || "")}">${esc(passageTypeLabel(hit))}</span>${hit.title ? `<b>${esc(hit.title)}</b>` : ""}<time>${esc(where)}</time></header>
+          <p class="passage-text">${hit.snippet ? marked(hit.snippet) : esc(clip(hit.text))}</p>
+          <footer><span class="passage-why">${why}</span><button type="button" class="button-mini" ${seekAttrs}>Ver en el episodio${seekable ? ` ▶ ${fmtClock(hit.start_offset_seconds)}` : ""}</button>${hit.start_time && timelineHits.indexOf(hit) >= 0 ? `<button type="button" class="button-mini" data-timeline-index="${timelineHits.indexOf(hit)}" title="Marcar este momento en la línea temporal">Ver en la línea</button>` : ""}</footer>
+          ${neighborsHtml(hit)}
+          ${hit.text.length > 320 || hit.snippet ? `<details><summary>Texto completo</summary>${paragraphs(hit.text)}</details>` : ""}
+        </div></article>`;
+      }).join("");
+      const env = (episode.environment_ids || []).map(environmentLabel).join(", ");
+      return `<section class="passage-group"><header><span class="result-rank">${index + 1}</span><div><h3>${esc(episode.title || episode.external_id || episode.id)}</h3><small>${esc([env, fmtInterval(episode)].filter(Boolean).join(" · "))}</small></div><button type="button" class="button ghost" data-passage-episode="${esc(episode.id)}">Abrir episodio</button></header>${hits}</section>`;
+    }).join("");
+    const groups = renderGroups(data.groups);
+    const discardedCount = (data.discarded_groups || []).reduce((total, group) => total + group.passages.length, 0);
+    const discardedHtml = discardedCount
+      ? `<details class="discarded-results"><summary>Descartados por relevancia baja (${discardedCount}) · ${esc(rules)}</summary><div class="search-results">${renderGroups(data.discarded_groups)}</div></details>`
+      : "";
+    const index = state.indexStatus;
+    const indexWarning = index?.job
+      ? `<div class="empty roomy index-warning"><b>Reindexando la memoria</b><span>${esc(index.reasons.join("; ") || "pedido a mano")}. Los resultados pueden estar incompletos hasta que termine; el progreso se ve en Vigilancia.</span></div>`
+      : data.indexed_passages === 0
+      ? `<div class="empty roomy index-warning"><b>No hay pasajes indexados</b><span>${index && !index.up_to_date ? esc(index.reasons.join("; ")) + ". " : ""}Se reindexa solo al arrancar el servidor; también puede lanzarlo con «Reindexar» en Vigilancia.</span></div>`
+      : "";
+    const emptyText = data.indexed_passages === 0 ? ""
+      : rerank.discarded_low_relevance ? '<div class="empty roomy">Hay candidatos, pero ninguno llega al umbral. Revísalos abajo, baja el umbral o desactiva «Reordenar».</div>'
+      : '<div class="empty roomy">Ningún pasaje coincide. Prueba otras palabras o quita filtros; si acabas de cargar capturas, espera a que terminen de indexarse.</div>';
+    root.innerHTML = `${indexWarning}${summary}${data.groups.length ? groups : emptyText}${discardedHtml}`;
+    const searchTitle = `Búsqueda «${$("#search-query").value.trim()}»`;
+    const searchEntries = timelineHits.map(hit => [hit, timelineLabel(hit)]);
+    root.querySelector("[data-timeline-all]")?.addEventListener("click", () => showOnTimeline(searchTitle, searchEntries));
+    root.querySelectorAll("[data-timeline-index]").forEach(button => button.addEventListener("click", () => showOnTimeline(searchTitle, searchEntries, Number(button.dataset.timelineIndex))));
+    root.querySelectorAll("[data-passage-episode]").forEach(button => button.addEventListener("click", () => {
+      const seek = button.dataset.passageSeek;
+      openEpisode(button.dataset.passageEpisode, button.dataset.passageObservation
+        ? { observationId: button.dataset.passageObservation, seek: seek === undefined ? null : Number(seek) }
+        : null);
+    }));
+  }
+
+  // -- Vigilancia: carpetas, ficheros leídos, trabajos y registro ----------
+
+  const originLabel = origin => {
+    if (!origin || !origin.kind) return "subida";
+    if (origin.kind === "watch") return `carpeta «${origin.source}»`;
+    return ({ upload: "subida desde el front", cli: "línea de comandos" })[origin.kind] || origin.kind;
+  };
+  const inboxStateLabel = value => ({
+    pending: "Copiándose", ready: "Listo", captured: "Capturado", duplicate: "Duplicado",
+    ignored: "Ignorado", failed: "Fallido", vanished: "Desaparecido",
+  })[value] || value;
+  const jobStateLabel = value => ({
+    queued: "En cola", running: "En curso", completed: "Completado", failed: "Fallido",
+  })[value] || value;
+  const groupingLabel = source => ({
+    manifest: "Cada subcarpeta con su manifiesto epigraph.capture/v1",
+    folder: "Cada subcarpeta es una captura",
+    file: "Cada fichero es una captura",
+    time_gap: `Ficheros a menos de ${fmtDeltaSeconds(source.max_gap_seconds)} entre sí`,
+  })[source.grouping] || source.grouping;
+  const closeRuleLabel = source => {
+    if (source.grouping === "manifest") {
+      return `al aparecer «${source.manifest_file}» con todos sus ficheros completos (espera hasta ${fmtDeltaSeconds(source.missing_files_timeout_seconds)} por los que falten)`;
+    }
+    if (source.grouping !== "folder") return "se captura en cuanto está completo";
+    return source.ready_marker
+      ? `se cierra al aparecer «${source.ready_marker}»`
+      : `se cierra tras ${fmtDeltaSeconds(source.close_after_seconds)} sin cambios`;
+  };
+  const fmtBytes = size => {
+    let value = Number(size || 0);
+    for (const unit of ["B", "KB", "MB", "GB"]) {
+      if (value < 1024 || unit === "GB") return unit === "B" ? `${value} B` : `${value.toFixed(1)} ${unit}`;
+      value /= 1024;
+    }
+    return `${size} B`;
+  };
+  const fmtClockTime = value => value ? new Date(value).toLocaleTimeString("es-ES") : "—";
+
+  function startWatchPolling() {
+    stopWatchPolling();
+    refreshWatch(true);
+    state.watchTimer = setInterval(() => { if (!document.hidden) refreshWatch(false); }, 2000);
+  }
+  function stopWatchPolling() {
+    if (state.watchTimer) clearInterval(state.watchTimer);
+    state.watchTimer = null;
+  }
+
+  async function refreshWatch(full) {
+    if (state.watchBusy) return;
+    state.watchBusy = true;
+    try {
+      const fileState = $("#watch-file-state").value;
+      const filesUrl = `/api/watch/files?limit=300${fileState ? `&state=${encodeURIComponent(fileState)}` : ""}`;
+      const [status, jobs, files, index] = await Promise.all([api("/api/watch"), api("/api/jobs?limit=30"), api(filesUrl), api("/api/index/status").catch(() => null)]);
+      renderIndexStatus(index);
+      renderWatchStatus(status);
+      renderWatchJobs(jobs);
+      renderWatchFiles(files.files);
+      await loadActivity(full);
+    } catch (error) {
+      // Sin respuesta útil, ningún panel debe quedarse en «Cargando…».
+      const message = error.status === 404
+        ? "Este servidor no tiene la API de vigilancia: se arrancó con una versión anterior. Reinicie «epigraph serve»."
+        : `No se pudo consultar la vigilancia: ${error.message}`;
+      $("#watch-state").className = "watch-state error";
+      $("#watch-state b").textContent = error.status === 404 ? "Servidor desactualizado" : "Error";
+      $("#watch-summary").textContent = message;
+      $("#watch-scan-now").disabled = true;
+      ["#watch-sources", "#watch-jobs", "#watch-files"].forEach(selector => {
+        $(selector).innerHTML = `<div class="empty">${esc(message)}</div>`;
+      });
+      $("#activity-log").innerHTML = `<div class="log-empty">${esc(message)}</div>`;
+      state.logFilterKey = null;
+    } finally {
+      state.watchBusy = false;
+    }
+  }
+
+  function renderWatchStatus(status) {
+    const light = $("#watch-state");
+    const label = light.querySelector("b");
+    const lease = status.lease;
+    const other = lease && lease.active && !lease.this_process;
+    let kind = "idle"; let text; let summary;
+    if (status.configured && status.running && status.has_lease) {
+      kind = "ok"; text = "Vigilando";
+      summary = `Cada ${fmtDeltaSeconds(status.interval_seconds)} · un fichero está completo tras ${fmtDeltaSeconds(status.settle_seconds)} sin cambios · pase ${status.pass_count || 0} a las ${fmtClockTime(status.last_scan_at)}`;
+    } else if (status.configured && status.running) {
+      kind = "warn"; text = "En espera";
+      summary = `Otro proceso vigila estas carpetas${lease ? ` (${lease.owner})` : ""}; este toma el relevo si se detiene.`;
+    } else if (other) {
+      kind = "ok"; text = "Vigilando desde otro proceso";
+      summary = `Este servidor no vigila, pero ${lease.owner} sí: sus ficheros, trabajos y registro aparecen aquí igualmente.`;
+    } else if (status.configured) {
+      text = "Detenida";
+      summary = "La configuración existe, pero este servidor se arrancó sin vigilancia (--no-watch).";
+    } else {
+      text = "Sin vigilancia";
+      summary = "Defina EPIGRAPH_WATCH_CONFIG con un fichero de carpetas (ver watch.example.toml) y reinicie, o ejecute «epigraph watch --config …».";
+    }
+    const awaitingTotal = status.sources.reduce((total, source) => total + (source.awaiting_manifest?.length || 0), 0);
+    if (awaitingTotal) { kind = kind === "ok" ? "warn" : kind; summary += ` · ${awaitingTotal} carpeta(s) completas sin manifiesto: no se procesarán hasta tenerlo`; }
+    state.awaitingGroups = new Set(status.sources.flatMap(source => (source.awaiting_manifest || []).map(item => `${source.name}\u0000${item.group}`)));
+    if (status.last_error) { kind = "error"; summary += ` · Último error: ${status.last_error}`; }
+    light.className = `watch-state ${kind}`;
+    label.textContent = text;
+    $("#watch-summary").textContent = status.config_path ? `${summary} · ${status.config_path}` : summary;
+    $("#watch-scan-now").disabled = !(status.running && status.has_lease);
+
+    const container = $("#watch-sources");
+    if (!status.sources.length) { container.innerHTML = '<div class="empty">No hay carpetas configuradas en este servidor.</div>'; return; }
+    container.innerHTML = status.sources.map(source => {
+      const counts = source.counts || {};
+      const chips = ["pending", "ready", "captured", "duplicate", "ignored", "failed"]
+        .filter(key => counts[key])
+        .map(key => `<span class="state-chip ${key}">${esc(inboxStateLabel(key))} ${counts[key]}</span>`).join("") || '<span class="state-chip">Sin ficheros todavía</span>';
+      const availability = source.available === false ? `<span class="source-flag error">NO DISPONIBLE</span>`
+        : source.enabled === false ? `<span class="source-flag">DESACTIVADA</span>`
+        : source.available ? `<span class="source-flag ok">${source.files_on_disk} EN CARPETA</span>` : "";
+      const after = source.after === "move" ? `mueve los originales a ${source.archive_dir}` : "conserva los originales en su sitio";
+      return `<div class="source-card">
+        <header><h3>${esc(source.name)}</h3>${availability}</header>
+        <code>${esc(source.path)}</code>
+        <dl>
+          <dt>Ambiente</dt><dd>${esc(source.environment_id || "lo declara cada manifiesto")}</dd>
+          <dt>Agrupación</dt><dd>${esc(groupingLabel(source))}</dd>
+          <dt>Cierre</dt><dd>${esc(closeRuleLabel(source))}</dd>
+          <dt>Después</dt><dd>${esc(after)}</dd>
+        </dl>
+        <div class="state-chips">${chips}</div>
+        ${awaitingManifestHtml(source)}
+        ${source.error && source.available !== false ? `<p class="source-error">${esc(source.error)}</p>` : ""}
+      </div>`;
+    }).join("");
+    container.querySelectorAll("[data-draft-group]").forEach(button => button.addEventListener("click", () => createManifests(button.dataset.draftSource, [button.dataset.draftGroup])));
+    container.querySelectorAll("[data-draft-all]").forEach(button => button.addEventListener("click", () => {
+      const source = status.sources.find(item => item.name === button.dataset.draftAll);
+      createManifests(source.name, source.awaiting_manifest.filter(item => item.draftable).map(item => item.group));
+    }));
+  }
+
+  function awaitingManifestHtml(source) {
+    const awaiting = source.awaiting_manifest || [];
+    if (!awaiting.length) return "";
+    const draftable = awaiting.filter(item => item.draftable).length;
+    const rows = awaiting.map(item => `<div class="awaiting-row">
+        <code>${esc(item.folder)}</code>
+        ${item.draftable ? `<button type="button" class="button-mini" data-draft-source="${esc(source.name)}" data-draft-group="${esc(item.group)}">Crear manifiesto</button>` : "<span></span>"}
+        <small>${item.files} fichero(s) completos · esperando desde ${esc(fmtClockTime(item.since))}</small>
+        ${item.draft_error ? `<small class="awaiting-error">${esc(item.draft_error)}</small>` : ""}
+      </div>`).join("");
+    return `<div class="awaiting">
+      <header><h4>Sin ${esc(source.manifest_file)} (${awaiting.length})</h4>
+        ${draftable > 1 ? `<button type="button" class="button-mini" data-draft-all="${esc(source.name)}">Crear los ${draftable}</button>` : ""}</header>
+      <p>La herramienta de captura escribe el manifiesto al terminar. Si la carga es manual, EpiGraph puede proponerlo a partir del nombre <code>&lt;entorno&gt;_&lt;epoch&gt;</code>: un dispositivo por fichero.</p>
+      ${rows}
+    </div>`;
+  }
+
+  // Carga manual: se pide el borrador, se enseña y solo se escribe si se confirma.
+  async function createManifests(source, groups) {
+    if (!groups.length) return;
+    const drafts = [];
+    for (const group of groups) {
+      const body = new FormData();
+      body.set("source", source); body.set("group_key", group);
+      try { drafts.push({group, ...(await api("/api/watch/manifest", {method: "POST", body}))}); }
+      catch (error) { alert(`${group}: ${error.message}`); return; }
+    }
+    const describe = draft => {
+      const manifest = draft.manifest;
+      const when = new Date(manifest.captured_at * 1000).toISOString().replace(".000Z", "Z");
+      const devices = manifest.devices.map(device => `   · ${device.id} (${device.kind}): ${device.files.join(", ")}`).join("\n");
+      return `${draft.group}\n   entorno ${manifest.environment_id} · captured_at ${manifest.captured_at} (${when})\n${devices}`;
+    };
+    const text = `Se escribirá ${drafts.length === 1 ? "este manifiesto" : `${drafts.length} manifiestos`} (capture.json), deducido(s) del nombre de la carpeta y de sus ficheros:\n\n${drafts.map(describe).join("\n\n")}\n\nRevise el entorno, el instante y los dispositivos. ¿Continuar?`;
+    if (!confirm(text)) return;
+    for (const draft of drafts) {
+      const body = new FormData();
+      body.set("source", source); body.set("group_key", draft.group); body.set("write", "true");
+      try { await api("/api/watch/manifest", {method: "POST", body}); }
+      catch (error) { alert(`${draft.group}: ${error.message}`); break; }
+    }
+    await refreshWatch(false);
+  }
+
+  // Estado del índice: al día, reindexándose (trabajo en la cola) o desfasado.
+  function renderIndexStatus(index) {
+    const box = $("#index-status");
+    if (!box || !index) return;
+    const running = index.job;
+    const counts = `${index.episodes} episodio(s) · ${index.points} puntos en Qdrant · ${index.indexed_passages} pasajes`;
+    const text = running
+      ? `Índice: reindexando (${jobStateLabel(running.state).toLowerCase()}): ${index.reasons.join("; ") || "pedido a mano"}`
+      : index.up_to_date ? `Índice al día · ${counts}` : `Índice desfasado: ${index.reasons.join("; ")}`;
+    box.className = `index-status${index.up_to_date && !running ? "" : " stale"}`;
+    $("#index-status-text").textContent = text;
+    $("#index-reindex").disabled = Boolean(running);
+  }
+  $("#index-reindex")?.addEventListener("click", async event => {
+    if (!confirm("Se reconstruirán los vectores y los pasajes de toda la memoria en segundo plano. La búsqueda sigue funcionando mientras tanto. ¿Continuar?")) return;
+    event.currentTarget.disabled = true;
+    try { await api("/api/index/reindex", {method: "POST"}); state.indexStatus = null; setTimeout(() => refreshWatch(false), 400); }
+    catch (error) { alert(error.message); }
+  });
+
+  function renderWatchJobs(data) {
+    $("#watch-jobs-active").textContent = data.active_count ? `${data.active_count} activo(s)` : "En reposo";
+    const container = $("#watch-jobs");
+    if (!data.jobs.length) { container.innerHTML = '<div class="empty">Todavía no hay trabajos.</div>'; return; }
+    container.innerHTML = data.jobs.map(job => {
+      const capture = job.capture;
+      const percent = Math.round((job.progress || 0) * 100);
+      const current = job.stages.find(stage => stage.state === "running") || job.stages.find(stage => stage.state === "failed");
+      const stages = job.stages.map(stage => `<span class="stage-pill ${esc(stage.state)}" title="${esc(stage.label)}${stage.detail ? `: ${esc(stage.detail)}` : ""}">${stageIcon(stage.state)} ${esc(stage.label)}</span>`).join("");
+      const action = capture?.episode_id && job.state === "completed"
+        ? `<button type="button" class="button-mini" data-open-episode="${esc(capture.episode_id)}">Abrir episodio</button>` : "";
+      return `<div class="job-card ${esc(job.state)}">
+        <header>
+          <div><strong>${esc(capture?.title || job.title || job.target_id)}</strong>
+            <small>${esc(job.job_type === "reindex" ? `pedido ${job.target_id === "manual" ? "a mano" : "al arrancar"}` : job.job_type === "summarize" ? "resumen pedido a mano" : job.job_type === "digest" ? "resumen del día y del entorno" : originLabel(capture?.origin))} · ${capture ? `${capture.asset_count} fichero(s) · ` : ""}${fmtClockTime(job.created_at)}${job.attempts > 1 ? ` · intento ${job.attempts}` : ""}</small></div>
+          <span class="capture-status ${job.state === "completed" ? "ready" : job.state === "failed" ? "failed" : "processing"}">${esc(jobStateLabel(job.state))}${job.state === "running" ? ` ${percent}%` : ""}</span>
+        </header>
+        <div class="job-bar"><i style="width:${percent}%"></i></div>
+        <div class="stage-pills">${stages}</div>
+        ${current?.detail ? `<p class="job-detail">${esc(current.label)}: ${esc(current.detail)}</p>` : ""}
+        ${job.error ? `<p class="job-error">${esc(job.error)}</p>` : ""}
+        ${action ? `<div class="job-card-actions">${action}</div>` : ""}
+      </div>`;
+    }).join("");
+    container.querySelectorAll("[data-open-episode]").forEach(button => button.addEventListener("click", () => openEpisode(button.dataset.openEpisode)));
+  }
+
+  function renderWatchFiles(files) {
+    const container = $("#watch-files");
+    if (!files.length) { container.innerHTML = '<div class="empty">Ningún fichero con este estado.</div>'; return; }
+    const retryable = new Set();
+    container.innerHTML = files.map(file => {
+      const groupId = `${file.source_name}\u0000${file.group_key}`;
+      const retry = file.state === "failed" && file.present && !retryable.has(groupId);
+      if (retry) retryable.add(groupId);
+      const archivedTail = file.archived_to ? file.archived_to.split(/[\\/]/).slice(-3).join("/") : "";
+      const where = file.archived_to ? `archivado en …/${archivedTail}` : file.present ? "" : "ya no está en la carpeta";
+      const waiting = file.state === "ready" && !file.capture_id && state.awaitingGroups?.has(groupId) ? "esperando el manifiesto de su carpeta" : "";
+      const note = [file.error, waiting, where].filter(Boolean).join(" · ");
+      return `<div class="inbox-row">
+        <span class="state-chip ${esc(file.state)}">${esc(inboxStateLabel(file.state))}</span>
+        <div><strong title="${esc(file.rel_path)}">${esc(file.rel_path)}</strong>
+          <small>${esc(file.source_name)}${file.group_key ? ` · grupo ${esc(file.group_key)}` : ""}${file.media_type ? ` · ${esc(modalityLabel(file.media_type))}` : ""} · ${fmtBytes(file.size_bytes)} · ${fmtClockTime(file.updated_at)}</small>
+          ${note ? `<small class="inbox-note" title="${esc(file.archived_to || "")}">${esc(note)}</small>` : ""}</div>
+        <div class="inbox-actions">
+          ${file.capture_id ? `<button type="button" class="button-mini" data-open-capture="${esc(file.capture_id)}">Episodio</button>` : ""}
+          ${retry ? `<button type="button" class="button-mini" data-retry-source="${esc(file.source_name)}" data-retry-group="${esc(file.group_key)}">Reintentar grupo</button>` : ""}
+        </div>
+      </div>`;
+    }).join("");
+    container.querySelectorAll("[data-open-capture]").forEach(button => button.addEventListener("click", async () => {
+      const capture = await api(`/api/captures/${encodeURIComponent(button.dataset.openCapture)}`);
+      if (capture.episode_id) openEpisode(capture.episode_id);
+      else alert("La captura aún se está procesando: su episodio aparecerá al terminar el trabajo.");
+    }));
+    container.querySelectorAll("[data-retry-group]").forEach(button => button.addEventListener("click", async () => {
+      const body = new FormData();
+      body.set("source", button.dataset.retrySource); body.set("group_key", button.dataset.retryGroup);
+      button.disabled = true;
+      try { await api("/api/watch/retry", {method: "POST", body}); await refreshWatch(false); }
+      catch (error) { alert(error.message); button.disabled = false; }
+    }));
+  }
+
+  async function loadActivity(full) {
+    const component = $("#log-component").value;
+    const levels = $("#log-level").value;
+    const filterKey = `${component}|${levels}`;
+    const log = $("#activity-log");
+    const reset = full || filterKey !== state.logFilterKey;
+    const params = new URLSearchParams({limit: reset ? "300" : "500"});
+    if (!reset) params.set("after_id", String(state.logLastId));
+    if (component) params.set("component", component);
+    levels.split(",").filter(Boolean).forEach(level => params.append("level", level));
+    const data = await api(`/api/activity?${params}`);
+    if (reset) { log.innerHTML = ""; state.logFilterKey = filterKey; }
+    state.logLastId = data.last_id;
+    if (!data.entries.length) {
+      if (!log.children.length) log.innerHTML = '<div class="log-empty">Sin actividad registrada todavía.</div>';
+      return;
+    }
+    log.querySelector(".log-empty")?.remove();
+    data.entries.forEach(entry => appendLogLine(log, entry));
+    while (log.children.length > 1000) log.firstElementChild.remove();
+    if ($("#log-follow").checked) log.scrollTop = log.scrollHeight;
+  }
+
+  // Cada pase del vigilante es una línea; los pases seguidos sin novedades
+  // sobre la misma carpeta se funden en la última, que avanza su número y su
+  // hora y cuenta las repeticiones, para que lo demás no se pierda de vista.
+  function appendLogLine(log, entry) {
+    const data = entry.data || {};
+    const idlePass = entry.level === "debug" && data.idle && data.summary;
+    const last = log.lastElementChild;
+    if (idlePass && last?.dataset.idleSummary === data.summary) {
+      const repeats = Number(last.dataset.repeats || 1) + 1;
+      last.dataset.repeats = String(repeats);
+      last.title = fmtTime(entry.at);
+      last.querySelector("time").textContent = fmtClockTime(entry.at);
+      last.querySelector(".log-msg").innerHTML = `${esc(entry.message)}<span class="log-repeat">×${repeats} desde ${esc(last.dataset.since)}</span>`;
+      return;
+    }
+    const component = entry.component === "watch" ? "VIGILANTE" : entry.component === "jobs" ? "TRABAJO" : entry.component.toUpperCase();
+    const classes = ["log-line", entry.level];
+    if (entry.level === "debug" && !data.idle) classes.push("busy");
+    if (data.step) classes.push("step");
+    log.insertAdjacentHTML("beforeend", `<div class="${esc(classes.join(" "))}" title="${esc(fmtTime(entry.at))}"><time>${esc(fmtClockTime(entry.at))}</time><span class="log-comp">${esc(component)}</span><span class="log-msg">${esc(entry.message)}</span></div>`);
+    if (idlePass) {
+      const line = log.lastElementChild;
+      line.dataset.idleSummary = data.summary;
+      line.dataset.since = fmtClockTime(entry.at);
+    }
+  }
+
+  $("#watch-scan-now").addEventListener("click", async event => {
+    const button = event.currentTarget;
+    button.disabled = true;
+    try { await api("/api/watch/scan", {method: "POST"}); setTimeout(() => refreshWatch(false), 600); }
+    catch (error) { alert(error.message); }
+  });
+  $("#watch-file-state").addEventListener("change", () => refreshWatch(false));
+  [$("#log-component"), $("#log-level")].forEach(select => select.addEventListener("change", () => loadActivity(true).catch(error => console.error(error))));
 
   async function loadSystem() {
     const [health, indexing, project] = await Promise.all([loadHealth(), api("/api/indexing/summary"), api("/api/project-status")]);
     $("#runtime-details").innerHTML = `<dt>Punto de control</dt><dd>${esc(project.checkpoint)}</dd><dt>Backend</dt><dd>${esc(health.vector_backend)}</dd><dt>Colección</dt><dd>${esc(health.collection_name)}</dd><dt>Generación</dt><dd>${esc(health.active_generation || "—")}</dd><dt>Puntos activos</dt><dd>${health.qdrant_points_count}</dd><dt>Indexadas</dt><dd>${indexing.indexed}</dd><dt>Pendientes</dt><dd>${indexing.pending}</dd><dt>Fallidas</dt><dd>${indexing.failed}</dd>`;
   }
   $("#rebuild-index").addEventListener("click", async event => {
-    event.currentTarget.disabled = true; event.currentTarget.textContent = "Reconstruyendo…";
+    // currentTarget vale null tras el primer await: se conserva la referencia.
+    const button = event.currentTarget;
+    button.disabled = true; button.textContent = "Reconstruyendo…";
     try { await api("/api/rebuild-index", {method: "POST"}); await loadSystem(); } catch (error) { alert(error.message); }
-    finally { event.currentTarget.disabled = false; event.currentTarget.textContent = "Reconstruir Qdrant desde SQLite"; }
+    finally { button.disabled = false; button.textContent = "Reconstruir Qdrant desde SQLite"; }
   });
 
-  $("#refresh-all").addEventListener("click", async () => { await Promise.all([loadHealth(), loadScope(), loadAssets()]); if ($("#view-timeline").classList.contains("active")) loadTimeline(); });
-  const requestedView = views[location.hash.slice(1)] ? location.hash.slice(1) : null;
+  $("#refresh-all").addEventListener("click", async () => { await Promise.all([loadHealth(), loadScope(), loadAssets(), loadCaptures()]); if ($("#view-timeline").classList.contains("active")) loadTimeline(); });
+  const requestedHash = location.hash.slice(1) === "timeline" && !LEGACY_TIMELINE ? "cronologia" : location.hash.slice(1);
+  const requestedView = views[requestedHash] ? requestedHash : null;
   const initialView = requestedView || "episodes";
+  // Lo que necesita la línea temporal (cronologia.js) de esta aplicación.
+  // Estilo visual: «editorial» (por defecto) o «panel» claro/oscuro (tema-panel.css). Se recuerda en este navegador.
+  const ESTILOS = ["editorial", "panel-claro", "panel-oscuro"];
+  const FONT_PANEL = "https://fonts.googleapis.com/css2?family=Nunito+Sans:wght@400;600;700;800&display=swap";
+  function applyEstilo(value, save = true) {
+    const estilo = ESTILOS.includes(value) ? value : "editorial", doc = document.documentElement;
+    if (estilo === "editorial") { doc.removeAttribute("data-skin"); doc.removeAttribute("data-mode"); }
+    else {
+      doc.setAttribute("data-skin", "panel");
+      doc.setAttribute("data-mode", estilo === "panel-oscuro" ? "dark" : "light");
+      if (!document.getElementById("font-panel")) {
+        const link = Object.assign(document.createElement("link"), { id: "font-panel", rel: "stylesheet", href: FONT_PANEL });
+        document.head.append(link);
+      }
+    }
+    if (save) { try { localStorage.setItem("epigraph.estilo", estilo); } catch {} }
+    $$(".skin-switch [data-estilo]").forEach(button => button.setAttribute("aria-pressed", String(button.dataset.estilo === estilo)));
+    window.dispatchEvent(new CustomEvent("epigraph:estilo", { detail: estilo }));
+  }
+  $$(".skin-switch [data-estilo]").forEach(button => button.addEventListener("click", () => applyEstilo(button.dataset.estilo)));
+  {
+    const doc = document.documentElement;
+    const current = doc.dataset.skin === "panel" ? (doc.dataset.mode === "dark" ? "panel-oscuro" : "panel-claro") : "editorial";
+    const fromUrl = new URLSearchParams(location.search).get("estilo");
+    applyEstilo(current, ESTILOS.includes(fromUrl));
+  }
+
+  const apiLink = $('.mast-actions a[href="/docs"]');
+  if (apiLink) apiLink.href = `${BASE}/docs`;
+
+  window.EpiGraph = { api, esc, openEpisode, environmentLabel, sourceTypeLabel, state, project: PROJECT, base: BASE };
   switchView(initialView, true);
   Promise.all([loadHealth(), loadScope(), loadAssets()]).catch(error => console.error(error));
 });
