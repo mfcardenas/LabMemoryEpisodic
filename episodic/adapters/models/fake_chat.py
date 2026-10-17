@@ -30,6 +30,18 @@ class FakeReasoningModel:
         self.calls.append({"messages": [dict(item) for item in messages], "tools": [t["function"]["name"] for t in tools or []]})
         if self.script:
             return self.script.pop(0)
+        system = str(messages[0].get("content", "")) if messages else ""
+        if system.startswith("Eres el narrador"):
+            # Red de agentes: el narrador falso junta los hallazgos tal cual, por rama.
+            try:
+                data = json.loads(messages[-1].get("content") or "{}")
+            except ValueError:
+                data = {}
+            lines = [f"{rama.get('episodio') or rama.get('subpregunta')}: {texto}"
+                     for rama in data.get("ramas", []) for texto in rama.get("hallazgos", [])]
+            return Turn(content="\n".join(lines) or "No consta en la memoria.", usage={"fake": True})
+        if system.startswith("Eres el verificador"):
+            return Turn(content='{"no_sostenidas": []}', usage={"fake": True})
         last = messages[-1]
         if last.get("role") == "user" and tools:
             question = str(last.get("content", ""))

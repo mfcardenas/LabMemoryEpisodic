@@ -98,6 +98,35 @@ semántica real con Nomic y CLIP. El catálogo de la API está en
 Material de prueba: `data_samples/phase4_input/` contiene un vídeo, un audio
 y un manual de taller que forman una misma captura.
 
+### Proyectos: espacios de datos aislados
+
+Un proyecto agrupa sus ambientes y evidencias sin mezclarlos con los de otros.
+Cada uno tiene su base de datos SQLite, sus medios, su índice, su colección de
+Qdrant (`epigraph_p_<id>`) y, si quiere, sus carpetas vigiladas. Un mismo
+ambiente (`A001`) puede existir en dos proyectos a la vez.
+
+- **Principal** son las capturas de siempre: usa `EPIGRAPH_DATA_DIR`,
+  `EPIGRAPH_QDRANT_COLLECTION` y `EPIGRAPH_WATCH_CONFIG`, y no se mueve nada.
+  No se puede pausar ni borrar.
+- **Crear**: pantalla **Proyectos** (07) o `POST /api/projects`. Nombre,
+  descripción, tipo (prueba o real) y, opcionalmente, carpetas a vigilar. Los
+  datos van a `epigraph-projects/<id>/` (`EPIGRAPH_PROJECTS_DIR`). Las carpetas
+  se leen por manifiesto (`capture.json`, con el ambiente de cada captura) y los
+  originales no se mueven. Una carpeta, ni sus subcarpetas, puede pertenecer a
+  dos proyectos.
+- **Usar**: el selector **Proyecto** de la barra lateral. La consola de cada
+  proyecto vive en `/p/<id>/` y su API en `/p/<id>/api/...` (catálogo en
+  `/p/<id>/docs`); `/api/...` sin prefijo sigue siendo el principal.
+- **Activo o en pausa**: todos se consultan; solo los activos vigilan sus
+  carpetas y procesan su cola. Todas las colas comparten un único turno de
+  trabajo pesado: un proyecto procesa mientras los demás esperan («En espera»
+  en Vigilancia), así no se reparten la VRAM ni Ollama.
+- **Borrar**: escribiendo su identificador para confirmar. Se borran su
+  directorio y su colección de Qdrant; las carpetas vigiladas y sus originales
+  no se tocan.
+- **CLI**: `python -m episodic projects` los lista; `--project <id>` hace que
+  cualquier comando actúe sobre ese proyecto.
+
 ### Entrada automática: carpetas vigiladas
 
 La herramienta que graba los entornos es externa y entrega cada captura en
@@ -255,6 +284,53 @@ se registra en Vigilancia (componente `agente`) y la respuesta completa
 —pasos, argumentos, tokens, latencia— queda en `answer_runs`
 (`GET /api/answers`). `scripts/evaluate_questions.py --mode ask` evalúa las
 citas del agente con el mismo banco de preguntas.
+
+### Red de agentes: preguntas que cruzan episodios
+
+El agente único responde bien a preguntas de un momento («¿quién dijo que
+estaba agarrotado?»). Las que cruzan episodios («¿en qué capturas aparece una
+tarjeta y qué se hace con ella en cada una?», «¿cuántas veces…?», «¿qué tienen
+en común…?») las responde una red de agentes:
+
+1. **Planificador**: decide la estrategia (agente único, mapa por episodio o
+   subpreguntas) y el foco que hay que buscar.
+2. **Cobertura** (`find_episodes`, sin LLM): los episodios candidatos, cada uno
+   con su mejor momento. El reordenador ve como mucho dos pasajes de cada
+   episodio, así llegan a puntuarse episodios distintos, y los que no alcanzan
+   el umbral de relevancia (`EPIGRAPH_RERANK_MIN_SCORE`) se descartan.
+3. **Localizadores**: uno por episodio (o por subpregunta), en paralelo, con la
+   búsqueda acotada a su episodio. Confirman si el foco aparece y responden la
+   pregunta dentro de él, con citas. Las marcas `mN` son comunes a toda la red.
+4. **Narrador**: redacta la respuesta solo con esos hallazgos, con las cifras
+   que calcula la red (episodios revisados, donde aparece, sin revisar).
+5. **Verificador**: contrasta cada frase con la evidencia de sus citas y retira
+   las que no se sostienen; si rechaza demasiadas, no borra nada y lo avisa.
+
+En Consultas → Preguntar se elige el modo: **Automático** (la red solo si la
+pregunta tiene señales de varios episodios; las demás no pagan la red), **Un
+agente** o **Red de agentes**. La respuesta muestra el plan, cada episodio
+revisado con sus hallazgos, la tabla de agentes y la traza etiquetada por
+agente.
+
+| Variable | Por defecto | Para qué |
+|---|---|---|
+| `EPIGRAPH_AGENT_MODE` | `auto` | `auto`, `simple` o `red` |
+| `EPIGRAPH_AGENT_MAP_EPISODES` | `8` | episodios que se revisan como mucho |
+| `EPIGRAPH_AGENT_WORKERS` | `2` | localizadores a la vez (con `OLLAMA_NUM_PARALLEL` > 1 se nota más) |
+| `EPIGRAPH_AGENT_NETWORK_MAX_SECONDS` | `300` | presupuesto total de la red |
+| `EPIGRAPH_AGENT_VERIFY` | `true` | verificador por LLM |
+
+`scripts/evaluate_questions.py --mode ask --agent-mode red|auto|simple`
+evalúa cada modo.
+
+**Consola de agentes.** Al lanzar una pregunta se abre una ventana flotante
+tipo log: arriba, una ficha por agente (coordinador, planificador, cada
+localizador, narrador, verificador) con su estado, vueltas, herramientas y
+tiempo; debajo, cada acción en cuanto ocurre (plan, cobertura, herramientas,
+hallazgos, narración, verificación), con filtros por tipo y por agente. Se
+minimiza a una píldora que sigue visible en otras pantallas mientras trabaja;
+el selector «Ejecuciones recientes» y el botón «Consola de agentes» de cada
+respuesta reabren la traza de cualquier pregunta anterior.
 
 ### Herramientas para agentes
 

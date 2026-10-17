@@ -224,7 +224,10 @@ def test_trace_records_every_turn_tool_and_verdict_with_the_run_id() -> None:
     verify = next(item for item in run.trace if item["kind"] == "verify")
     assert verify["citations"] == 1 and verify["dropped"] == ["m7"]
     assert run.trace[-1]["turns"] == 3 and run.trace[-1]["tool_calls"] == 2
-    assert run.metadata["agents"] == [{"name": "agente de consulta", "model": model.model_id, "turns": 3, "tool_calls": 2}]
+    [only] = run.metadata["agents"]
+    assert {k: only[k] for k in ("name", "role", "model", "turns", "tool_calls")} == {
+        "name": "agente de consulta", "role": "agente", "model": model.model_id, "turns": 3, "tool_calls": 2}
+    assert run.metadata["mode"] == "simple" and only["took_ms"] >= 0
     # Cada línea llega al registro de actividad con el id de la ejecución para seguirla en directo.
     logged = [entry for entry in agent.activity.entries if entry["component"] == "agente"]
     assert len(logged) == len(run.trace) and all(entry["data"]["run_id"] == "web-run-0001" for entry in logged)

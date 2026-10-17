@@ -22,6 +22,7 @@ from episodic.ports.repository import EpisodicRepository
 from episodic.tools.contracts import (
     BrowseItemRecord,
     BrowseMemoryInput,
+    FindEpisodesInput,
     GetDocumentPassagesInput,
     GetEpisodeSummaryInput,
     GetEventInput,
@@ -114,6 +115,82 @@ class AgentMemoryTools:
                 "candidates": {"dense": run.dense_candidates, "lexical": run.lexical_candidates, "fused": run.fused_candidates},
                 "rerank": {"applied": run.rerank_applied, "discarded": run.discarded_low_relevance, "min_score": run.rerank_min_score},
                 "discarded_episodes": [group.episode.external_id or group.episode.id for group in run.discarded_groups],
+                "took_ms": round(run.took_ms, 1),
+            },
+        )
+
+    # -- find_episodes -------------------------------------------------------------------
+
+    def find_episodes(self, request: FindEpisodesInput) -> MemoryToolOutput:
+        """Cobertura: en qué episodios aparece algo. Más candidatos y como mucho
+        ``per_episode`` pasajes de cada episodio ante el reordenador, para que
+        lleguen a puntuarse episodios distintos; sin umbral (quien recorre los
+        episodios confirma si de verdad aparece). Se pide un episodio de más
+        para saber si quedan candidatos sin revisar."""
+        if self.passage_search is None:
+            raise ValueError("La búsqueda por momentos no está configurada")
+        interval = None
+        if request.start_time and request.end_time:
+            interval = Interval(
+                start=TimeSpec.from_utc(request.start_time, clock_source="memory_tool"),
+                end=TimeSpec.from_utc(request.end_time, clock_source="memory_tool"),
+            )
+        wanted = request.max_episodes
+        run = self.passage_search.search(
+            request.query,
+            HybridSearchFilters(environment_ids=tuple(request.environment_ids), interval=interval),
+            max_episodes=wanted * 3,
+            per_episode=request.per_episode,
+            neighbors=0,
+            min_score=None,
+            candidates=request.candidates,
+            rerank_candidates=min(80, max(20, wanted * request.per_episode * 2)),
+            head_per_episode=request.per_episode,
+        )
+        # Suelo de relevancia: el umbral del reordenador separa los episodios que
+        # no tienen nada que ver (cada candidato cuesta un localizador). Si
+        # ninguno llega, se dejan los dos mejores para que lo confirmen o no.
+        floor = self.passage_search.rerank_min_score if request.relevance_floor else None
+        relevant = [
+            group for group in run.groups
+            if floor is None or group.passages[0].scores.rerank is None or group.passages[0].scores.rerank >= floor
+        ]
+        below_floor = len(run.groups) - len(relevant)
+        if not relevant:
+            relevant, below_floor = run.groups[:2], max(0, len(run.groups) - 2)
+        groups = relevant[:wanted]
+        moments: list[MomentRecord] = []
+        episodes: list[dict[str, Any]] = []
+        for group in groups:
+            episode = group.episode
+            best = group.passages[0]
+            for hit in group.passages:
+                record = self._moment(hit.passage, episode, request.max_chars, snippet=hit.snippet)
+                record.scores = hit.scores.to_dict()
+                moments.append(record)
+            episodes.append({
+                "episode_id": episode.id,
+                "external_id": episode.external_id,
+                "title": episode.title,
+                "environment_id": best.passage.environment_id or (episode.environment_ids[0] if episode.environment_ids else None),
+                "start_time": episode.start_time.isoformat() if episode.start_time else None,
+                "end_time": episode.end_time.isoformat() if episode.end_time else None,
+                "matches": len(group.passages),
+                "best_score": round(best.scores.rerank if best.scores.rerank is not None else best.scores.fused, 4),
+                "moment_ids": [hit.passage.id for hit in group.passages],
+            })
+        return MemoryToolOutput(
+            tool="find_episodes",
+            result_ids=[item["episode_id"] for item in episodes],
+            moments=moments,
+            metadata={
+                "read_only": True,
+                "episodes": episodes,
+                "more_candidates": max(0, len(relevant) - wanted),
+                "below_floor": below_floor,
+                "relevance_floor": floor,
+                "candidates": {"dense": run.dense_candidates, "lexical": run.lexical_candidates, "fused": run.fused_candidates},
+                "plan": run.plan.to_dict() if run.plan is not None else None,
                 "took_ms": round(run.took_ms, 1),
             },
         )

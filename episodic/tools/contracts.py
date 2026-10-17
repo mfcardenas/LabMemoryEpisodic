@@ -141,6 +141,19 @@ class SearchMomentsInput(IntervalToolInput):
     max_chars: int = Field(900, ge=80, le=8000, description="caracteres de texto por momento")
 
 
+class FindEpisodesInput(IntervalToolInput):
+    """Episodios en los que aparece algo (cobertura de n episodios), con su
+    mejor momento cada uno; para recorrerlos después uno a uno."""
+
+    query: str = Field(min_length=1)
+    environment_ids: list[str] = Field(default_factory=list)
+    max_episodes: int = Field(8, ge=1, le=50)
+    per_episode: int = Field(2, ge=1, le=5)
+    candidates: int = Field(200, ge=20, le=1000, description="candidatos por vía antes de fusionar")
+    relevance_floor: bool = Field(True, description="descarta los episodios cuyo mejor momento no llega al umbral del reordenador (si ninguno llega, quedan los dos mejores)")
+    max_chars: int = Field(600, ge=80, le=4000)
+
+
 class GetEventInput(ToolInput):
     event_id: str = Field(min_length=1)
     max_chars: int = Field(4000, ge=80, le=20000)

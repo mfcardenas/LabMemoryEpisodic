@@ -19,6 +19,11 @@ document.addEventListener("DOMContentLoaded", () => {
   };
   const $ = selector => document.querySelector(selector);
   const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
+  // Proyecto de esta consola: /p/<id>/ en la URL; en «/» es el principal. Las rutas /api/
+  // del proyecto llevan su prefijo; el catálogo de proyectos (/api/projects) es común.
+  const PROJECT = (location.pathname.match(/^\/p\/([a-z0-9-]+)/) || [])[1] || "principal";
+  const BASE = location.pathname.startsWith("/p/") ? `/p/${PROJECT}` : "";
+  const apiUrl = url => url.startsWith("/api/") && !url.startsWith("/api/projects") ? BASE + url : url;
   const esc = value => String(value ?? "").replace(/[&<>'"]/g, char => ({
     "&": "&amp;", "<": "&lt;", ">": "&gt;", "'": "&#39;", '"': "&quot;",
   })[char]);
@@ -135,6 +140,7 @@ document.addEventListener("DOMContentLoaded", () => {
     ingest: ["RECORRIDO CANÓNICO", "Registro y custodia de activos", "El archivo original inicia la memoria; SHA-256 inmutable y procesamiento observable."],
     watch: ["ENTRADA AUTOMÁTICA", "Vigilancia y trabajos", "Lo que llega a las carpetas vigiladas se convierte en capturas: cada fichero leído, cada trabajo y su registro de ejecución."],
     search: ["CONSULTA Y AUDITORÍA", "Preguntar, buscar por momentos y herramientas", "El agente responde con citas verificadas a momentos reales; la búsqueda devuelve momentos concretos con su hora y su motivo; las herramientas son el catálogo que usa el agente."],
+    projects: ["ESPACIOS DE DATOS", "Proyectos", "Cada proyecto aísla sus ambientes y evidencias: base de datos, medios, índice y colección de Qdrant propios. Crea escenarios de prueba sin tocar las capturas reales."],
     system: ["ARQUITECTURA Y ESTADO", "Proyección vectorial y runtime", "Separación estricta entre la verdad canónica (SQLite) y la proyección reconstruible (Qdrant)."],
   };
 
@@ -163,6 +169,7 @@ document.addEventListener("DOMContentLoaded", () => {
     if (loadData && name === "search") { loadAskView().catch(error => console.error(error)); loadToolsCatalog().catch(error => console.error(error)); }
     if (name === "watch") startWatchPolling(); else stopWatchPolling();
     if (loadData && name === "system") loadSystem().catch(error => console.error(error));
+    if (name === "projects") window.EpiGraphProjects?.activate();
   }
 
   // Estado de las peticiones de Consultas (Preguntar, búsqueda, herramientas):
@@ -192,7 +199,7 @@ document.addEventListener("DOMContentLoaded", () => {
   const loading = text => `<div class="empty roomy loading"><span class="spinner" aria-hidden="true"></span><b>Cargando…</b><span>${text}</span></div>`;
 
   async function api(url, options) {
-    const response = await fetch(url, options);
+    const response = await fetch(apiUrl(url), options);
     if (!response.ok) {
       let message = `${response.status} ${response.statusText}`;
       try { const body = await response.json(); message = body.detail || message; } catch (_) { /* no JSON */ }
@@ -321,7 +328,7 @@ document.addEventListener("DOMContentLoaded", () => {
         <div><span>AMBIENTE</span><b>${esc(asset.environment_id)}</b></div><div><span>FUENTE</span><b>${esc(asset.source_id)}</b></div>
         <div><span>DISPONIBLE</span><b>${data.storage.available ? "Sí" : "No"}</b></div>
       </div>
-      <p><a class="button primary" href="/api/memory/assets/${encodeURIComponent(asset.id)}/file" target="_blank">Abrir original</a></p>
+      <p><a class="button primary" href="${BASE}/api/memory/assets/${encodeURIComponent(asset.id)}/file" target="_blank">Abrir original</a></p>
       <h3>Ventanas de procesamiento (${data.processing_windows.length})</h3>
       <pre class="json-block">${esc(JSON.stringify(data.processing_windows, null, 2))}</pre>
       <h3>Referencias de evidencia (${data.evidence_references.length})</h3>
@@ -719,7 +726,7 @@ document.addEventListener("DOMContentLoaded", () => {
         return `<article class="origin-card"><div class="origin-type"><span>${esc(modalityLabel(asset.media_type))}</span><small>${esc(asset.mime_type || "tipo MIME no declarado")}</small></div>
           <h4>${esc(assetLabel(asset, source))}</h4><p>${source ? `${esc(source.name)} · ${esc(sourceTypeLabel(source.source_type))}` : "Fuente no registrada"}</p>
           <div class="origin-evidence">${references.map(item => `<span>${esc(evidenceLocator(item))}</span>`).join("") || '<span>Sin referencias localizadas</span>'}</div>
-          ${asset.available ? `<a href="/api/memory/assets/${encodeURIComponent(asset.id)}/file" target="_blank">Abrir archivo original</a>` : `<div class="origin-unavailable">${isFixture ? "Fuente simulada: no existe un fichero físico" : "El fichero original no está disponible"}</div>`}
+          ${asset.available ? `<a href="${BASE}/api/memory/assets/${encodeURIComponent(asset.id)}/file" target="_blank">Abrir archivo original</a>` : `<div class="origin-unavailable">${isFixture ? "Fuente simulada: no existe un fichero físico" : "El fichero original no está disponible"}</div>`}
         </article>`;
       }).join("");
       const orderedEvents = [...data.events].sort((a, b) =>
@@ -731,7 +738,7 @@ document.addEventListener("DOMContentLoaded", () => {
         const hasOffsets = item.start_offset_seconds !== null && item.start_offset_seconds !== undefined;
         const span = hasOffsets ? `${fmtClock(item.start_offset_seconds)} – ${fmtClock(item.end_offset_seconds)}` : fmtInterval(item);
         const delta = hasOffsets ? fmtDeltaSeconds(item.end_offset_seconds - item.start_offset_seconds) : fmtDeltaSeconds(itemDurationSeconds(item));
-        const frames = (item.keyframes || []).map((frame, index) => `<button type="button" class="keyframe" data-seek="${esc(frame.offset_seconds)}" title="Ver en el vídeo (${fmtClock(frame.offset_seconds)})"><img loading="lazy" alt="Fotograma ${fmtClock(frame.offset_seconds)}" src="/api/memory/events/${encodeURIComponent(item.id)}/keyframes/${index}"><span>${fmtClock(frame.offset_seconds)}</span></button>`).join("");
+        const frames = (item.keyframes || []).map((frame, index) => `<button type="button" class="keyframe" data-seek="${esc(frame.offset_seconds)}" title="Ver en el vídeo (${fmtClock(frame.offset_seconds)})"><img loading="lazy" alt="Fotograma ${fmtClock(frame.offset_seconds)}" src="${BASE}/api/memory/events/${encodeURIComponent(item.id)}/keyframes/${index}"><span>${fmtClock(frame.offset_seconds)}</span></button>`).join("");
         const speech = attributes.speech || [];
         const speechHtml = speech.length ? `<div class="event-speech"><b>Lo que se dijo</b>${speech.map(line => `<p><button type="button" class="speech-time" data-seek="${esc(line.start_offset_seconds)}" title="Ver en el vídeo">${fmtClock(line.start_offset_seconds)}</button><span>${esc(line.text)}</span></p>`).join("")}</div>` : "";
         const chips = (label, values) => values?.length ? `<div class="event-chips"><b>${label}</b>${values.map(value => `<span>${esc(typeof value === "string" ? value : [value.label, ...(value.attributes || []), value.description].filter(Boolean).join(" · "))}</span>`).join("")}</div>` : "";
@@ -750,7 +757,7 @@ document.addEventListener("DOMContentLoaded", () => {
         </article>`;
       };
       const playerHtml = videoAsset && orderedEvents.length
-        ? `<div class="episode-player"><video id="episode-video" controls preload="metadata" src="/api/memory/assets/${encodeURIComponent(videoAsset.id)}/file"></video></div>` : "";
+        ? `<div class="episode-player"><video id="episode-video" controls preload="metadata" src="${BASE}/api/memory/assets/${encodeURIComponent(videoAsset.id)}/file"></video></div>` : "";
       const transcriptHtml = speechObservations.length ? (() => {
         const byAsset = new Map();
         speechObservations.forEach(item => byAsset.set(item.asset_id, [...(byAsset.get(item.asset_id) || []), item]));
@@ -1221,7 +1228,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
     // Herramientas para agentes: momentos citables, texto generado y navegación.
     const momentCard = (item, small = false) => `<article class="passage-hit${!small && item.keyframes > 0 && item.event_id ? " has-thumb" : ""}">
-        ${!small && item.keyframes > 0 && item.event_id ? `<button type="button" class="passage-thumb" data-passage-episode="${esc(item.episode_id)}" data-passage-observation="${esc(item.observation_id || "")}" data-passage-seek="${esc(item.start_offset_seconds ?? "")}"><img loading="lazy" alt="" src="/api/memory/events/${encodeURIComponent(item.event_id)}/keyframes/0"></button>` : ""}
+        ${!small && item.keyframes > 0 && item.event_id ? `<button type="button" class="passage-thumb" data-passage-episode="${esc(item.episode_id)}" data-passage-observation="${esc(item.observation_id || "")}" data-passage-seek="${esc(item.start_offset_seconds ?? "")}"><img loading="lazy" alt="" src="${BASE}/api/memory/events/${encodeURIComponent(item.event_id)}/keyframes/0"></button>` : ""}
         <div class="passage-body"><header><span class="modality-tag ${esc(item.kind === "video_event" ? "video" : "text")}">${esc(passageTypeLabel(item))}</span>${item.title ? `<b>${esc(item.title)}</b>` : ""}<time>${esc([item.episode_external_id || "", item.start_offset_seconds != null ? fmtClock(item.start_offset_seconds) : "", item.page_number ? `pág. ${item.page_number}` : ""].filter(Boolean).join(" · "))}</time></header>
         <p class="passage-text">${esc(item.snippet || item.text)}</p>
         ${(item.speech || []).length ? `<p class="passage-text"><b>Se dijo:</b> ${item.speech.map(s => esc(s.text)).join(" · ")}</p>` : ""}
@@ -1264,12 +1271,40 @@ document.addEventListener("DOMContentLoaded", () => {
     const badge = $("#ask-status");
     try {
       const status = await api("/api/ask/status");
-      badge.textContent = status.enabled ? `${status.model} · ${status.tools.length} herramientas` : "SIN MODELO (EPIGRAPH_AGENT_BACKEND)";
+      badge.textContent = status.enabled ? `${status.model} · ${status.tools.length} herramientas${status.network ? ` · red: ${status.network.map_episodes} episodios, ${status.network.workers} en paralelo` : ""}` : "SIN MODELO (EPIGRAPH_AGENT_BACKEND)";
+      const modeSelect = $("#ask-mode");
+      if (modeSelect && !modeSelect.dataset.touched && status.mode) modeSelect.value = status.mode;
       if (!query.busy) $("#ask-submit").disabled = !status.enabled;
     } catch (error) { badge.textContent = error.message; }
     renderAskHistory(await api("/api/answers?limit=20").catch(() => ({ answers: [] })));
   }
-  const answerConfidenceLabel = value => ({ alta: "evidencia verificada", media: "con citas, alguna inválida", baja: "sin citas", sin_evidencia: "no consta" })[value] || value;
+  const answerConfidenceLabel = value => ({ alta: "evidencia verificada", media: "con citas, alguna retirada", baja: "sin citas", sin_evidencia: "no consta" })[value] || value;
+  const STRATEGY_LABEL = { simple: "agente único", por_episodio: "mapa por episodio", subpreguntas: "subpreguntas" };
+  const AGGREGATE_LABEL = { listar: "listar", contar: "contar", comparar: "comparar", secuencia: "en secuencia", comun: "lo común", ninguna: "—" };
+  const BRANCH_STATE = { confirmado: "ready", respondida: "ready", descartado: "duplicate", "sin hallazgos": "duplicate", error: "failed" };
+  // Cómo respondió la red: plan, cobertura de episodios, ramas con sus hallazgos y agentes.
+  function renderNetwork(run, cite) {
+    const meta = run.metadata || {};
+    const plan = meta.plan, routing = meta.routing || {};
+    if (!plan && !routing.cues?.length && meta.mode !== "red") return "";
+    const withCites = text => esc(text || "").replace(/\[(m\d+(?:\s*,\s*m\d+)*)\]/g, (all, list) => list.split(",").map(h => cite(h.trim())).join(" "));
+    const coverage = meta.coverage;
+    const branches = (meta.branches || []).map(b => {
+      const label = b.kind === "episode" ? `${esc(b.external_id || b.episode_id)}${b.start_time ? ` · ${esc(fmtTime(b.start_time))}` : ""}${b.environment_id ? ` · ${esc(b.environment_id)}` : ""}` : `${b.index}. ${esc(b.question || "")}`;
+      const findings = (b.findings || []).map(f => `<li>${withCites(f.text)}</li>`).join("");
+      return `<li class="net-branch"><header><span class="state-chip ${BRANCH_STATE[b.status] || ""}">${esc(b.status)}</span><b>${label}</b><small>${esc(b.agent || "")} · ${(b.took_ms / 1000 || 0).toFixed(1)} s</small></header>${findings ? `<ul>${findings}</ul>` : b.error ? `<p class="warn">${esc(b.error)}</p>` : ""}</li>`;
+    }).join("");
+    const agents = (meta.agents || []).map(a => `<tr><td>${esc(a.name)}</td><td>${esc(a.role || "")}</td><td>${a.turns ?? 0}</td><td>${a.tool_calls ?? 0}</td><td>${((a.took_ms || 0) / 1000).toFixed(1)} s</td></tr>`).join("");
+    const removed = meta.verification?.removed || [];
+    return `<div class="net-panel">
+      <div class="net-route"><b>${meta.mode === "red" ? "Red de agentes" : "Agente único"}</b><span>${esc(routing.requested === "auto" ? (routing.cues?.length ? `automático · señales: ${routing.cues.join(", ")}` : "automático · sin señales de varios episodios") : `modo ${routing.requested || "—"}`)}</span>${plan ? `<span>plan: ${esc(STRATEGY_LABEL[plan.strategy] || plan.strategy)}${plan.source === "heuristica" ? " (heurístico)" : ""}</span>` : ""}</div>
+      ${plan && plan.strategy !== "simple" ? `<dl class="net-plan">${plan.focus ? `<dt>Foco</dt><dd>${esc(plan.focus)}</dd>` : ""}${plan.per_episode_question ? `<dt>En cada episodio</dt><dd>${esc(plan.per_episode_question)}</dd>` : ""}${plan.subquestions?.length ? `<dt>Subpreguntas</dt><dd>${plan.subquestions.map(esc).join("<br>")}</dd>` : ""}<dt>Agregación</dt><dd>${esc(AGGREGATE_LABEL[plan.aggregate] || plan.aggregate)}</dd>${plan.reason ? `<dt>Motivo</dt><dd>${esc(plan.reason)}</dd>` : ""}</dl>` : ""}
+      ${coverage ? `<p class="net-coverage"><b>${coverage.candidates}</b> episodio(s) candidato(s) · <b>${coverage.confirmed ?? 0}</b> confirmado(s) · ${coverage.discarded ?? 0} descartado(s)${coverage.more_candidates ? ` · <span class="warn">${coverage.more_candidates} sin revisar</span>` : ""}</p>` : ""}
+      ${branches ? `<ol class="net-branches">${branches}</ol>` : ""}
+      ${removed.length ? `<details class="net-removed"><summary>El verificador retiró ${removed.length} frase(s) que sus citas no sostenían</summary><ul>${removed.map(text => `<li>${esc(text)}</li>`).join("")}</ul></details>` : ""}
+      ${agents ? `<table class="net-agents"><thead><tr><th>Agente</th><th>Papel</th><th>Vueltas</th><th>Herramientas</th><th>Tiempo</th></tr></thead><tbody>${agents}</tbody></table>` : ""}
+    </div>`;
+  }
   function renderAnswer(run, root = $("#ask-results")) {
     const byHandle = new Map((run.citations || []).map(item => [item.handle, item]));
     const cite = handle => {
@@ -1287,27 +1322,31 @@ document.addEventListener("DOMContentLoaded", () => {
     root.innerHTML = `<section class="answer-card ${esc(run.confidence)}">
       <header><div><p class="kicker">RESPUESTA</p><h3>${esc(run.question)}</h3></div><span class="confidence ${esc(run.confidence)}" title="${esc(run.confidence)}">${esc(answerConfidenceLabel(run.confidence))}</span></header>
       <div class="answer-body">${body || '<p class="empty">Sin respuesta.</p>'}</div>
+      ${renderNetwork(run, cite)}
       ${run.error ? `<p class="warn">${esc(run.error)}</p>` : ""}
       ${run.dropped_citations?.length ? `<p class="answer-note">${run.dropped_citations.length} cita(s) inventada(s) por el modelo se han eliminado: ${esc(run.dropped_citations.join(", "))}.</p>` : ""}
       ${citations ? `<div class="answer-citations"><b>Evidencia citada</b>${(run.citations || []).some(c => c.start_time) ? '<button type="button" class="button-mini" data-cite-timeline-all title="Marcar todas las citas en la línea temporal">Ver las citas en la línea temporal</button>' : ""}${citations}</div>` : ""}
-      <details class="technical-details answer-trace" open><summary>Traza · ${agents.length} agente(s): ${esc(agentsText)} · ${Math.round((run.took_ms || 0) / 100) / 10} s · ${run.usage?.prompt_tokens || 0}+${run.usage?.completion_tokens || 0} tokens</summary>${renderTraceList(trace)}</details>
+      <p class="answer-console"><button type="button" class="button-mini" data-console-run>Consola de agentes</button><span>${agents.length} agente(s) · ${Math.round((run.took_ms || 0) / 100) / 10} s · ${run.usage?.prompt_tokens || 0}+${run.usage?.completion_tokens || 0} tokens</span></p>
+      <details class="technical-details answer-trace"><summary>Traza · ${agents.length} agente(s): ${esc(agentsText)}</summary>${renderTraceList(trace)}</details>
     </section>`;
     root.querySelectorAll("[data-passage-episode]").forEach(button => button.addEventListener("click", () => {
       const seek = button.dataset.passageSeek;
       openEpisode(button.dataset.passageEpisode, { observationId: button.dataset.passageObservation || null, seek: seek === undefined || seek === "" ? null : Number(seek) });
     }));
+    root.querySelector("[data-console-run]")?.addEventListener("click", () => window.EpiGraphAgents?.show(run));
     const citeTitle = `Respuesta: «${run.question}»`;
     const citeEntries = (run.citations || []).map(c => [c, `${c.handle} · ${c.title || clip(c.text || "", 70)}`]);
     root.querySelector("[data-cite-timeline-all]")?.addEventListener("click", () => showOnTimeline(citeTitle, citeEntries));
     root.querySelectorAll("[data-cite-timeline]").forEach(button => button.addEventListener("click", () => showOnTimeline(citeTitle, citeEntries, Number(button.dataset.citeTimeline))));
   }
-  const TRACE_KIND = { question: "PREGUNTA", thinking: "MODELO", turn: "DECISIÓN", tool: "HERRAMIENTA", retry: "REINTENTO", budget: "PRESUPUESTO", verify: "CITAS", error: "ERROR", answer: "RESPUESTA" };
+  const TRACE_KIND = { question: "PREGUNTA", route: "ENRUTADO", plan: "PLAN", map: "COBERTURA", found: "HALLAZGOS", narrate: "NARRADOR", thinking: "MODELO", turn: "DECISIÓN", tool: "HERRAMIENTA", retry: "REINTENTO", budget: "PRESUPUESTO", verify: "VERIFICACIÓN", error: "ERROR", answer: "RESPUESTA" };
+  const agentRole = agent => (agent || "").split(" ")[0];
   function renderTraceList(trace, { pending = false } = {}) {
     if (!trace.length) return `<ol class="trace-list">${pending ? "" : "<li class=\"trace-line\">Sin traza registrada.</li>"}</ol>`;
     const t0 = trace[0].at ? new Date(trace[0].at).getTime() : null;
     const lines = trace.map(item => {
       const delta = t0 != null && item.at ? `+${((new Date(item.at).getTime() - t0) / 1000).toFixed(1)} s` : "";
-      return `<li class="trace-line ${esc(item.kind || "")}${item.error ? " has-error" : ""}"><time>${esc(delta)}</time><span class="trace-kind">${esc(TRACE_KIND[item.kind] || (item.kind || "").toUpperCase())}</span><span class="trace-msg">${esc(item.message || "")}</span></li>`;
+      return `<li class="trace-line ${esc(item.kind || "")}${item.error ? " has-error" : ""}${item.agent ? ` by-${esc(agentRole(item.agent))}` : ""}"><time>${esc(delta)}</time><span class="trace-kind">${esc(TRACE_KIND[item.kind] || (item.kind || "").toUpperCase())}</span><span class="trace-msg">${esc(item.message || "")}</span></li>`;
     });
     if (pending) lines.push('<li class="trace-line pending"><time></time><span class="trace-kind"><span class="spinner" aria-hidden="true"></span></span><span class="trace-msg">En curso…</span></li>');
     return `<ol class="trace-list">${lines.join("")}</ol>`;
@@ -1316,11 +1355,15 @@ document.addEventListener("DOMContentLoaded", () => {
     const turns = trace.filter(item => item.kind === "turn").length;
     const tools = trace.filter(item => item.kind === "tool").length;
     const elapsed = ((Date.now() - startedAt) / 1000).toFixed(0);
+    const network = trace.some(item => item.kind === "plan" || item.kind === "map");
+    const agents = new Set(trace.map(item => item.agent).filter(Boolean));
+    const who = network ? `red de agentes · ${agents.size} agente(s) hasta ahora` : "1 agente de consulta";
     root.innerHTML = `<section class="answer-card live">
-      <header><div><p class="kicker">EL AGENTE ESTÁ RESPONDIENDO</p><h3>${esc(question)}</h3></div><span class="confidence live"><span class="spinner" aria-hidden="true"></span>${elapsed} s</span></header>
-      <p class="answer-note">1 agente de consulta · ${turns} vuelta(s) del modelo · ${tools} herramienta(s) ejecutada(s). Cada línea aparece en cuanto ocurre; también en Vigilancia.</p>
-      ${renderTraceList(trace, { pending: true })}
+      <header><div><p class="kicker">${network ? "LA RED DE AGENTES ESTÁ RESPONDIENDO" : "EL AGENTE ESTÁ RESPONDIENDO"}</p><h3>${esc(question)}</h3></div><span class="confidence live"><span class="spinner" aria-hidden="true"></span>${elapsed} s</span></header>
+      <p class="answer-note">${who} · ${turns} vuelta(s) del modelo · ${tools} herramienta(s) ejecutada(s). El detalle, agente a agente, en la consola de agentes. <button type="button" class="button-mini" data-console-open>Abrir la consola</button></p>
+      ${renderTraceList(trace.slice(-4), { pending: true })}
     </section>`;
+    root.querySelector("[data-console-open]")?.addEventListener("click", () => window.EpiGraphAgents?.open());
   }
   function renderAskHistory(data) {
     const root = $("#ask-history");
@@ -1336,6 +1379,7 @@ document.addEventListener("DOMContentLoaded", () => {
       finally { endQuery(); }
     }));
   }
+  $("#ask-mode")?.addEventListener("change", event => { event.target.dataset.touched = "1"; });
   $("#ask-form")?.addEventListener("submit", async event => {
     event.preventDefault();
     const question = $("#ask-question").value.trim();
@@ -1344,27 +1388,23 @@ document.addEventListener("DOMContentLoaded", () => {
     submit.textContent = "Pensando…";
     const runId = (crypto.randomUUID ? crypto.randomUUID() : `web-${Date.now()}-${Math.random().toString(16).slice(2)}`);
     const startedAt = Date.now();
-    const live = { trace: [], afterId: 0, timer: null, busy: false };
-    renderLiveTrace(root, question, live.trace, startedAt);
-    // Traza en directo: el agente escribe cada paso en /api/activity con data.run_id.
-    try { live.afterId = (await api("/api/activity?limit=1")).last_id || 0; } catch (_) { live.afterId = 0; }
-    const poll = async () => {
-      if (live.busy) return; live.busy = true;
-      try {
-        const data = await api(`/api/activity?component=agente&after_id=${live.afterId}&limit=300`);
-        const mine = data.entries.filter(entry => entry.data?.run_id === runId).sort((a, b) => a.id - b.id);
-        if (data.entries.length) live.afterId = Math.max(live.afterId, ...data.entries.map(entry => entry.id));
-        mine.forEach(entry => live.trace.push({ at: entry.at, kind: entry.data.kind, message: entry.message, error: entry.data.error }));
-        renderLiveTrace(root, question, live.trace, startedAt);
-      } catch (_) { /* el siguiente sondeo lo reintenta */ }
-      finally { live.busy = false; }
-    };
-    live.timer = setInterval(poll, 1000);
+    // Traza en directo: los agentes escriben cada paso en /api/activity con data.run_id; la
+    // consola de agentes la lee y la tarjeta en curso muestra un resumen.
+    let liveTrace = [];
+    renderLiveTrace(root, question, liveTrace, startedAt);
+    await window.EpiGraphAgents?.start({ runId, question, onUpdate: trace => { liveTrace = trace; renderLiveTrace(root, question, trace, startedAt); } });
+    let answered = null;
     try {
-      renderAnswer(await api("/api/ask", { method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({ question, run_id: runId }) }));
+      answered = await api("/api/ask", { method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({ question, run_id: runId, mode: $("#ask-mode")?.value || undefined }) });
+      renderAnswer(answered);
       renderAskHistory(await api("/api/answers?limit=20").catch(() => ({ answers: [] })));
-    } catch (error) { root.innerHTML = `<div class="empty roomy"><b>No se pudo responder</b><span>${esc(error.message)}</span>${renderTraceList(live.trace)}</div>`; }
-    finally { clearInterval(live.timer); endQuery(); submit.textContent = "Preguntar"; }
+    } catch (error) {
+      root.innerHTML = `<div class="empty roomy"><b>No se pudo responder</b><span>${esc(error.message)}</span>${renderTraceList(liveTrace)}</div>`;
+      window.EpiGraphAgents?.finish(null, error);
+    } finally {
+      if (answered) window.EpiGraphAgents?.finish(answered);
+      endQuery(); submit.textContent = "Preguntar";
+    }
   });
 
   // Foco al abrir un episodio desde un resultado: el momento exacto.
@@ -1465,7 +1505,7 @@ document.addEventListener("DOMContentLoaded", () => {
     const summary = `${planHtml}<div class="passage-summary"><b>${data.passage_count} momento(s) en ${data.groups.length} episodio(s)</b>
       <span>significado: ${data.dense_candidates} candidatos</span><span>palabras: ${data.lexical_candidates}${data.lexical_query ? ` (${esc(data.lexical_query)})` : ""}</span>
       <span class="${rerank.error ? "warn" : ""}">${esc(rerankText)}</span><span>${Math.round(data.took_ms)} ms</span>${data.groups.some(group => group.passages.some(hit => hit.start_time)) ? '<button type="button" class="button-mini" data-timeline-all title="Marcar todos los momentos en la línea temporal">Ver en la línea temporal</button>' : ""}</div>`;
-    const neighborItem = (item, label) => `<button type="button" class="neighbor" data-passage-episode="${esc(item.episode_id)}" data-passage-observation="${esc(item.observation_id || "")}" ${item.start_offset_seconds != null ? `data-passage-seek="${esc(item.start_offset_seconds)}"` : ""}><small>${label}</small>${item.keyframes > 0 && item.event_id ? `<img loading="lazy" alt="" src="/api/memory/events/${encodeURIComponent(item.event_id)}/keyframes/0">` : ""}<span>${esc(item.title || clip(item.text, 60))}</span><time>${item.start_offset_seconds != null ? fmtClock(item.start_offset_seconds) : ""}</time></button>`;
+    const neighborItem = (item, label) => `<button type="button" class="neighbor" data-passage-episode="${esc(item.episode_id)}" data-passage-observation="${esc(item.observation_id || "")}" ${item.start_offset_seconds != null ? `data-passage-seek="${esc(item.start_offset_seconds)}"` : ""}><small>${label}</small>${item.keyframes > 0 && item.event_id ? `<img loading="lazy" alt="" src="${BASE}/api/memory/events/${encodeURIComponent(item.event_id)}/keyframes/0">` : ""}<span>${esc(item.title || clip(item.text, 60))}</span><time>${item.start_offset_seconds != null ? fmtClock(item.start_offset_seconds) : ""}</time></button>`;
     const neighborsHtml = hit => {
       const n = hit.neighbors; if (!n || (!n.before?.length && !n.after?.length)) return "";
       return `<div class="passage-neighbors">${(n.before || []).map(item => neighborItem(item, "antes")).join("")}<span class="neighbor-here">este momento</span>${(n.after || []).map(item => neighborItem(item, "después")).join("")}</div>`;
@@ -1479,7 +1519,7 @@ document.addEventListener("DOMContentLoaded", () => {
         const where = [hit.start_time ? fmtTime(hit.start_time) : "", hit.start_offset_seconds != null ? `${fmtClock(hit.start_offset_seconds)}${hit.end_offset_seconds != null ? `–${fmtClock(hit.end_offset_seconds)}` : ""} en el ${hit.kind === "video_event" ? "vídeo" : "archivo"}` : "", hit.page_number ? `pág. ${hit.page_number}` : ""].filter(Boolean).join(" · ");
         const seekAttrs = `data-passage-episode="${esc(hit.episode_id)}" data-passage-observation="${esc(hit.observation_id || "")}" ${seekable ? `data-passage-seek="${esc(hit.start_offset_seconds)}"` : ""}`;
         const thumb = hit.kind === "video_event" && hit.event_id && hit.keyframes > 0
-          ? `<button type="button" class="passage-thumb" ${seekAttrs} title="Ver en el vídeo"><img loading="lazy" alt="" src="/api/memory/events/${encodeURIComponent(hit.event_id)}/keyframes/0"></button>`
+          ? `<button type="button" class="passage-thumb" ${seekAttrs} title="Ver en el vídeo"><img loading="lazy" alt="" src="${BASE}/api/memory/events/${encodeURIComponent(hit.event_id)}/keyframes/0"></button>`
           : "";
         const why = [
           hit.scores.dense_rank ? `<span class="dense" title="Similitud ${Number(hit.scores.dense).toFixed(3)}">Significado #${hit.scores.dense_rank}</span>` : "",
@@ -1900,7 +1940,10 @@ document.addEventListener("DOMContentLoaded", () => {
     applyEstilo(current, ESTILOS.includes(fromUrl));
   }
 
-  window.EpiGraph = { api, esc, openEpisode, environmentLabel, sourceTypeLabel, state };
+  const apiLink = $('.mast-actions a[href="/docs"]');
+  if (apiLink) apiLink.href = `${BASE}/docs`;
+
+  window.EpiGraph = { api, esc, openEpisode, environmentLabel, sourceTypeLabel, state, project: PROJECT, base: BASE };
   switchView(initialView, true);
   Promise.all([loadHealth(), loadScope(), loadAssets()]).catch(error => console.error(error));
 });

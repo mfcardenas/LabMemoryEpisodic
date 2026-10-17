@@ -51,6 +51,9 @@ class AskRequest(BaseModel):
     # Opcional: id elegido por el cliente para seguir la traza en /api/activity
     # (data.run_id) mientras el agente trabaja.
     run_id: Optional[str] = Field(None, min_length=8, max_length=64, pattern=r"^[A-Za-z0-9_-]+$")
+    # auto: la red de agentes solo si la pregunta cruza episodios; simple: agente
+    # único; red: siempre la red. Sin valor, el de EPIGRAPH_AGENT_MODE.
+    mode: Optional[Literal["auto", "simple", "red"]] = None
 
 
 class SummaryRegenerateRequest(BaseModel):

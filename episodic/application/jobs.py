@@ -36,6 +36,9 @@ class JobRunner:
     ``activity`` (opcional) recibe el inicio, cada etapa, cada paso interno
     que anuncien los procesadores (``progress.note``) y el final de cada
     trabajo; ``describe`` da el nombre legible de su objetivo.
+    ``turn`` (opcional) es el turno de trabajo pesado que comparten las colas
+    de todos los proyectos: solo un trabajo a la vez usa vídeo, Ollama y
+    encoders, aunque cada proyecto tenga su cola.
     """
 
     def __init__(
@@ -45,12 +48,14 @@ class JobRunner:
         max_attempts: int = 2,
         activity: ActivityLog | None = None,
         describe: JobDescriber | None = None,
+        turn: threading.Lock | None = None,
     ) -> None:
         self.repository = repository
         self.handlers = dict(handlers)
         self.max_attempts = max_attempts
         self.activity = activity
         self.describe = describe
+        self.turn = turn
         self._queue: queue.Queue[str | None] = queue.Queue()
         self._lock = threading.Lock()
         self._thread: threading.Thread | None = None
@@ -127,9 +132,23 @@ class JobRunner:
             if job_id is None:
                 return
             try:
-                self._execute(job_id)
+                self._execute_in_turn(job_id)
             except Exception:  # pragma: no cover - el bucle nunca debe morir
                 logger.exception("Fallo inesperado ejecutando el trabajo %s", job_id)
+
+    def _execute_in_turn(self, job_id: str) -> None:
+        if self.turn is None:
+            self._execute(job_id)
+            return
+        if not self.turn.acquire(blocking=False):
+            job = self.repository.get_job(job_id)
+            if job is not None and job.state not in (JobState.COMPLETED, JobState.FAILED):
+                self._log("info", job, f"En espera: otro proyecto está procesando; {self._name(job)} va después")
+            self.turn.acquire()
+        try:
+            self._execute(job_id)
+        finally:
+            self.turn.release()
 
     def _execute(self, job_id: str) -> None:
         job = self.repository.get_job(job_id)

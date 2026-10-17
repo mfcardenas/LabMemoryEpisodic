@@ -137,23 +137,30 @@ class AskRunner(PassageRunner):
 
     mode = "ask"
 
-    def __init__(self, url: Optional[str]) -> None:
+    def __init__(self, url: Optional[str], agent_mode: str = "simple") -> None:
         super().__init__(url)
+        # simple: agente único (A2); auto: la red solo si la pregunta cruza episodios; red: siempre la red (A3).
+        self.agent_mode = agent_mode
+        if agent_mode != "simple":
+            self.mode = f"ask-{agent_mode}"
         if self.container is not None and not (self.container.answers and self.container.answers.enabled):
             raise SystemExit("El agente no está configurado (EPIGRAPH_AGENT_BACKEND)")
 
     def describe(self) -> dict[str, Any]:
         if self.container is not None:
             agent = self.container.answers
-            return {"transport": "in-process", "model": agent.model.model_id, "max_steps": agent.max_steps, "tools": list(agent.tool_names)}
+            network = self.container.network.describe() if getattr(self.container, "network", None) else None
+            return {"transport": "in-process", "model": agent.model.model_id, "max_steps": agent.max_steps, "tools": list(agent.tool_names),
+                    "agent_mode": self.agent_mode, "network": network}
         return {"transport": self.url, **self.session.get(f"{self.url}/api/ask/status", timeout=30).json()}
 
     def run(self, question: dict[str, Any]) -> Outcome:
         started = time.perf_counter()
         if self.container is not None:
-            data = self.container.answers.ask(question["pregunta"]).to_dict()
+            network = getattr(self.container, "network", None)
+            data = (network.ask(question["pregunta"], mode=self.agent_mode) if network else self.container.answers.ask(question["pregunta"])).to_dict()
         else:
-            response = self.session.post(f"{self.url}/api/ask", json={"question": question["pregunta"]}, timeout=600)
+            response = self.session.post(f"{self.url}/api/ask", json={"question": question["pregunta"], "mode": self.agent_mode}, timeout=900)
             response.raise_for_status()
             data = response.json()
         took = (time.perf_counter() - started) * 1000
@@ -260,6 +267,8 @@ def main() -> None:
     parser.add_argument("--questions", default="data/eval/preguntas.jsonl")
     parser.add_argument("--url", default=None, help="Servidor EpiGraph; sin él se evalúa en proceso")
     parser.add_argument("--mode", choices=("passages", "ask"), default="passages")
+    parser.add_argument("--agent-mode", choices=("simple", "auto", "red"), default="simple",
+                        help="con --mode ask: agente único (A2), automático o red de agentes (A3)")
     parser.add_argument("--out-dir", default="data/eval")
     parser.add_argument("--only", default=None, help="Ids separados por comas")
     args = parser.parse_args()
@@ -273,7 +282,7 @@ def main() -> None:
         wanted = set(args.only.split(","))
         questions = [q for q in questions if q["id"] in wanted]
 
-    runner = AskRunner(args.url) if args.mode == "ask" else PassageRunner(args.url)
+    runner = AskRunner(args.url, args.agent_mode) if args.mode == "ask" else PassageRunner(args.url)
     try:
         rows = []
         for question in questions:

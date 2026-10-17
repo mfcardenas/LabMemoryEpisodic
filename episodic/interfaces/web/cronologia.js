@@ -62,7 +62,7 @@ const sourceOf = id => (G().state?.sources || []).find(item => item.id === id);
 const shortSrc = (id, env) => (env && String(id).startsWith(env + ".")) ? String(id).slice(env.length + 1) : String(id || "");
 const typeLabel = id => { const s = sourceOf(id); return s ? (G().sourceTypeLabel?.(s.source_type) || s.source_type).toLowerCase() : "fuente"; };
 const modOf = id => ({ microphone: "speech", audio: "speech", document: "doc", file: "doc", text: "doc" })[sourceOf(id)?.source_type] || "video";
-const kf = (id, i, side) => `/api/memory/events/${encodeURIComponent(id)}/keyframes/${i}?max_side=${side}`;
+const kf = (id, i, side) => `${G().base || ""}/api/memory/events/${encodeURIComponent(id)}/keyframes/${i}?max_side=${side}`;
 const isSel = (type, id) => !!C.sel && C.sel.type === type && C.sel.id === id;
 const visibleEnvIds = () => C.envs.map(e => e.id).filter(id => !C.hidden.has(id));
 const envKey = () => C.hidden.size ? visibleEnvIds().join("|") || "∅" : "*";

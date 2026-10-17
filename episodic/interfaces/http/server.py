@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import logging
 import mimetypes
-import threading
 from contextlib import asynccontextmanager
 from functools import lru_cache
 import shutil
@@ -35,7 +34,13 @@ from episodic.application.watch import (
     retry_failed_group,
     write_manifest,
 )
-from episodic.bootstrap import AppContainer, create_app_container, submit_reindex
+from episodic.bootstrap import (
+    AppContainer,
+    create_app_container,
+    start_services,
+    stop_services,
+    submit_reindex,
+)
 from episodic.config import EpisodicConfig
 from episodic.domain.captures import JobState
 from episodic.domain.watch import ActivityLevel, InboxFileState
@@ -89,12 +94,16 @@ def create_api_app(
     container: Optional[AppContainer] = None,
     use_fake_encoders: bool = False,
     start_watcher: bool = True,
+    manage_services: bool = True,
+    serve_web: bool = True,
 ) -> FastAPI:
     """Crea y configura la aplicación FastAPI con todas las rutas episódicas.
 
     Si el contenedor trae vigilante (``EPIGRAPH_WATCH_CONFIG``) y
     ``start_watcher`` es cierto, las carpetas se vigilan mientras el servidor
-    está en marcha.
+    está en marcha. Dentro de la app de proyectos (``projects.py``) cada
+    proyecto tiene una de estas apps sin servicios propios ni web
+    (``manage_services`` y ``serve_web`` falsos): los arranca el gestor.
     """
     if container is None:
         container = create_app_container(config, use_fake_encoders=use_fake_encoders)
@@ -102,40 +111,15 @@ def create_api_app(
     job_runner = getattr(container, "job_runner", None)
     watcher = getattr(container, "watcher", None)
 
-    def warm_up_search() -> None:
-        try:
-            container.passage_search.warm_up()
-            logger.info("Modelos de búsqueda cargados")
-        except Exception as exc:  # la búsqueda lo intentará de nuevo y lo dirá
-            logger.warning("No se pudieron precargar los modelos de búsqueda: %s", exc)
-
-    def ensure_index_current() -> None:
-        """Si el índice no refleja la configuración vigente, se reindexa solo."""
-        maintenance = getattr(container, "index_maintenance", None)
-        if maintenance is None:
-            return
-        try:
-            maintenance.ensure_current(lambda trigger: submit_reindex(container, trigger))
-        except Exception as exc:  # comprobarlo nunca debe impedir arrancar
-            logger.warning("No se pudo comprobar si el índice está al día: %s", exc)
-
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
-        if getattr(container, "passage_search", None) is not None:
-            threading.Thread(target=warm_up_search, name="epigraph-warmup", daemon=True).start()
-        # La cola reanuda al arrancar los trabajos que quedaron pendientes.
-        if job_runner is not None:
-            job_runner.start()
-            ensure_index_current()
-        if watcher is not None and start_watcher:
-            watcher.start()
+        if manage_services:
+            start_services(container, start_watcher)
         try:
             yield
         finally:
-            if watcher is not None:
-                watcher.stop()
-            if job_runner is not None:
-                job_runner.stop()
+            if manage_services:
+                stop_services(container)
 
     app = FastAPI(
         title="Memory Episodic API",
@@ -805,10 +789,14 @@ def create_api_app(
     @app.post("/api/ask")
     def ask(req: AskRequest):
         agent = getattr(container, "answers", None)
+        network = getattr(container, "network", None)
         if agent is None or not agent.enabled:
             raise HTTPException(status_code=503, detail="No hay modelo de razonamiento configurado (EPIGRAPH_AGENT_BACKEND)")
         try:
-            run = agent.ask(req.question, run_id=req.run_id)
+            if network is not None:
+                run = network.ask(req.question, mode=req.mode or container.config.agent_mode, run_id=req.run_id)
+            else:
+                run = agent.ask(req.question, run_id=req.run_id)
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
         return run.to_dict()
@@ -821,6 +809,8 @@ def create_api_app(
             "model": agent.model.model_id if agent and agent.model else None,
             "tools": list(agent.tool_names) if agent else [],
             "max_steps": agent.max_steps if agent else None,
+            "mode": container.config.agent_mode,
+            "network": container.network.describe() if getattr(container, "network", None) else None,
         }
 
     @app.get("/api/answers")
@@ -1201,7 +1191,7 @@ def create_api_app(
     # -----------------------------------------------------------------------
 
     web_dir = Path(__file__).parent.parent / "web"
-    if web_dir.exists():
+    if serve_web and web_dir.exists():
         app.mount("/static", StaticFiles(directory=str(web_dir)), name="web_static")
 
         @app.get("/")

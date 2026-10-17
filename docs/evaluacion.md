@@ -53,6 +53,23 @@ queda sin medir en este equipo.
 
 ## Resultados
 
+### 2026-10-17 · Fase A3: primeras pruebas reales de la red de agentes
+
+Sin banco compuesto todavía (se prepara después), dos preguntas a mano contra
+una copia de los datos (9 episodios) con gpt-oss:latest y encoders en CPU:
+
+| Pregunta | Modo | Resultado | Agentes | Tiempo |
+|---|---|---|---|---|
+| ¿En qué capturas aparece una persona usando una pantalla o un dispositivo y qué hace en cada una? | auto → red | 8 episodios cubiertos (el del taller, por debajo del umbral), 8 confirmados, cifra correcta, 10 frases verificadas | 11 | 89 s |
+| ¿Quién dijo que algo estaba agarrotado y qué pensaba hacer? | auto → agente único | cita correcta, confianza alta | 1 | 12,7 s |
+
+Iteraciones: con el plan heurístico y el foco igual a la pregunta entera, la
+cobertura perdía A501 (tablet y tarjeta) frente a A004; el narrador contaba
+«10 episodios» (contaba líneas) y el verificador, con solo la descripción del
+evento como evidencia, retiraba todas las frases. Corregido con foco extraído,
+suelo de relevancia, cifras calculadas para el narrador, evidencia completa
+para el verificador y salvaguarda de «no concluyente».
+
 | Fecha | Commit | Modo | momento@1 | momento@5 | episodio@5 | abstención | falsas abst. | p50 ms | p95 ms |
 |---|---|---|---|---|---|---|---|---|---|
 | 2026-10-14 | `d08cace` | passages | 88 % | 88 % | 88 % | 50 % | 0 | 934 | 1008 |

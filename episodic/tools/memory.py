@@ -26,6 +26,7 @@ from episodic.ports.repository import EpisodicRepository
 from episodic.tools.agent_tools import AgentMemoryTools
 from episodic.tools.contracts import (
     BrowseMemoryInput,
+    FindEpisodesInput,
     GetDocumentPassagesInput,
     GetEpisodeSummaryInput,
     GetEventInput,
@@ -86,6 +87,11 @@ class MemoryToolbox:
                 SearchMomentsInput, self.agent_tools.search_moments,
                 "Busca los momentos (eventos del vídeo, habla, fragmentos de documento) que responden a una "
                 "pregunta; entiende el tiempo y la intención, devuelve posición en el vídeo y citas.",
+            ),
+            "find_episodes": _ToolDefinition(
+                FindEpisodesInput, self.agent_tools.find_episodes,
+                "Episodios en los que aparece algo, con su mejor momento cada uno, el ambiente y la hora; "
+                "cubre muchos episodios a la vez (cada episodio llega al reordenador) para recorrerlos después.",
             ),
             "get_event": _ToolDefinition(
                 GetEventInput, self.agent_tools.get_event,

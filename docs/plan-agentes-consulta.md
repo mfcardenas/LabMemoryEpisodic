@@ -420,27 +420,96 @@ MAX_STEPS). Evaluación con el banco: acierto de momento de la **respuesta**
 Aceptación: ≥ 0,8 acierto@1 en preguntas con respuesta y 0 respuestas sin
 cita; abstención correcta en las preguntas trampa.
 
-### Fase A3 — Red de agentes (3–5 días, tras medir A2)
+### Fase A3 — Red de agentes y consulta de n episodios (4–5 días) · ◐ construida, falta evaluarla (2026-10-17)
 
-Objetivo: solo si A2 muestra límites (preguntas compuestas, varios episodios,
-comparaciones). Misma capa de herramientas y mismo puerto de razonamiento.
+**Diagnóstico (2026-10-17).** El agente único de A2 acierta el 88 % en
+preguntas de un momento, pero no puede con las que cruzan episodios («¿en qué
+capturas aparece la tarjeta y qué se hizo después en cada una?», «¿qué tienen
+en común?», «¿cuántas veces…?»):
 
-- `application/agents/roles.py`: **Planificador** (descompone en subpreguntas
-  con filtros; gpt-oss, `reasoning=high`), **Localizadores** (uno por
-  subpregunta, en paralelo con `ThreadPoolExecutor`; `reasoning=low`; devuelven
-  momentos con citas, nunca prosa), **Narrador** (compone la respuesta final
-  solo a partir de los momentos entregados), **Verificador** (determinista +
-  LLM `low`: comprueba que cada frase está sostenida por una cita; si no,
-  pide otra ronda o marca baja confianza). Presupuesto global compartido.
-- Memoria de trabajo compartida (`Scratchpad`: hechos con cita, preguntas
-  abiertas) serializada en `answer_runs.steps`.
-- Modo por pregunta: `simple` (A2) o `compuesta` (A3), decidido por el
-  Planificador; el front muestra el árbol de subpreguntas.
-- Evaluar A2 vs A3 en el banco (añadir 10 preguntas compuestas: «¿en qué
-  capturas aparece la tarjeta y qué se hizo después en cada una?»).
+1. *Recuperación*: el reordenador solo puntúa los 20 primeros pasajes
+   (`rerank_candidates`) y descarta el resto; esos 20 suelen concentrarse en
+   3–4 episodios, así que la búsqueda nunca «ve» más episodios. Además el agente
+   pide `max_episodes=4`.
+2. *Un solo contexto*: todo lo recuperado se acumula en una conversación de 8
+   vueltas y 12 herramientas; recorrer episodio a episodio no cabe.
+3. *Verificación*: se comprueba que las citas existen, no que sostengan la frase.
 
+**Diseño.** Misma capa de herramientas, mismo puerto de razonamiento y mismo
+modelo (gpt-oss); lo que cambia es quién hace qué:
+
+- **Búsqueda por cobertura** (`PassageSearchService.search(..., candidates,
+  rerank_candidates, head_per_episode)`): más candidatos y una cabeza del
+  reordenador **diversa por episodio** (como mucho k pasajes de cada uno antes
+  de reordenar), de modo que n episodios distintos llegan a puntuarse. Nueva
+  herramienta determinista `find_episodes` (consulta → episodios candidatos con
+  su mejor momento, nº de coincidencias, ambiente y hora), sin LLM.
+- **Enrutado** (`application/agents/network.py`, `AgentNetwork`): `simple` es
+  A2 sin cambios; `red` usa la red; `auto` (por defecto) solo consulta al
+  Planificador si la pregunta tiene señales de varias partes o varios
+  episodios («en qué capturas», «cada», «cuántas veces», «compar…», «en común»,
+  «antes y después», «todas»…). Así las preguntas simples no pagan la red.
+- **Planificador** (LLM sin herramientas, JSON validado; si falla, plan
+  heurístico): elige estrategia y la concreta.
+  - `por_episodio` (mapa): foco a localizar en la memoria + pregunta a
+    responder dentro de cada episodio + agregación (`listar`, `contar`,
+    `comparar`, `secuencia`, `comun`).
+  - `subpreguntas`: 2–4 subpreguntas independientes (o encadenadas si la
+    agregación es `secuencia`).
+  - `simple`: delega en A2.
+- **Localizadores** (el bucle de A2 con presupuesto corto, en paralelo con
+  `ThreadPoolExecutor`, `EPIGRAPH_AGENT_WORKERS`): en `por_episodio`, uno por
+  episodio candidato, con la búsqueda acotada a ese episodio y sus momentos ya
+  entregados; confirma si el foco aparece y responde la pregunta por episodio.
+  Devuelven **hallazgos** (frases con marcas), nunca prosa final.
+- **Memoria de trabajo**: un registro de citas común y seguro entre hilos
+  (las marcas `mN` son únicas en toda la red), hallazgos por episodio o
+  subpregunta, episodios descartados y por qué; se guarda en
+  `answer_runs.metadata` (plan, hallazgos, agentes) y se ve en el front.
+- **Narrador** (LLM sin herramientas): redacta la respuesta solo con los
+  hallazgos: primero la respuesta directa (cuántos, cuáles), luego el detalle
+  por episodio en orden temporal y las correlaciones que los hallazgos
+  sostengan (en común, diferencias, orden). Cada frase con su cita.
+- **Verificador**: determinista (citas que existen, como A2) + LLM `low` que
+  contrasta cada frase con el texto de sus citas; las frases no sostenidas se
+  retiran y la confianza baja a media.
+- **Presupuesto global** (`EPIGRAPH_AGENT_NETWORK_MAX_SECONDS`), episodios
+  por mapa (`EPIGRAPH_AGENT_MAP_EPISODES`); si hay más candidatos de los que
+  se revisan, la respuesta lo dice.
+- **Front**: modo por pregunta (automático, un agente, red), árbol del plan
+  (estrategia, foco, episodios revisados/confirmados/descartados), agentes con
+  su modelo, vueltas y tiempo, y la traza etiquetada por agente.
+
+Tests con modelos falsos por papel: enrutado, plan inválido → heurístico,
+mapa por episodio con citas comunes, verificador que retira frases, presupuesto.
+Evaluación: `evaluate_questions.py --agent-mode red|auto|simple`; el banco de
+preguntas compuestas se prepara después (decisión del usuario 2026-10-17:
+primero la red, luego los ejemplos).
 Aceptación: mejora medible en preguntas compuestas sin empeorar las simples
-ni superar 2× la latencia.
+ni superar 2× la latencia en ellas (en `auto` no pasan por la red).
+
+Hecho (2026-10-17): búsqueda por cobertura (`candidates`, `rerank_candidates`,
+`head_per_episode`) y `find_episodes` con suelo de relevancia; `AgentNetwork`
+(`application/agents/network.py`) con enrutado, planificador (y plan
+heurístico de reserva que extrae foco y pregunta por episodio), localizadores
+en paralelo sobre el bucle de A2 (`AnswerOrchestrator.locate`/`_converse`,
+registro de citas común `CitationRegistry`, marcas aceptadas como ids),
+narrador con cifras calculadas, verificador con evidencia completa (lo que vio
+el localizador: texto, habla, texto visible) y salvaguarda (más de un tercio
+rechazado = no concluyente); modo por pregunta en `/api/ask` y en el front
+(plan, ramas, agentes, traza por agente); `--agent-mode` en la evaluación.
+Pruebas reales con gpt-oss (copia de los datos, 9 episodios): la compuesta «¿En
+qué capturas aparece una persona usando una pantalla o un dispositivo y qué hace
+en cada una?» → 8 episodios cubiertos, el del taller descartado por relevancia,
+8 localizadores (casi todos en 1 vuelta), cifra correcta, 10 frases verificadas,
+89 s; la simple «¿Quién dijo que algo estaba agarrotado…?» en `auto` va al
+agente único, 12,7 s, confianza alta. Lecciones: el verificador necesita la
+misma evidencia que el localizador (con solo la descripción del evento retiraba
+todo) y una salvaguarda; el narrador cuenta líneas si no se le dan las cifras;
+Ollama puede caerse al cargar el modelo en la GPU (se reintenta una vez).
+**Pendiente**: el banco de preguntas compuestas y su evaluación A2 frente a A3
+(decisión del usuario: después); medir con `OLLAMA_NUM_PARALLEL=2`; agrupar en
+una línea por episodio cuando el narrador no lo haga.
 
 ### Fase S — Escala a millones de eventos (3–4 días, intercalable) · ◐ en curso (2026-10-15)
 
@@ -583,6 +652,75 @@ Aceptación: con el corpus «hash» (y con 1 M cuando exista) la pestaña abre e
 < 1 s, cualquier zoom responde en < 300 ms y desde una cita del agente se
 llega al evento en la línea con dos clics.
 
+### Fase P — Proyectos: espacios de datos aislados (5–6 días, antes de A3 y del 1 M) · ◐ en curso (2026-10-17)
+
+Hecho (2026-10-17): catálogo (`domain/projects.py`, `ports/projects.py`,
+`adapters/sqlite/projects.py`, `application/projects.py`), `ProjectHub` en
+`bootstrap.py` con `SharedModels` (encoders y reranker una vez) y turno global
+en `JobRunner(turn=...)`, app con proyectos en `interfaces/http/projects.py`
+(`/api/projects`, `/p/<id>/api/...`, `/api/...` = principal) que `serve` usa,
+`--project` y `projects` en el CLI, pantalla **Proyectos** y selector
+(`proyectos.js`), prefijo del proyecto en todas las URL del front. Probado de
+punta a punta: crear con carpeta (directorio, colección y `watch.toml`), la
+consola del proyecto vacía y aislada, pausar y borrar (directorio y colección
+fuera, carpeta intacta). **Pendiente**: `--project` en
+`scripts/evaluate_questions.py` y `scripts/scale_test.py` (la prueba de escala
+creando un proyecto de tipo prueba) y el banco de preguntas compuestas de A3
+como primer proyecto de prueba.
+
+**Problema.** Todo vive en un único espacio: `EPIGRAPH_DATA_DIR` (SQLite,
+medios, índice) y `EPIGRAPH_QDRANT_COLLECTION`. No se pueden crear escenarios
+de prueba (banco de A3, corpus de 1 M) sin mezclarlos con las capturas reales;
+la prueba de escala lo esquiva a mano con otro directorio y otra colección.
+
+**Decisión (2026-10-17): opción A, un proyecto es un espacio aislado.** Cada
+proyecto tiene su directorio de datos, su colección de Qdrant
+(`epigraph_p_<id>`, con generaciones y alias como ahora) y sus carpetas
+vigiladas. Un mismo ambiente (`A001`) puede existir en dos proyectos sin
+mezclarse; borrar un proyecto es borrar su directorio y su colección. Se
+descartó una columna `project_id` en las 28 tablas y en Qdrant: tocaría ~165
+sentencias SQL, 123 métodos del puerto, todos los índices y 14 filtros, y un
+`WHERE` olvidado mezclaría datos.
+
+- **Registro** (`domain/projects.py`, `adapters/sqlite/projects.py`,
+  `application/projects.py`): catálogo en `epigraph-projects/proyectos.db`
+  (`EPIGRAPH_PROJECTS_DIR`) con id, nombre, descripción, tipo (real o prueba),
+  directorio, colección, fichero de vigilancia, activo y fecha. Las capturas
+  actuales son el proyecto **Principal**: sus rutas salen siempre de la
+  configuración (`episodic-data`, `episodic_memory`, `watch.toml`) y no se
+  mueve nada. Los nuevos viven en `epigraph-projects/<id>/`.
+- **Recursos compartidos** (`bootstrap.py`): los encoders y el reranker se
+  cargan una vez (`SharedModels`) y los usan todos los proyectos; cada uno
+  tiene su repositorio, almacén, índice, servicios, cachés y cola.
+- **Turno de trabajo pesado**: cada proyecto conserva su cola de trabajos,
+  pero un único cerrojo global deja procesar a un solo proyecto a la vez
+  (vídeo, Ollama, reindexado): la VRAM no se reparte y no vuelve el riesgo de
+  reinicio del portátil. El trabajo que espera turno lo dice en Vigilancia.
+- **Activo o en pausa**: todos los proyectos se consultan; solo los activos
+  vigilan carpetas y procesan su cola. Lo que se cargue en uno en pausa espera.
+- **Vigilancia**: cada proyecto declara sus carpetas (un `watch.toml` propio
+  generado desde el formulario: agrupación por manifiesto, `after = "keep"`).
+  Una carpeta, ni sus subcarpetas, puede pertenecer a dos proyectos. Borrar un
+  proyecto nunca toca las carpetas vigiladas ni los originales.
+- **HTTP**: `/p/<id>/api/...` lleva a la app del proyecto (los endpoints
+  actuales no cambian); `/api/...` sin prefijo sigue siendo Principal (scripts
+  y tests). Nuevo `/api/projects` (listar con cifras, crear, editar,
+  activar/pausar, borrar con confirmación).
+- **Front**: pantalla **Proyectos** (crear, editar, activar, borrar) y
+  selector de proyecto en la barra lateral; la consola de un proyecto vive en
+  `/p/<id>/` y cambiar de proyecto recarga la página (sin estado mezclado). Las
+  URL de vídeos, fotogramas y originales llevan el prefijo del proyecto.
+- **CLI y scripts**: `--project <id>` en el CLI; después en
+  `evaluate_questions.py` y `scale_test.py` (la prueba de escala pasa a crear
+  un proyecto de tipo prueba).
+
+Tests: registro y validación (id, carpetas solapadas); aislamiento (mismo
+ambiente en dos proyectos; buscar en uno no devuelve nada del otro); borrado
+limpio de directorio y colección sin tocar carpetas vigiladas; el turno global
+deja un solo trabajo pesado a la vez; Principal intacto con `/api/...`.
+Aceptación: desde el front se crea un proyecto de prueba, se le cargan
+capturas, se consulta y se borra sin que Principal cambie en nada.
+
 ### Fase F' — Front mínimo necesario (incluido en R1/H/A2)
 
 No se abre una fase de front separada: cada fase lleva su parte. Pendiente
@@ -600,7 +738,8 @@ eliminar `compatibility_mode` y `buildFallbackTimeline` de `app.js`.
 | 4 | A2 | `/api/ask` + pestaña Preguntar + auditoría; evaluación |
 | 5 | S (+ F') | 1 M eventos sintéticos, p95 medidos; Auditoría en el front |
 | 6 | T | línea temporal a escala: pulso, pistas con fotogramas, inspector y enlace con Consultas (hecho) |
-| 7 | A3 | red de agentes solo si A2 lo justifica |
+| 7 | P | proyectos: espacios aislados para escenarios de prueba (antes de A3 y del 1 M) |
+| 8 | A3 | red de agentes solo si A2 lo justifica |
 
 Fuera de este plan (siguen pendientes): procesador DOCX (Fase D), CLIP sobre
 fotogramas clave (búsqueda por imagen), grabación continua, robot.

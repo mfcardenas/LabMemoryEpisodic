@@ -345,3 +345,71 @@
   [data-skin="panel"] .rail { border: 0; border-bottom: 1px solid var(--line); }
   [data-skin="panel"] .masthead { padding: 18px 16px; }
 }
+
+/* -- Proyectos ------------------------------------------------------------------------ */
+[data-skin="panel"] .project-switch label { color: var(--muted); font: 700 10px var(--display); letter-spacing: .06em; }
+[data-skin="panel"] .project-switch select { color: var(--ink); background: var(--paper-2); border: 1px solid var(--pn-strong); border-radius: var(--pn-r-sm); font: 700 13px var(--display); }
+[data-skin="panel"] .project-switch[data-kind="prueba"] select { border-color: var(--pn-warning); box-shadow: inset 3px 0 var(--pn-warning); }
+[data-skin="panel"] .projects-intro { color: var(--pn-text-2); border-bottom-color: var(--line); }
+[data-skin="panel"] .project-card { border: 1px solid var(--line); border-radius: var(--pn-r); background: var(--paper-2); }
+[data-skin="panel"] .project-card.current { border-color: var(--signal); box-shadow: inset 3px 0 var(--signal); }
+[data-skin="panel"] .project-card h3 { color: var(--ink); font-weight: 800; }
+[data-skin="panel"] .project-card header code { font-family: var(--code); }
+[data-skin="panel"] .project-state { font-family: var(--display); }
+[data-skin="panel"] .project-state i { background: var(--pn-strong); }
+[data-skin="panel"] .project-state.on i { background: var(--pn-success); box-shadow: 0 0 0 3px var(--pn-success-soft); }
+[data-skin="panel"] .project-stats { border-color: var(--line); background: var(--line); border-radius: var(--pn-r-sm); overflow: hidden; }
+[data-skin="panel"] .project-stats div { background: var(--pn-sunk); }
+[data-skin="panel"] :is(.project-stats dt, .project-where dt) { font-family: var(--display); font-size: 10px; font-weight: 700; color: var(--muted); }
+[data-skin="panel"] .project-stats dd { color: var(--ink); font-weight: 800; }
+[data-skin="panel"] .project-where code { font-family: var(--code); color: var(--pn-text); }
+[data-skin="panel"] .project-here { color: var(--signal); font-family: var(--display); }
+[data-skin="panel"] .button.danger { color: #fff; background: var(--pn-danger); border-color: var(--pn-danger); }
+[data-skin="panel"] .button.ghost-danger { color: var(--pn-danger-text); border-color: var(--pn-danger); }
+[data-skin="panel"] .button.ghost-danger:hover { background: var(--pn-danger-soft); }
+[data-skin="panel"] .project-delete { border-color: var(--pn-danger); border-radius: var(--pn-r-sm); background: var(--pn-danger-soft); color: var(--ink); }
+[data-skin="panel"] .project-form > label:not(.switch) { color: var(--pn-text-2); font: 700 11px var(--display); letter-spacing: .02em; }
+[data-skin="panel"] .project-form textarea { border: 1px solid var(--pn-strong); border-radius: var(--pn-r-sm); color: var(--ink); background: var(--paper-2); font-family: var(--code); }
+[data-skin="panel"] .project-form textarea:focus { border-color: var(--signal); box-shadow: 0 0 0 3px var(--pn-focus); }
+[data-skin="panel"] .project-form-note { color: var(--muted); }
+[data-skin="panel"] .project-form .warn { border-color: var(--pn-danger); border-radius: var(--pn-r-sm); background: var(--pn-danger-soft); color: var(--pn-danger-text); }
+[data-skin="panel"] .project-ok { border-color: transparent; border-radius: var(--pn-r-sm); background: var(--pn-success-soft); color: var(--pn-success-text); }
+
+/* -- Red de agentes ------------------------------------------------------------------- */
+[data-skin="panel"] .net-panel { border-color: var(--line); border-radius: var(--pn-r-sm); background: var(--pn-sunk); }
+[data-skin="panel"] :is(.net-route, .net-branch header small, .net-agents) { font-family: var(--display); }
+[data-skin="panel"] .net-route b, [data-skin="panel"] .net-branch header b { color: var(--ink); font-weight: 800; }
+[data-skin="panel"] .net-plan dt { font: 700 10px/1.9 var(--display); color: var(--muted); }
+[data-skin="panel"] .net-branch { border-left-color: var(--pn-strong); border-radius: 0 var(--pn-r-xs) var(--pn-r-xs) 0; background: var(--paper-2); }
+[data-skin="panel"] .net-removed summary { color: var(--pn-danger-text); font-family: var(--display); }
+[data-skin="panel"] .net-agents th { font-family: var(--display); font-size: 10px; }
+[data-skin="panel"] .trace-line.by-planificador { border-left-color: #7a5af8; }
+[data-skin="panel"] .trace-line.by-localizador { border-left-color: var(--cyan); }
+[data-skin="panel"] .trace-line.by-narrador { border-left-color: var(--signal); }
+[data-skin="panel"] .trace-line.by-verificador { border-left-color: var(--pn-success); }
+
+/* -- Consola de agentes ---------------------------------------------------------------- */
+[data-skin="panel"] .agent-console {
+  --ac-bg: var(--pn-term); --ac-line: #262c3b; --ac-text: var(--pn-term-text); --ac-dim: var(--pn-term-dim);
+  --role-coordinador: #9fb0d0; --role-planificador: #a48dff; --role-localizador: #38b2f5; --role-narrador: #ffb35c;
+  --role-verificador: #6cc95a; --role-agente: #85a9ff;
+  border: 1px solid var(--line); border-radius: var(--pn-r); box-shadow: 0 1rem 3rem rgba(0, 0, 0, .28); overflow: hidden; font-family: var(--code);
+}
+[data-skin="panel"] :is(.ac-head, .ac-foot) { background: #121621; }
+[data-skin="panel"] .ac-title { font-family: var(--display); font-weight: 800; }
+[data-skin="panel"] .agent-console[data-running="true"] .ac-title i { background: #6cc95a; box-shadow: 0 0 8px #6cc95a; }
+[data-skin="panel"] :is(.ac-runs, .ac-head > button, .ac-filters, .ac-agent-clear) { border-radius: var(--pn-r-xs); }
+[data-skin="panel"] .ac-runs { font-family: var(--display); }
+[data-skin="panel"] .ac-question b { color: #85a9ff; font-family: var(--display); }
+[data-skin="panel"] .ac-question { font-family: var(--display); }
+[data-skin="panel"] .ac-agent-card { border-radius: var(--pn-r-sm); background: #161b27; }
+[data-skin="panel"] .ac-agent-card b { font-family: var(--display); font-weight: 800; }
+[data-skin="panel"] .ac-agent-card.on { background: #1d2436; }
+[data-skin="panel"] .ac-agent-card.state-working i { background: #85a9ff; }
+[data-skin="panel"] .ac-agent-card.state-done i { background: #6cc95a; }
+[data-skin="panel"] .ac-line:hover { background: #121621; }
+[data-skin="panel"] .ac-filters { overflow: hidden; }
+[data-skin="panel"] .ac-filters button { font-family: var(--display); }
+[data-skin="panel"] .ac-filters button[aria-pressed="true"] { background: var(--pn-btn); color: #fff; }
+[data-skin="panel"] .agent-pill { border: 0; border-radius: 999px; color: #fff; background: var(--pn-btn); box-shadow: 0 6px 18px rgba(56, 116, 255, .35); font-family: var(--display); }
+[data-skin="panel"] .answer-console { font-family: var(--display); }

@@ -192,19 +192,30 @@ class PassageSearchService:
         now: Optional[datetime] = None,
         understand: bool = True,
         include_summaries: bool = False,
+        candidates: Optional[int] = None,
+        rerank_candidates: Optional[int] = None,
+        head_per_episode: Optional[int] = None,
     ) -> PassageSearchRun:
         """`min_score` y `agreement_rank` sustituyen a los configurados solo en
         esta consulta; `min_score=None` quita el umbral y `agreement_rank=0`
         desactiva el acuerdo entre vías. La pregunta se entiende antes de
         buscar (`understand`): su tiempo pasa a filtro si no se dio uno
         explícito, y sus ambientes o fuentes nombrados también. `neighbors`
-        fuerza cuántos eventos vecinos acompañan a cada resultado."""
+        fuerza cuántos eventos vecinos acompañan a cada resultado.
+
+        Cobertura de n episodios (red de agentes): ``candidates`` y
+        ``rerank_candidates`` amplían esta consulta, y ``head_per_episode``
+        toma como mucho k pasajes de cada episodio para el reordenador, de modo
+        que llegan a puntuarse episodios distintos y no solo los 3–4 que
+        acaparan los mejores candidatos."""
         query = (query or "").strip()
         if not query:
             raise ValueError("La consulta está vacía")
         started = time.perf_counter()
         filters = filters or HybridSearchFilters()
         min_score = self.rerank_min_score if min_score is DEFAULT else min_score
+        limit = candidates or self.candidates
+        rerank_limit = rerank_candidates or self.rerank_candidates
         agreement_rank = self.agreement_rank if agreement_rank is None else agreement_rank
 
         plan = self.understand(query, now) if understand else None
@@ -248,7 +259,7 @@ class PassageSearchService:
             query_vector=self.text_encoder.embed_query(search_text),
             space=RepresentationSpace.NOMIC_TEXT,
             filters=vector_filters,
-            limit=self.candidates,
+            limit=limit,
         ):
             dense.append((candidate.payload.get("passage_id") or candidate.target_id, candidate.score))
         run.dense_candidates = len(dense)
@@ -272,18 +283,18 @@ class PassageSearchService:
             expressions = [lexical_query(search_text, "AND"), run.lexical_query]
             seen_ids: set[str] = set()
             for expression in dict.fromkeys(expressions):
-                if len(lexical) >= self.candidates // 2:
+                if len(lexical) >= limit // 2:
                     break
                 try:
                     for passage_id, _episode_id, score, fragment in self.repository.search_passages(
-                        expression, self.candidates, **lexical_filters
+                        expression, limit, **lexical_filters
                     ):
                         if passage_id not in seen_ids:
                             seen_ids.add(passage_id)
                             lexical.append((passage_id, score, fragment))
                 except Exception as exc:  # una expresión rara no debe tumbar la búsqueda
                     logger.warning("Búsqueda por texto completo fallida (%s): %s", expression, exc)
-            lexical = lexical[: self.candidates]
+            lexical = lexical[:limit]
         run.lexical_candidates = len(lexical)
 
         # 3. Fusión por posición (RRF).
@@ -323,7 +334,7 @@ class PassageSearchService:
         discarded: list[PassageHit] = []
         if rerank and self.reranker is not None and hits:
             run.rerank_model = self.reranker.model_id
-            head = hits[: self.rerank_candidates]
+            head = _rerank_head(hits, rerank_limit, head_per_episode)
             try:
                 texts = [hit.text[: self.rerank_max_chars] for hit in head]
                 for hit, value in zip(head, self.reranker.rerank(search_text, texts)):
@@ -376,6 +387,23 @@ def _kept_by(scores: PassageScores, min_score: Optional[float], agreement_rank: 
     ):
         return "agreement"
     return None
+
+
+def _rerank_head(hits: list[PassageHit], limit: int, per_episode: Optional[int]) -> list[PassageHit]:
+    """Los pasajes que puntúa el reordenador: los primeros por fusión o, con
+    ``per_episode``, como mucho k de cada episodio (cobertura de episodios)."""
+    if not per_episode:
+        return hits[:limit]
+    head: list[PassageHit] = []
+    taken: dict[str, int] = {}
+    for hit in hits:
+        if taken.get(hit.episode_id, 0) >= per_episode:
+            continue
+        taken[hit.episode_id] = taken.get(hit.episode_id, 0) + 1
+        head.append(hit)
+        if len(head) >= limit:
+            break
+    return head
 
 
 def _group(hits: list[PassageHit], episodes: dict, max_episodes: int, per_episode: int) -> list[PassageGroup]:

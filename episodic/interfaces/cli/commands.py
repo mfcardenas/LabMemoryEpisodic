@@ -22,6 +22,7 @@ from __future__ import annotations
 import argparse
 import logging
 import sys
+from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
 
@@ -31,6 +32,7 @@ from episodic.application.episode_composition import (
     EpisodeRuleConfig,
 )
 from episodic.config import EpisodicConfig, load_env_file
+from episodic.domain.projects import DEFAULT_PROJECT_ID
 from episodic.domain.times import Interval, TimeSpec
 from episodic.domain.types import SearchIntent
 from episodic.domain.types import SourceType
@@ -83,7 +85,51 @@ def _config_from_args(args: argparse.Namespace, **overrides: object) -> Episodic
         "log_file": getattr(args, "log_file", None),
     }
     values.update(overrides)
-    return EpisodicConfig.from_env(**values)
+    config = EpisodicConfig.from_env(**values)
+    project_id = getattr(args, "project", None)
+    if project_id and project_id != DEFAULT_PROJECT_ID:
+        # Los datos, la colección y la vigilancia del proyecto sustituyen a los por defecto.
+        from episodic.adapters.sqlite.projects import SqliteProjectRegistry
+
+        registry = SqliteProjectRegistry(config.projects_registry_path)
+        try:
+            project = registry.get_project(project_id)
+        finally:
+            registry.close()
+        if project is None:
+            raise SystemExit(f"No existe el proyecto «{project_id}» (vea: python -m episodic projects)")
+        config = replace(
+            config,
+            data_dir=project.data_dir,
+            qdrant_collection=project.qdrant_collection,
+            watch_config=project.watch_config,
+        )
+    return config
+
+
+def cmd_projects(args: argparse.Namespace) -> None:
+    """Lista los proyectos: id, tipo, estado, cifras y dónde viven sus datos."""
+    from episodic.adapters.sqlite.projects import SqliteProjectRegistry
+    from episodic.application.projects import ProjectLayout, ProjectService
+
+    config = _config_from_args(argparse.Namespace(**{**vars(args), "project": None}))
+    registry = SqliteProjectRegistry(config.projects_registry_path)
+    try:
+        service = ProjectService(
+            registry,
+            ProjectLayout(config.projects_path, config.data_path, config.qdrant_collection, config.watch_config_path),
+        )
+        service.ensure_default()
+        for project in service.list():
+            stats = service.stats(project)
+            state = "activo" if project.active else "en pausa"
+            print(
+                f"{project.id:<24} {project.kind.value:<7} {state:<9} "
+                f"{stats['episodes']:>6} episodios {stats['environments']:>4} ambientes  {project.name}"
+            )
+            print(f"{'':<24} datos: {project.data_dir} · Qdrant: {project.qdrant_collection}")
+    finally:
+        registry.close()
 
 
 def cmd_init(args: argparse.Namespace) -> None:
@@ -559,18 +605,20 @@ def cmd_compose_episodes(args: argparse.Namespace) -> None:
 def cmd_serve(args: argparse.Namespace) -> None:
     """Inicia el servidor HTTP y la UI Web local."""
     import uvicorn
-    from episodic.interfaces.http.server import create_api_app
+    from episodic.interfaces.http.projects import create_projects_app
 
+    # El servidor aloja todos los proyectos; --project no aplica aquí.
     config = _config_from_args(
-        args,
+        argparse.Namespace(**{**vars(args), "project": None}),
         host=args.host,
         port=args.port,
     )
-    app = create_api_app(
-        config, use_fake_encoders=args.fake_encoders, start_watcher=not args.no_watch
+    app = create_projects_app(
+        config, use_fake_encoders=args.fake_encoders, start_watchers=not args.no_watch
     )
     print(f"\nIniciando servidor de Memoria Episódica en http://{args.host}:{args.port}")
     print(f"Dashboard Web disponible en: http://{args.host}:{args.port}/")
+    print(f"Proyectos: {config.projects_path} (cada uno en http://{args.host}:{args.port}/p/<id>/)")
     if config.watch_config_path is None:
         print("Vigilancia de carpetas: desactivada (EPIGRAPH_WATCH_CONFIG vacío)\n")
     elif args.no_watch:
@@ -595,6 +643,11 @@ def _add_common_arguments(
         return argparse.SUPPRESS if suppress_defaults else value
 
     parser.add_argument("--data", default=default(config.data_dir), help="Directorio raíz de datos")
+    parser.add_argument(
+        "--project",
+        default=default(None),
+        help="Proyecto sobre el que actuar (sus datos, colección y vigilancia); por defecto, el principal",
+    )
     parser.add_argument(
         "--vector-backend",
         choices=("edge", "http"),
@@ -806,6 +859,12 @@ def main() -> None:
         help="Descarga el modelo en el servicio si no está (Speaches)",
     )
     p_speech.set_defaults(func=cmd_speech_check)
+
+    # projects
+    p_projects = subparsers.add_parser(
+        "projects", parents=[subcommand_common], help="Lista los proyectos y dónde viven sus datos"
+    )
+    p_projects.set_defaults(func=cmd_projects)
 
     # serve
     p_serve = subparsers.add_parser("serve", parents=[subcommand_common], help="Inicia la API HTTP y la interfaz web")

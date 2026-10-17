@@ -73,6 +73,8 @@ class EpisodicConfig:
 
     # Persistencia local. Una ruta relativa queda anclada a project_root.
     data_dir: str | Path = field(default_factory=lambda: _env("DATA_DIR", "episodic-data"))
+    # Proyectos: catálogo y datos de los proyectos nuevos (el principal usa data_dir).
+    projects_dir: str | Path = field(default_factory=lambda: _env("PROJECTS_DIR", "epigraph-projects"))
 
     # Backend vectorial existente; esta fase no añade ni cambia backends.
     vector_backend: str = field(default_factory=lambda: _env("VECTOR_BACKEND", "http"))
@@ -234,6 +236,13 @@ class EpisodicConfig:
     # (hasta 12 momentos de 900 caracteres) sin recortar el habla ni las
     # tablas de los documentos, donde suele estar la respuesta.
     agent_tool_result_chars: int = field(default_factory=lambda: _env("AGENT_TOOL_RESULT_CHARS", 12000, int))
+    # Red de agentes (Fase A3). ``agent_mode``: auto (la red solo si la pregunta
+    # cruza episodios), simple (agente único) o red (siempre la red).
+    agent_mode: str = field(default_factory=lambda: _env("AGENT_MODE", "auto"))
+    agent_workers: int = field(default_factory=lambda: _env("AGENT_WORKERS", 2, int))
+    agent_map_episodes: int = field(default_factory=lambda: _env("AGENT_MAP_EPISODES", 8, int))
+    agent_network_max_seconds: float = field(default_factory=lambda: _env("AGENT_NETWORK_MAX_SECONDS", 300.0, float))
+    agent_verify: bool = field(default_factory=lambda: _env("AGENT_VERIFY", True, _bool))
 
     # Transcripción del habla (Fase D). ``speech_backend``: http | fake | none.
     # ``http`` llama a un servicio compatible con la API de OpenAI
@@ -290,6 +299,8 @@ class EpisodicConfig:
             raise ValueError(f"Backend de habla no soportado: {self.speech_backend}")
         if self.text_backend not in {"ollama", "fake", "none"}:
             raise ValueError(f"Backend de texto no soportado: {self.text_backend}")
+        if self.agent_mode not in {"auto", "simple", "red"}:
+            raise ValueError(f"Modo del agente no soportado: {self.agent_mode} (auto, simple o red)")
         if self.agent_backend not in {"ollama", "fake", "none"}:
             raise ValueError(f"Backend del agente no soportado: {self.agent_backend}")
         self.encoder_device = (self.encoder_device or "cpu").lower()
@@ -311,6 +322,14 @@ class EpisodicConfig:
     @property
     def data_path(self) -> Path:
         return self.resolve_path(self.data_dir)
+
+    @property
+    def projects_path(self) -> Path:
+        return self.resolve_path(self.projects_dir)
+
+    @property
+    def projects_registry_path(self) -> Path:
+        return self.projects_path / "proyectos.db"
 
     @property
     def sqlite_path(self) -> Path:

@@ -150,7 +150,7 @@ def test_ask_answers_with_verified_citations_over_http(memory) -> None:
         assert any("search_moments" in entry["message"] for entry in log)
         # Con run_id del cliente, la traza se sigue en directo por /api/activity y queda guardada con la respuesta.
         traced = client.post("/api/ask", json={"question": "¿Quién dijo que algo estaba agarrotado?", "run_id": "web-0123456789"}).json()
-        assert traced["id"] == "web-0123456789" and [item["kind"] for item in traced["trace"]][:3] == ["question", "thinking", "turn"]
+        assert traced["id"] == "web-0123456789" and [item["kind"] for item in traced["trace"]][:4] == ["question", "route", "thinking", "turn"]
         assert traced["trace"][-1]["kind"] == "answer" and traced["metadata"]["agents"][0]["tool_calls"] >= 1
         live = [entry for entry in client.get("/api/activity", params={"component": "agente"}).json()["entries"] if entry["data"].get("run_id") == "web-0123456789"]
         assert [entry["data"]["kind"] for entry in live] == [item["kind"] for item in traced["trace"]]
@@ -166,3 +166,15 @@ def test_agent_tools_are_published_and_callable_over_http(memory) -> None:
         body = client.post("/api/tools/search_moments", json={"query": "agarrotado"}).json()
         assert body["moments"] and body["moments"][0]["episode_external_id"] == "taller_1"
         assert client.post("/api/tools/browse_memory", json={"level": "days"}).status_code == 422
+
+
+def test_find_episodes_covers_several_episodes_with_their_best_moment(memory) -> None:
+    out = memory.memory_tools.execute("find_episodes", {"query": "la pieza y la rueda", "max_episodes": 1})
+    first = out.metadata["episodes"]
+    assert len(first) == 1 and out.metadata["more_candidates"] == 1  # hay otro episodio candidato sin revisar
+    out = memory.memory_tools.execute("find_episodes", {"query": "la pieza y la rueda", "max_episodes": 5, "per_episode": 1})
+    episodes = {item["external_id"]: item for item in out.metadata["episodes"]}
+    assert set(episodes) == {"taller_1", "taller_2"} and out.metadata["more_candidates"] == 0
+    assert all(item["matches"] == 1 and item["environment_id"] == "taller" and item["start_time"] for item in episodes.values())
+    # Un momento por episodio, cada uno de su episodio.
+    assert sorted(m.episode_id for m in out.moments) == sorted(item["episode_id"] for item in episodes.values())

@@ -15,9 +15,9 @@
       d.setAttribute("data-mode", v === "panel-oscuro" ? "dark" : "light");
     })();
   </script>
-  <link rel="stylesheet" href="/static/index.css?v=tema-panel-2">
-  <link rel="stylesheet" href="/static/cronologia.css?v=tema-panel-2">
-  <link rel="stylesheet" href="/static/tema-panel.css?v=tema-panel-2">
+  <link rel="stylesheet" href="/static/index.css?v=consola-1">
+  <link rel="stylesheet" href="/static/cronologia.css?v=consola-1">
+  <link rel="stylesheet" href="/static/tema-panel.css?v=consola-1">
 </head>
 <body>
   <div class="shell">
@@ -26,6 +26,11 @@
         <span class="brand-mark">EG</span>
         <span><b>EpiGraph</b><small>MEMORIA AUDITABLE</small></span>
       </a>
+
+      <div class="project-switch" hidden>
+        <label for="project-select">Proyecto</label>
+        <select id="project-select"></select>
+      </div>
 
       <nav class="nav" aria-label="Secciones">
         <button class="nav-item active" data-view="episodes"><span>01</span>Memoria</button>
@@ -36,6 +41,7 @@
         <button class="nav-item" data-view="watch"><span>04</span>Vigilancia</button>
         <button class="nav-item" data-view="search"><span>05</span>Consultas</button>
         <button class="nav-item" data-view="system"><span>06</span>Sistema</button>
+        <button class="nav-item" data-view="projects"><span>07</span>Proyectos</button>
       </nav>
 
       <div class="skin-switch" role="group" aria-label="Estilo visual">
@@ -374,10 +380,15 @@
 
         <div id="search-tab-ask-content" class="search-tab-content active">
           <article class="panel search-panel">
-            <div class="panel-heading"><div><p class="kicker">AGENTE DE CONSULTA</p><h2>Pregunta a la memoria</h2></div><span class="truth-badge vector" id="ask-status">…</span></div>
-            <p class="search-hint">El agente busca con las herramientas de memoria y responde solo con lo que encuentra; cada afirmación lleva una cita que abre el vídeo en ese segundo. Si no hay evidencia, lo dice.</p>
-            <form id="ask-form" class="search-form">
-              <input id="ask-question" placeholder="Ej.: ¿qué pasó justo después de cortar la pieza en el taller?" required>
+            <div class="panel-heading"><div><p class="kicker">AGENTE DE CONSULTA</p><h2>Pregunta a la memoria</h2></div><div class="ask-heading-tools"><button type="button" class="button-mini" id="agent-console-open" title="Ver lo que hacen los agentes, línea a línea">Consola de agentes</button><span class="truth-badge vector" id="ask-status">…</span></div></div>
+            <p class="search-hint">El agente busca con las herramientas de memoria y responde solo con lo que encuentra; cada afirmación lleva una cita que abre el vídeo en ese segundo. Si no hay evidencia, lo dice. En modo automático, las preguntas que cruzan varios episodios («¿en qué capturas…?», «¿cuántas veces…?», «¿qué tienen en común…?») pasan a la red de agentes: un planificador, un localizador por episodio en paralelo, un narrador y un verificador.</p>
+            <form id="ask-form" class="search-form ask-form">
+              <input id="ask-question" placeholder="Ej.: ¿en qué capturas aparece una tarjeta y qué se hace con ella en cada una?" required>
+              <select id="ask-mode" aria-label="Modo de respuesta" title="Quién responde">
+                <option value="auto">Automático</option>
+                <option value="simple">Un agente</option>
+                <option value="red">Red de agentes</option>
+              </select>
               <button class="button primary" type="submit" id="ask-submit">Preguntar</button>
             </form>
           </article>
@@ -458,11 +469,70 @@
           <p>No se habilitará orquestación agéntica hasta que este recorrido pueda verificarse con recursos reales y evidencias accesibles.</p>
         </article>
       </section>
+      <section class="view" id="view-projects" aria-label="Proyectos">
+        <div class="split projects-layout">
+          <article class="panel">
+            <div class="panel-heading">
+              <div><p class="kicker">ESPACIOS DE DATOS</p><h2>Proyectos</h2></div>
+              <span class="counter" id="projects-count">—</span>
+            </div>
+            <p class="projects-intro">Cada proyecto guarda sus ambientes y evidencias por separado: su base de datos, sus medios y su colección en Qdrant. Un mismo ambiente puede existir en dos proyectos sin mezclarse. Solo los proyectos activos vigilan carpetas y procesan; todos comparten un único turno de trabajo pesado.</p>
+            <div id="project-list" class="project-list"></div>
+          </article>
+          <article class="panel">
+            <div class="panel-heading">
+              <div><p class="kicker" id="project-form-kicker">NUEVO</p><h2 id="project-form-title">Crear proyecto</h2></div>
+            </div>
+            <form id="project-form" class="project-form" autocomplete="off">
+              <label>Nombre<input id="project-name" required maxlength="120" placeholder="Ej.: Banco de preguntas compuestas"></label>
+              <label>Descripción<input id="project-description" maxlength="2000" placeholder="Para qué sirve este proyecto"></label>
+              <label>Tipo<select id="project-kind"><option value="prueba">Prueba</option><option value="real">Real</option></select></label>
+              <label>Carpetas vigiladas <small>(opcional)</small><textarea id="project-folders" rows="3" spellcheck="false" placeholder="D:\EpiGraph\pruebas-a3"></textarea></label>
+              <p class="project-form-note" id="project-folders-note"></p>
+              <label class="switch"><input type="checkbox" id="project-active" checked><span></span>Activo: vigila sus carpetas y procesa su cola</label>
+              <div class="project-form-actions">
+                <button class="button primary" type="submit" id="project-submit">Crear proyecto</button>
+                <button class="button" type="button" id="project-form-cancel" hidden>Cancelar</button>
+              </div>
+              <p id="project-form-message" class="warn" hidden></p>
+            </form>
+          </article>
+        </div>
+      </section>
     </main>
   </div>
 
   <dialog id="asset-dialog" class="detail-dialog"><button class="dialog-close" data-close-dialog aria-label="Cerrar">×</button><div id="asset-dialog-content"></div></dialog>
-  <script src="/static/app.js?v=tema-panel-2"></script>
-  <script src="/static/cronologia.js?v=tema-panel-2"></script>
+
+  <!-- Consola de agentes: ventana flotante tipo log (agentes.js). -->
+  <aside id="agent-console" class="agent-console" data-state="closed" hidden aria-label="Consola de agentes">
+    <header class="ac-head">
+      <span class="ac-title"><i></i>Consola de agentes</span>
+      <span class="ac-status" role="status" aria-live="polite"></span>
+      <select class="ac-runs" aria-label="Ejecuciones recientes"><option value="">Ejecuciones recientes…</option></select>
+      <button type="button" data-ac="copy" title="Copiar el log">⧉</button>
+      <button type="button" data-ac="min" title="Minimizar">–</button>
+      <button type="button" data-ac="max" title="Ampliar o reducir">▢</button>
+      <button type="button" data-ac="close" title="Cerrar">×</button>
+    </header>
+    <p class="ac-question"></p>
+    <div class="ac-roster"></div>
+    <div class="ac-log" role="log" aria-live="off"></div>
+    <footer class="ac-foot">
+      <div class="ac-filters" role="group" aria-label="Filtrar el log">
+        <button type="button" data-filter="all">Todo</button>
+        <button type="button" data-filter="decisions">Decisiones</button>
+        <button type="button" data-filter="tools">Herramientas</button>
+        <button type="button" data-filter="problems">Problemas</button>
+      </div>
+      <button type="button" class="ac-agent-clear" hidden>Ver todos los agentes</button>
+      <label class="ac-follow-label"><input type="checkbox" class="ac-follow" checked> seguir</label>
+    </footer>
+  </aside>
+  <button type="button" id="agent-console-pill" class="agent-pill" hidden>Agentes</button>
+  <script src="/static/app.js?v=consola-1"></script>
+  <script src="/static/cronologia.js?v=consola-1"></script>
+  <script src="/static/proyectos.js?v=consola-1"></script>
+  <script src="/static/agentes.js?v=consola-1"></script>
 </body>
 </html>

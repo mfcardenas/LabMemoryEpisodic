@@ -15,6 +15,7 @@ watch.toml
 episodic-data/
 episodic-data-synth/
 episodic-data-scale-*/
+epigraph-projects/
 data/eval/resultados-*.json
 data/eval/escala-*.json
 .runtime/
